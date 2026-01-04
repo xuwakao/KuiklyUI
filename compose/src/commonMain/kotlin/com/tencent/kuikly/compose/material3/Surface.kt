@@ -16,6 +16,7 @@
 
 package com.tencent.kuikly.compose.material3
 
+import com.tencent.kuikly.compose.foundation.LocalIndication
 import com.tencent.kuikly.compose.foundation.background
 import com.tencent.kuikly.compose.foundation.border
 import com.tencent.kuikly.compose.foundation.clickable
@@ -235,11 +236,8 @@ fun Surface(
                     shadowElevation = with(LocalDensity.current) { shadowElevation.toPx() }
                 )
                 .clickable(
-                    // todo:
-//                    interactionSource = interactionSource,
-//                    indication = null,
-                    //todo: jonas
-//                    indication = androidx.compose.material.ripple.rememberRipple(),
+                    interactionSource = interactionSource,
+                    indication = LocalIndication.current,
                     enabled = enabled,
                     onClick = onClick
                 ),

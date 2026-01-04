@@ -16,7 +16,12 @@
 package com.tencent.kuikly.core.render.android.expand.component
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.ShapeDrawable
+import android.graphics.drawable.shapes.RoundRectShape
 import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -25,13 +30,16 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderLog
 import com.tencent.kuikly.core.render.android.const.KRViewConst
+import com.tencent.kuikly.core.render.android.css.decoration.KRViewDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.touchConsumeByNative
 import com.tencent.kuikly.core.render.android.css.ktx.drawCommonDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.drawCommonForegroundDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.toDpF
 import com.tencent.kuikly.core.render.android.css.ktx.touchDownConsumeOnce
+import com.tencent.kuikly.core.render.android.css.ktx.viewDecorator
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
+import org.json.JSONObject
 
 open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExport {
 
@@ -43,6 +51,14 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
 
     private var touchListenerProxy: View.OnTouchListener? = null
     private var currentActionState: Int = -1
+
+    // Ripple effect related fields
+    private var rippleOverlayView: View? = null
+    private var rippleDrawable: RippleDrawable? = null
+    private var rippleEnabled: Boolean = false
+    private var rippleColor: Int = Color.BLACK
+    private var ripplePressedAlpha: Float = 0.12f
+    private var rippleBounded: Boolean = true
 
     override val reusable: Boolean
         get() = true
@@ -123,6 +139,14 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
                 setScreenFrameCallback(propValue as? KuiklyRenderCallback)
                 true
             }
+            PROP_RIPPLE -> {
+                setupRipple(propValue as String)
+                true
+            }
+            PROP_RIPPLE_STATE -> {
+                updateRippleState(propValue as String)
+                true
+            }
             else -> super.setProp(propKey, propValue)
         }
     }
@@ -150,6 +174,14 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
             }
             SCREEN_FRAME_PAUSE -> {
                 screenFramePause = false
+                true
+            }
+            PROP_RIPPLE -> {
+                clearRipple()
+                true
+            }
+            PROP_RIPPLE_STATE -> {
+                // State is transient, just reset
                 true
             }
             else -> super.resetProp(propKey)
@@ -363,6 +395,158 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         }
     }
 
+    /**
+     * Setup native ripple effect based on JSON configuration.
+     * JSON format: {"enabled": true, "color": "#000000", "bounded": true, "pressedAlpha": 0.12, ...}
+     */
+    private fun setupRipple(configJson: String) {
+        try {
+            val config = JSONObject(configJson)
+            val enabled = config.optBoolean("enabled", false)
+
+            if (!enabled) {
+                clearRipple()
+                return
+            }
+
+            // Parse ripple configuration
+            val colorStr = config.optString("color", "#000000")
+            rippleColor = try {
+                Color.parseColor(colorStr)
+            } catch (e: Exception) {
+                Color.BLACK
+            }
+            ripplePressedAlpha = config.optDouble("pressedAlpha", 0.12).toFloat()
+            rippleBounded = config.optBoolean("bounded", true)
+            rippleEnabled = true
+
+            // Create RippleDrawable
+            createRippleDrawable()
+        } catch (e: Exception) {
+            KuiklyRenderLog.e(VIEW_NAME, "setupRipple error: ${e.message}")
+        }
+    }
+
+    /**
+     * Create RippleDrawable and add it via an overlay View.
+     * Using overlay View instead of foreground to avoid conflict with KRViewDecoration.
+     */
+    private fun createRippleDrawable() {
+        // Remove existing overlay if any
+        rippleOverlayView?.let { removeView(it) }
+
+        // Calculate alpha-adjusted color
+        val alpha = (ripplePressedAlpha * 255).toInt().coerceIn(0, 255)
+        val alphaColor = Color.argb(
+            alpha,
+            Color.red(rippleColor),
+            Color.green(rippleColor),
+            Color.blue(rippleColor)
+        )
+
+        val colorStateList = ColorStateList.valueOf(alphaColor)
+
+        // Create mask for bounded ripple
+        val mask: ShapeDrawable? = if (rippleBounded) {
+            val cornerRadius = getCornerRadius()
+            val radii = FloatArray(8) { cornerRadius }
+            val shape = RoundRectShape(radii, null, null)
+            ShapeDrawable(shape).apply {
+                paint.color = Color.WHITE
+            }
+        } else {
+            null
+        }
+
+        rippleDrawable = RippleDrawable(colorStateList, null, mask)
+
+        // Create overlay View for ripple
+        val overlay = View(context).apply {
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+            background = rippleDrawable
+            isClickable = false
+            isFocusable = false
+            // Disable touch interception so events pass through
+            setOnTouchListener { _, _ -> false }
+        }
+
+        // Add overlay as the topmost child
+        addView(overlay)
+        rippleOverlayView = overlay
+    }
+
+    /**
+     * Get corner radius from the view's background or CSS properties.
+     * Returns the border radius if all corners are equal, otherwise returns 0.
+     */
+    private fun getCornerRadius(): Float {
+        return try {
+            val decorator = viewDecorator
+            val radiusF = decorator?.borderRadiusF ?: KRViewDecoration.BORDER_RADIUS_UNSET_VALUE
+            if (radiusF != KRViewDecoration.BORDER_RADIUS_UNSET_VALUE) {
+                radiusF
+            } else {
+                0f
+            }
+        } catch (e: Exception) {
+            0f
+        }
+    }
+
+    /**
+     * Update ripple state based on JSON state.
+     * JSON format: {"state": "pressed|released|cancelled", "x": 100.0, "y": 50.0}
+     */
+    private fun updateRippleState(stateJson: String) {
+        if (!rippleEnabled || rippleDrawable == null || rippleOverlayView == null) return
+
+        try {
+            val stateObj = JSONObject(stateJson)
+            val state = stateObj.optString("state", "")
+
+            when (state) {
+                RIPPLE_STATE_PRESSED -> {
+                    val x = stateObj.optDouble("x", 0.0).toFloat()
+                    val y = stateObj.optDouble("y", 0.0).toFloat()
+
+                    // Convert dp to px
+                    val density = resources.displayMetrics.density
+                    val pxX = x * density
+                    val pxY = y * density
+
+                    // Set hotspot for ripple origin
+                    rippleDrawable?.setHotspot(pxX, pxY)
+
+                    // Set pressed state to trigger ripple
+                    rippleDrawable?.state = intArrayOf(
+                        android.R.attr.state_pressed,
+                        android.R.attr.state_enabled
+                    )
+                    rippleOverlayView?.invalidate()
+                }
+                RIPPLE_STATE_RELEASED, RIPPLE_STATE_CANCELLED -> {
+                    // Release pressed state
+                    rippleDrawable?.state = intArrayOf(android.R.attr.state_enabled)
+                    rippleOverlayView?.invalidate()
+                }
+            }
+        } catch (e: Exception) {
+            KuiklyRenderLog.e(VIEW_NAME, "updateRippleState error: ${e.message}")
+        }
+    }
+
+    /**
+     * Clear and disable ripple effect.
+     */
+    private fun clearRipple() {
+        rippleEnabled = false
+        rippleDrawable = null
+        rippleOverlayView?.let {
+            removeView(it)
+        }
+        rippleOverlayView = null
+    }
+
     companion object {
         const val VIEW_NAME = "KRView"
         private const val COMPOSE_ROOT_TAG_ID = -0x7C03905E // random unique negative int
@@ -381,6 +565,13 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         private const val EVENT_TOUCH_UP = "touchUp"
         private const val EVENT_TOUCH_CANCEL = "touchCancel"
         private const val EVENT_SCREEN_FRAME = "screenFrame"
+
+        // Ripple effect constants
+        private const val PROP_RIPPLE = "ripple"
+        private const val PROP_RIPPLE_STATE = "rippleState"
+        private const val RIPPLE_STATE_PRESSED = "pressed"
+        private const val RIPPLE_STATE_RELEASED = "released"
+        private const val RIPPLE_STATE_CANCELLED = "cancelled"
 
         /**
          * Whether the given View is marked as a compose root (SuperTouch enabled).

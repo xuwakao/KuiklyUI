@@ -15,6 +15,7 @@
 
 #import "KRView.h"
 #import "KRView+LiquidGlass.h"
+#import "KRView+Ripple.h"
 #import "KRConvertUtil.h"
 #import "KRComponentDefine.h"
 #import "KuiklyRenderView.h"

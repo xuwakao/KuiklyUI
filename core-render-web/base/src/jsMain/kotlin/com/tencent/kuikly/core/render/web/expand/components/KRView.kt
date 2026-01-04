@@ -12,12 +12,14 @@ import com.tencent.kuikly.core.render.web.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.web.ktx.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.web.ktx.kuiklyDocument
 import com.tencent.kuikly.core.render.web.ktx.kuiklyWindow
+import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONObject
 import com.tencent.kuikly.core.render.web.processor.IEvent
 import com.tencent.kuikly.core.render.web.processor.KuiklyProcessor
 import com.tencent.kuikly.core.render.web.runtime.dom.element.ElementType
 import com.tencent.kuikly.core.render.web.utils.DeviceType
 import com.tencent.kuikly.core.render.web.utils.DeviceUtils
 import org.w3c.dom.HTMLDivElement
+import org.w3c.dom.HTMLElement
 import org.w3c.dom.Touch
 import org.w3c.dom.TouchEvent
 import org.w3c.dom.events.Event
@@ -124,6 +126,13 @@ open class KRView : IKuiklyRenderViewExport {
     // Window mouse up event listener reference for cleanup
     private var windowMouseUpListener: ((Event) -> Unit)? = null
 
+    // Ripple effect related fields
+    private var rippleOverlay: HTMLElement? = null
+    private var rippleEnabled: Boolean = false
+    private var rippleColor: String = "#000000"
+    private var ripplePressedAlpha: Float = 0.12f
+    private var rippleBounded: Boolean = true
+
     override val ele: HTMLDivElement
         get() = div.unsafeCast<HTMLDivElement>()
 
@@ -203,6 +212,16 @@ open class KRView : IKuiklyRenderViewExport {
             SCREEN_FRAME_PAUSE -> {
                 // Pause screen frame rate change event
                 setScreenFramePause(propValue)
+                true
+            }
+            PROP_RIPPLE -> {
+                // Setup ripple effect configuration
+                setupRipple(propValue as String)
+                true
+            }
+            PROP_RIPPLE_STATE -> {
+                // Update ripple state
+                updateRippleState(propValue as String)
                 true
             }
             else -> super.setProp(propKey, propValue)
@@ -518,6 +537,178 @@ open class KRView : IKuiklyRenderViewExport {
         }
     }
 
+    // ==================== Ripple Effect Methods ====================
+
+    /**
+     * Setup ripple effect based on JSON configuration
+     */
+    private fun setupRipple(configJson: String) {
+        try {
+            val config = JSONObject(configJson)
+            val enabled = config.optBoolean("enabled", false)
+
+            if (!enabled) {
+                clearRipple()
+                return
+            }
+
+            rippleColor = config.optString("color", "#000000")
+            ripplePressedAlpha = config.optDouble("pressedAlpha", 0.12).toFloat()
+            rippleBounded = config.optBoolean("bounded", true)
+            rippleEnabled = true
+
+            // Ensure ripple overlay exists
+            ensureRippleOverlay()
+        } catch (e: Exception) {
+            // Silently fail on parse error
+        }
+    }
+
+    /**
+     * Create and setup the ripple overlay element
+     */
+    private fun ensureRippleOverlay() {
+        if (rippleOverlay != null) {
+            return
+        }
+
+        // Set overflow hidden on parent element for bounded ripples
+        if (rippleBounded) {
+            ele.style.asDynamic().overflow = "hidden"
+        }
+
+        // Create ripple overlay
+        val overlay = kuiklyDocument.createElement(ElementType.DIV).unsafeCast<HTMLElement>()
+        overlay.style.apply {
+            position = "absolute"
+            top = "0"
+            left = "0"
+            width = "100%"
+            height = "100%"
+            asDynamic().pointerEvents = "none"
+            asDynamic().overflow = if (rippleBounded) "hidden" else "visible"
+            borderRadius = "inherit"
+            zIndex = "1000"
+        }
+
+        ele.appendChild(overlay)
+        rippleOverlay = overlay
+    }
+
+    /**
+     * Update ripple state based on JSON state
+     */
+    private fun updateRippleState(stateJson: String) {
+        if (!rippleEnabled) return
+
+        try {
+            val state = JSONObject(stateJson)
+            val stateType = state.optString("state", "")
+
+            when (stateType) {
+                RIPPLE_STATE_PRESSED -> {
+                    val x = state.optDouble("x", 0.0).toFloat()
+                    val y = state.optDouble("y", 0.0).toFloat()
+                    showRipple(x, y)
+                }
+                RIPPLE_STATE_RELEASED -> {
+                    hideRipple()
+                }
+                RIPPLE_STATE_CANCELLED -> {
+                    cancelRipple()
+                }
+            }
+        } catch (e: Exception) {
+            // Silently fail on parse error
+        }
+    }
+
+    /**
+     * Show ripple animation at the specified point
+     */
+    private fun showRipple(x: Float, y: Float) {
+        ensureRippleOverlay()
+
+        val overlay = rippleOverlay ?: return
+
+        // Clear any existing ripples
+        overlay.innerHTML = ""
+
+        // Create ripple element
+        val ripple = kuiklyDocument.createElement(ElementType.DIV).unsafeCast<HTMLElement>()
+
+        // Calculate ripple size (should cover the entire element from the touch point)
+        val rect = ele.getBoundingClientRect()
+        val maxDist = maxOf(
+            kotlin.math.sqrt((0 - x) * (0 - x) + (0 - y) * (0 - y)),
+            kotlin.math.sqrt((rect.width.toFloat() - x) * (rect.width.toFloat() - x) + (0 - y) * (0 - y)),
+            kotlin.math.sqrt((0 - x) * (0 - x) + (rect.height.toFloat() - y) * (rect.height.toFloat() - y)),
+            kotlin.math.sqrt((rect.width.toFloat() - x) * (rect.width.toFloat() - x) + (rect.height.toFloat() - y) * (rect.height.toFloat() - y))
+        )
+        val size = maxDist * 2.2f // Add 10% margin
+
+        ripple.style.apply {
+            position = "absolute"
+            left = "${x - size / 2}px"
+            top = "${y - size / 2}px"
+            width = "${size}px"
+            height = "${size}px"
+            borderRadius = "50%"
+            backgroundColor = rippleColor
+            opacity = "0"
+            transform = "scale(0)"
+            transition = "transform 0.4s ease-out, opacity 0.15s ease-in"
+            asDynamic().pointerEvents = "none"
+        }
+
+        overlay.appendChild(ripple)
+
+        // Trigger animation on next frame
+        kuiklyWindow.setTimeout({
+            ripple.style.opacity = ripplePressedAlpha.toString()
+            ripple.style.transform = "scale(1)"
+        }, 10)
+    }
+
+    /**
+     * Hide ripple with fade out animation
+     */
+    private fun hideRipple() {
+        val overlay = rippleOverlay ?: return
+        val ripples = overlay.children
+
+        for (i in 0 until ripples.length) {
+            val ripple = ripples[i]?.unsafeCast<HTMLElement>()
+            ripple?.style?.apply {
+                opacity = "0"
+                transition = "opacity 0.3s ease-out"
+            }
+        }
+
+        // Remove ripples after animation completes
+        kuiklyWindow.setTimeout({
+            overlay.innerHTML = ""
+        }, 300)
+    }
+
+    /**
+     * Cancel ripple immediately without animation
+     */
+    private fun cancelRipple() {
+        rippleOverlay?.innerHTML = ""
+    }
+
+    /**
+     * Clear ripple effect completely
+     */
+    private fun clearRipple() {
+        rippleEnabled = false
+        rippleOverlay?.let {
+            it.parentElement?.removeChild(it)
+        }
+        rippleOverlay = null
+    }
+
     companion object {
         const val VIEW_NAME = "KRView"
         private const val EVENT_SCREEN_FRAME = "screenFrame"
@@ -526,5 +717,12 @@ open class KRView : IKuiklyRenderViewExport {
         private const val SCREEN_FRAME_REFRESH_TIME = 16
         // Border size ratio threshold
         private const val BORDER_SIZE_RATIO = 5
+
+        // Ripple effect constants
+        private const val PROP_RIPPLE = "ripple"
+        private const val PROP_RIPPLE_STATE = "rippleState"
+        private const val RIPPLE_STATE_PRESSED = "pressed"
+        private const val RIPPLE_STATE_RELEASED = "released"
+        private const val RIPPLE_STATE_CANCELLED = "cancelled"
     }
 }

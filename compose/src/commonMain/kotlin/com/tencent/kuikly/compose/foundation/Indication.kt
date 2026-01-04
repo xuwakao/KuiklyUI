@@ -21,6 +21,7 @@ import com.tencent.kuikly.compose.foundation.interaction.HoverInteraction
 import com.tencent.kuikly.compose.foundation.interaction.Interaction
 import com.tencent.kuikly.compose.foundation.interaction.InteractionSource
 import com.tencent.kuikly.compose.foundation.interaction.PressInteraction
+import com.tencent.kuikly.compose.material3.ripple.nativeRipple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
@@ -215,10 +216,10 @@ private fun Modifier.indicationImpl(
  * be used by default to draw visual effects for interactions such as press and drag in components
  * such as [clickable].
  *
- * By default this will provide a debug indication, this should always be replaced.
+ * By default this will provide a native ripple indication that uses platform-native ripple effects.
  */
 val LocalIndication = staticCompositionLocalOf<Indication> {
-    DefaultDebugIndication
+    nativeRipple()
 }
 
 /**
