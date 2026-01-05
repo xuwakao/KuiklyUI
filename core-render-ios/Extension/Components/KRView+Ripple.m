@@ -152,24 +152,58 @@ static NSString *const kRippleStateCancelled = @"cancelled";
 - (void)hideRipple {
     if (!_isAnimating) return;
 
-    // Animate fade out
-    CABasicAnimation *opacityAnim = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    opacityAnim.fromValue = @(_pressedAlpha);
-    opacityAnim.toValue = @0;
-    opacityAnim.duration = 0.3;
-    opacityAnim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-    opacityAnim.fillMode = kCAFillModeForwards;
-    opacityAnim.removedOnCompletion = NO;
+    // 获取当前实际的 opacity 值（从 presentation layer）
+    CGFloat currentOpacity = _pressedAlpha;
+    CALayer *presentationLayer = _rippleLayer.presentationLayer;
+    if (presentationLayer) {
+        currentOpacity = presentationLayer.opacity;
+    }
 
-    [_rippleLayer addAnimation:opacityAnim forKey:@"rippleOpacityOut"];
+    // 先移除之前的动画
+    [_rippleLayer removeAnimationForKey:@"rippleOpacityIn"];
 
     _isAnimating = NO;
 
-    // Clean up after animation
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self->_rippleLayer removeAllAnimations];
-        self->_rippleLayer.opacity = 0;
-    });
+    // 如果 opacity 还很低（快速点击），先快速显示再淡出
+    // 这样用户能看到明显的 ripple 反馈
+    CGFloat minVisibleOpacity = _pressedAlpha * 0.7f; // 至少达到 70% 才算"可见"
+
+    if (currentOpacity < minVisibleOpacity) {
+        // 快速点击：先闪现到目标值，再淡出
+        CAKeyframeAnimation *opacityAnim = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+        opacityAnim.values = @[@(currentOpacity), @(_pressedAlpha), @0];
+        opacityAnim.keyTimes = @[@0, @0.2, @1.0]; // 20% 时间到达峰值，剩余 80% 淡出
+        opacityAnim.duration = 0.35;
+        opacityAnim.timingFunctions = @[
+            [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut],
+            [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut]
+        ];
+        opacityAnim.fillMode = kCAFillModeForwards;
+        opacityAnim.removedOnCompletion = NO;
+
+        [_rippleLayer addAnimation:opacityAnim forKey:@"rippleOpacityOut"];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self->_rippleLayer removeAllAnimations];
+            self->_rippleLayer.opacity = 0;
+        });
+    } else {
+        // 正常释放：直接从当前值淡出
+        CABasicAnimation *opacityAnim = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        opacityAnim.fromValue = @(currentOpacity);
+        opacityAnim.toValue = @0;
+        opacityAnim.duration = 0.3;
+        opacityAnim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        opacityAnim.fillMode = kCAFillModeForwards;
+        opacityAnim.removedOnCompletion = NO;
+
+        [_rippleLayer addAnimation:opacityAnim forKey:@"rippleOpacityOut"];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self->_rippleLayer removeAllAnimations];
+            self->_rippleLayer.opacity = 0;
+        });
+    }
 }
 
 - (void)cancelRipple {
