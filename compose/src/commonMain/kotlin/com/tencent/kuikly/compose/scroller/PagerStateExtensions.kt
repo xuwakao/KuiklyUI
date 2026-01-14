@@ -29,7 +29,6 @@ import com.tencent.kuikly.compose.foundation.pager.PagerState
 import com.tencent.kuikly.compose.ui.util.fastFirstOrNull
 import com.tencent.kuikly.core.views.SpringAnimation
 import com.tencent.kuikly.core.views.WillEndDragParams
-import kotlin.math.min
 
 /**
  * Handle drag end event
@@ -40,7 +39,7 @@ internal fun PagerState.kuiklyWillDragEnd(params: WillEndDragParams, orientation
     
     val velocity = if (orientation == Orientation.Horizontal) -params.velocityX else -params.velocityY
     val startPage = if (velocity < 0) firstVisiblePage + 1 else firstVisiblePage
-    val targetPage = startPage.coerceIn(0, pageCount)
+    val targetPage = startPage.coerceIn(0, pageCount - 1)  // 修复：最大索引是 pageCount - 1
     
     val correctedTargetPage = calculateTargetPage(startPage, targetPage, velocity)
     handleTargetPageScroll(correctedTargetPage, params, orientation)
@@ -58,7 +57,7 @@ private fun PagerState.calculateTargetPage(
             velocity,
             pageSize,
             pageSpacing
-        ).coerceIn(0, pageCount)
+        ).coerceIn(0, pageCount - 1)  // 修复：最大索引是 pageCount - 1
     } else {
         currentPage
     }
@@ -77,8 +76,8 @@ private fun PagerState.handleTargetPageScroll(
 
         val maxOffset = kuiklyInfo.currentContentSize - kuiklyInfo.viewportSize
         var targetOffset = nextPage?.let { offset + it.offset }
-            ?: (pageSizeWithSpacing * (targetPage - 1))
-        targetOffset = min(targetOffset, maxOffset)
+            ?: (pageSizeWithSpacing * targetPage)  // 修复：直接用 targetPage
+        targetOffset = targetOffset.coerceIn(0, maxOffset)  // 修复：限制最小值为 0
 
         if (targetOffset == offset) return
 
