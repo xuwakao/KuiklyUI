@@ -36,13 +36,12 @@ import com.tencent.kuikly.core.views.WillEndDragParams
 internal fun PagerState.kuiklyWillDragEnd(params: WillEndDragParams, orientation: Orientation) {
     val effectivePageSizePx = pageSize + pageSpacing
     if (effectivePageSizePx == 0) return
-    
+
     val velocity = if (orientation == Orientation.Horizontal) -params.velocityX else -params.velocityY
     val startPage = if (velocity < 0) firstVisiblePage + 1 else firstVisiblePage
-    val targetPage = startPage.coerceIn(0, pageCount - 1)  // 修复：最大索引是 pageCount - 1
-    
-    val correctedTargetPage = calculateTargetPage(startPage, targetPage, velocity)
-    handleTargetPageScroll(correctedTargetPage, params, orientation)
+    val targetPage = calculateTargetPage(startPage, startPage.coerceIn(0, pageCount - 1), velocity)
+
+    handleTargetPageScroll(targetPage, params, orientation)
 }
 
 private fun PagerState.calculateTargetPage(
@@ -57,7 +56,7 @@ private fun PagerState.calculateTargetPage(
             velocity,
             pageSize,
             pageSpacing
-        ).coerceIn(0, pageCount - 1)  // 修复：最大索引是 pageCount - 1
+        ).coerceIn(0, pageCount - 1)
     } else {
         currentPage
     }
@@ -70,16 +69,33 @@ private fun PagerState.handleTargetPageScroll(
 ) {
     val kuiklyInfo = this.kuiklyInfo
     (layoutInfo as? PagerMeasureResult)?.run {
-        val allResult = visiblePagesInfo + extraPagesAfter + extraPagesBefore
-        val nextPage = allResult.fastFirstOrNull { it.index == targetPage }
-        val offset = if (orientation == Orientation.Vertical) params.offsetY.toInt() else params.offsetX.toInt()
+        val nativeOffset = if (orientation == Orientation.Vertical) params.offsetY.toInt() else params.offsetX.toInt()
+
+        // 检测 native offset 和 compose offset 是否同步
+        // 如果 native offset 为负数，或者与预期偏移相差超过一个 page，说明不同步
+        val pagerCurrentPage = this@handleTargetPageScroll.currentPage
+        val expectedOffset = pagerCurrentPage * pageSizeWithSpacing
+        val isDesync = nativeOffset < 0 ||
+            (pageSizeWithSpacing > 0 && kotlin.math.abs(nativeOffset - expectedOffset) > pageSizeWithSpacing)
 
         val maxOffset = kuiklyInfo.currentContentSize - kuiklyInfo.viewportSize
-        var targetOffset = nextPage?.let { offset + it.offset }
-            ?: (pageSizeWithSpacing * targetPage)  // 修复：直接用 targetPage
-        targetOffset = targetOffset.coerceIn(0, maxOffset)  // 修复：限制最小值为 0
 
-        if (targetOffset == offset) return
+        val targetOffset: Int
+        if (isDesync) {
+            // 偏移不同步，使用绝对位置计算
+            targetOffset = (targetPage * pageSizeWithSpacing).coerceIn(0, maxOffset)
+        } else {
+            // 正常情况：使用相对计算
+            val allResult = visiblePagesInfo + extraPagesAfter + extraPagesBefore
+            val nextPage = allResult.fastFirstOrNull { it.index == targetPage }
+            val rawTargetOffset = nextPage?.let { nativeOffset + it.offset }
+                ?: (pageSizeWithSpacing * targetPage)
+            targetOffset = rawTargetOffset.coerceIn(0, maxOffset)
+        }
+
+        if (targetOffset == nativeOffset) {
+            return
+        }
 
         val density = kuiklyInfo.getDensity()
         val springAnimation = SpringAnimation(

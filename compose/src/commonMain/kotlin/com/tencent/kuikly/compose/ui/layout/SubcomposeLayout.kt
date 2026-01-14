@@ -67,6 +67,7 @@ import com.tencent.kuikly.compose.ui.util.fastForEach
 import com.tencent.kuikly.compose.views.KuiklyInfoKey
 import com.tencent.kuikly.compose.views.VirtualNodeView
 import com.tencent.kuikly.compose.layout.checkOffScreenNode
+import com.tencent.kuikly.compose.scroller.applyScrollViewOffsetDelta
 import com.tencent.kuikly.compose.scroller.calculateContentSize
 import com.tencent.kuikly.compose.scroller.isAtTop
 import com.tencent.kuikly.compose.scroller.kuiklyInfo
@@ -75,6 +76,8 @@ import com.tencent.kuikly.compose.scroller.kuiklyOnScrollEnd
 import com.tencent.kuikly.compose.scroller.kuiklyWillDragEnd
 import com.tencent.kuikly.compose.scroller.requestScrollToTop
 import com.tencent.kuikly.compose.scroller.tryExpandStartSize
+import com.tencent.kuikly.compose.foundation.pager.currentAbsoluteScrollOffset
+import kotlin.math.max
 import com.tencent.kuikly.compose.ui.node.ComposeUiNode.Companion.ShadowLayoutConstructor
 import com.tencent.kuikly.compose.ui.scaleWithDensity
 import com.tencent.kuikly.core.base.DeclarativeBaseView
@@ -242,6 +245,20 @@ fun SubcomposeLayout(
             kuiklyInfo.resetForNewScrollView()
             scrollableState.requestScrollToTop()
             newScrollViewDetected = false
+
+            // 对于 PagerState，如果 initialPage > 0，立即同步 native offset
+            // 避免 50ms 同步任务被取消导致偏移不同步
+            if (scrollableState is PagerState) {
+                val pagerState = scrollableState as PagerState
+                val composeOffset = pagerState.currentAbsoluteScrollOffset()
+                if (composeOffset > 0 && pagerState.pageSizeWithSpacing > 0) {
+                    // 扩容 contentSize
+                    kuiklyInfo.currentContentSize = max(composeOffset.toInt() + kuiklyInfo.viewportSize, kuiklyInfo.currentContentSize)
+                    kuiklyInfo.updateContentSizeToRender()
+                    // 同步 native offset
+                    scrollableState.applyScrollViewOffsetDelta(composeOffset.toInt())
+                }
+            }
         }
 
         // Set other properties after reset to ensure they are correctly set
