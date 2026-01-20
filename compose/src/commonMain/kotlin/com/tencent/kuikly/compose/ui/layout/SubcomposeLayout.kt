@@ -376,6 +376,7 @@ fun SubcomposeLayout(
             KNode(newView) {
                 attr {
                     flingEnable(!isPagerView)
+                    pagingEnabled(isPagerView)  // 为 HorizontalPager/VerticalPager 启用分页模式
                     setProp("isComposePager", if (isPagerView) 1 else 0)
                     setProp("dynamicSyncScrollDisable", 1)
                     if (orientation == Orientation.Vertical) {

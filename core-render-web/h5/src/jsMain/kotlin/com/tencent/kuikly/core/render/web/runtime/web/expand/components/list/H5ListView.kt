@@ -102,6 +102,8 @@ class H5ListView : IListElement {
     private var wheelStopTimer: Int? = null
     // Count of clicks on the current element, used to determine whether it's a double click
     private var clickCount = 0
+    // Whether scroll event listeners have been bound (prevent duplicate bindings)
+    private var scrollEventBound = false
 
     // real html element
     override var ele: HTMLElement = listEle.unsafeCast<HTMLElement>()
@@ -449,6 +451,12 @@ class H5ListView : IListElement {
      * Bind scroll-related events
      */
     override fun setScrollEvent() {
+        // Prevent duplicate event listener bindings
+        if (scrollEventBound) {
+            return
+        }
+        scrollEventBound = true
+
         // If it is a pointing device with limited precision, listen for touch events.
         if (kuiklyWindow.matchMedia(KRListConst.POINTER_COARSE_QUERY).matches) {
             // Start dragging

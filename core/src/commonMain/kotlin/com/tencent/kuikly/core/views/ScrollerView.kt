@@ -418,6 +418,14 @@ open class ScrollerAttr : ContainerAttr() {
     }
 
     /**
+     * 是否启用分页模式（H5平台使用，用于 HorizontalPager/VerticalPager 的分页滑动）
+     * @param enable 是否启用分页模式
+     */
+    fun pagingEnabled(enable: Boolean) {
+        PAGING_ENABLED with enable.toInt()
+    }
+
+    /**
      * 设置是否同步滚动, 也可以通过Event.scroll(sync=true){}开启同步滚动
      * @param syncEnable 同步滚动启用状态(当前kotlin线程ui操作与ui线程同步更新)。
      */

@@ -395,8 +395,10 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
             event.stopPropagation()
         }
         handlePagerScrollTo(scrollOffsetX, scrollOffsetY, true)
+        // H5 paging 模式已经完成了分页 snap 处理（通过 handlePagerScrollTo）
+        // 不需要再触发 willDragEndEventCallback 让 Compose 层重复处理
+        // 否则会导致 H5 和 Compose 的 snap 逻辑冲突（H5 用 deltaX 判断，Compose 用 velocity 判断）
         val offsetMap = listElement.updateOffsetMap(abs(currentTranslateX), abs(currentTranslateY), isDragging)
-        listElement.willDragEndEventCallback?.invoke(offsetMap)
         listElement.dragEndEventCallback?.invoke(offsetMap)
         listElement.scrollEventCallback?.invoke(offsetMap)
     }
@@ -452,9 +454,11 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         ele.style.overflowX = KRStyleConst.OVERFLOW_VISIBLE
         ele.style.overflowY = KRStyleConst.OVERFLOW_VISIBLE
         ele.classList.add(PAGE_LIST_CLASS)
+        // 注意：setContentOffset 是程序控制的滚动（来自 Compose 层的 snap 请求）
+        // 不应该触发 willDragEndEventCallback 和 dragEndEventCallback
+        // 否则会形成循环调用：
+        // H5 willDragEndCallback -> Compose kuiklyWillDragEnd -> setContentOffset -> willDragEndCallback -> ...
         val offsetMap = listElement.updateOffsetMap(offsetX, offsetY, isDragging)
-        listElement.willDragEndEventCallback?.invoke(offsetMap)
-        listElement.dragEndEventCallback?.invoke(offsetMap)
         listElement.scrollEventCallback?.invoke(offsetMap)
         if (animate) {
             handlePagerScrollTo(-offsetX, -offsetY, animate)
