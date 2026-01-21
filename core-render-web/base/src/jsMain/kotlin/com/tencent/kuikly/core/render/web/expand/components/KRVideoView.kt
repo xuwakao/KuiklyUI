@@ -292,7 +292,7 @@ class KRVideoView : IKuiklyRenderViewExport {
                     hls.loadSource(source)
                     hls.attachMedia(ele)
                     hls.on("hlsError") { _, data ->
-                        Log.error("HLS error: ${JSON.stringify(data)}")
+                        Log.error("HLS error: $data")
                         stateChangeCallback?.invoke(
                             mapOf(
                                 "state" to KRVideoPlayState.KRVideoPlayStateFailed.ordinal,
@@ -301,7 +301,7 @@ class KRVideoView : IKuiklyRenderViewExport {
                         )
                     }
                     Log.info("Using Hls.js for HLS playback: $source")
-                } else if (ele.canPlayType("application/vnd.apple.mpegurl") != "") {
+                } else if (ele.canPlayType("application/vnd.apple.mpegurl").toString().isNotEmpty()) {
                     // Safari native HLS support
                     ele.src = source
                     Log.info("Using native HLS playback: $source")
