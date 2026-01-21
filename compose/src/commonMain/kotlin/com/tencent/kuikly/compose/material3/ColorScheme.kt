@@ -990,7 +990,7 @@ internal fun ColorScheme.fromToken(value: ColorSchemeKeyTokens): Color {
  * Setting the value here is typically done as part of [MaterialTheme]. To retrieve the current
  * value of this CompositionLocal, use [MaterialTheme.colorScheme].
  */
-internal val LocalColorScheme = staticCompositionLocalOf { lightColorScheme() }
+val LocalColorScheme = staticCompositionLocalOf { lightColorScheme() }
 
 /**
  * Composition Local used to check if [ColorScheme.applyTonalElevation] will be applied down the

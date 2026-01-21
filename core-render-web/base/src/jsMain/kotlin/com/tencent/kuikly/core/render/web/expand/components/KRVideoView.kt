@@ -78,10 +78,25 @@ enum class KRVideoViewContentMode(private val value: String) {
     }
 }
 
+// External declaration for Hls.js
+@JsName("Hls")
+external class Hls {
+    companion object {
+        fun isSupported(): Boolean
+    }
+    fun loadSource(src: String)
+    fun attachMedia(video: HTMLVideoElement)
+    fun destroy()
+    fun on(event: String, callback: (dynamic, dynamic) -> Unit)
+}
+
 /**
  * Video object view
  */
 class KRVideoView : IKuiklyRenderViewExport {
+    // Hls.js instance for HLS playback
+    private var hlsInstance: Hls? = null
+
     // Video instance
     private val video = kuiklyDocument.createElement(ElementType.VIDEO).apply {
         // Listen to playback state related events
@@ -260,8 +275,54 @@ class KRVideoView : IKuiklyRenderViewExport {
     private fun setVideoPlaySource(src: String?) {
         // Get playback source, return if not exists
         val source = src ?: return
-        // Set playback source
-        ele.src = source
+
+        // Cleanup previous Hls instance if exists
+        hlsInstance?.destroy()
+        hlsInstance = null
+
+        // Check if this is an HLS stream (.m3u8)
+        val isHls = source.contains(".m3u8")
+
+        if (isHls) {
+            // Use Hls.js for HLS streams
+            try {
+                if (js("typeof Hls !== 'undefined' && Hls.isSupported()") as Boolean) {
+                    val hls = js("new Hls()").unsafeCast<Hls>()
+                    hlsInstance = hls
+                    hls.loadSource(source)
+                    hls.attachMedia(ele)
+                    hls.on("hlsError") { _, data ->
+                        Log.error("HLS error: ${JSON.stringify(data)}")
+                        stateChangeCallback?.invoke(
+                            mapOf(
+                                "state" to KRVideoPlayState.KRVideoPlayStateFailed.ordinal,
+                                "extInfo" to mapOf<String, String>()
+                            )
+                        )
+                    }
+                    Log.info("Using Hls.js for HLS playback: $source")
+                } else if (ele.canPlayType("application/vnd.apple.mpegurl") != "") {
+                    // Safari native HLS support
+                    ele.src = source
+                    Log.info("Using native HLS playback: $source")
+                } else {
+                    Log.error("HLS is not supported in this browser")
+                    stateChangeCallback?.invoke(
+                        mapOf(
+                            "state" to KRVideoPlayState.KRVideoPlayStateFailed.ordinal,
+                            "extInfo" to mapOf<String, String>()
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.error("Failed to initialize HLS playback: ${e.message}")
+                // Fallback to direct playback
+                ele.src = source
+            }
+        } else {
+            // Direct playback for non-HLS sources
+            ele.src = source
+        }
     }
 
     /**
