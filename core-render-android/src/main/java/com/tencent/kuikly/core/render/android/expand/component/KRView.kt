@@ -38,7 +38,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.drawCommonForegroundDecora
 import com.tencent.kuikly.core.render.android.css.ktx.nativeGestureViewHashCodeSet
 import com.tencent.kuikly.core.render.android.css.ktx.toDpF
 import com.tencent.kuikly.core.render.android.css.ktx.touchDownConsumeOnce
-import com.tencent.kuikly.core.render.android.css.ktx.viewDecorator
+import com.tencent.kuikly.core.render.android.css.ktx.optViewDecorator
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
 import org.json.JSONObject
@@ -490,7 +490,7 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
      */
     private fun getCornerRadius(): Float {
         return try {
-            val decorator = viewDecorator
+            val decorator = optViewDecorator()
             val radiusF = decorator?.borderRadiusF ?: KRViewDecoration.BORDER_RADIUS_UNSET_VALUE
             if (radiusF != KRViewDecoration.BORDER_RADIUS_UNSET_VALUE) {
                 radiusF
