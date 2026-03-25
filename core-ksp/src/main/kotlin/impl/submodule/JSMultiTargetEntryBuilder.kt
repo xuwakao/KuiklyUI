@@ -80,7 +80,7 @@ class JSMultiTargetEntryBuilder(
             .addModifiers(KModifier.PRIVATE)
             .addStatement("if (didInit) return")
             .addStatement("didInit = true")
-            .addStatement("BridgeManager.init()")
+            .addStatement("BridgeManager.init(true)")
             .addRegisterPageRouteStatement(pagesAnnotations)
             .addSubModuleStatement()
             .build()
