@@ -154,7 +154,9 @@ class CoreProcessor(
                 }
             }
             else -> {
-                AndroidTargetEntryBuilder(caughtException)
+                // Skip unknown targets (e.g. metadata) to avoid duplicate class generation
+                logger.warn("Skipping KSP code generation for $outputSourceSet")
+                null
             }
         }
     }
