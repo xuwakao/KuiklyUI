@@ -69,6 +69,7 @@ import com.tencent.kuikly.compose.views.VirtualNodeView
 import com.tencent.kuikly.compose.layout.checkOffScreenNode
 import com.tencent.kuikly.compose.scroller.applyScrollViewOffsetDelta
 import com.tencent.kuikly.compose.scroller.calculateContentSize
+import com.tencent.kuikly.compose.scroller.handleScrollToTopCallback
 import com.tencent.kuikly.compose.scroller.isAtTop
 import com.tencent.kuikly.compose.scroller.kuiklyInfo
 import com.tencent.kuikly.compose.scroller.kuiklyOnScroll
@@ -79,6 +80,7 @@ import com.tencent.kuikly.compose.scroller.tryExpandStartSize
 import com.tencent.kuikly.compose.foundation.pager.currentAbsoluteScrollOffset
 import kotlin.math.max
 import com.tencent.kuikly.compose.ui.node.ComposeUiNode.Companion.ShadowLayoutConstructor
+import com.tencent.kuikly.compose.ui.node.KNode.Companion.obtainRenderProps
 import com.tencent.kuikly.compose.ui.scaleWithDensity
 import com.tencent.kuikly.core.base.DeclarativeBaseView
 import com.tencent.kuikly.core.base.event.layoutFrameDidChange
@@ -86,6 +88,7 @@ import com.tencent.kuikly.core.views.ScrollerAttr
 import com.tencent.kuikly.core.views.ScrollerEvent
 import com.tencent.kuikly.core.views.ScrollerView
 import com.tencent.kuikly.compose.scroller.animateScrollToTop
+import com.tencent.kuikly.compose.scroller.calculateAndUpdateContentSize
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
@@ -228,7 +231,7 @@ fun SubcomposeLayout(
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(scrollViewSize) {
-        scrollableState.kuiklyInfo.updateContentSizeToRender()
+        scrollableState.calculateAndUpdateContentSize()
     }
 
     // 更新kuiklyInfo和scrollview
@@ -237,6 +240,10 @@ fun SubcomposeLayout(
             return@LaunchedEffect
         }
 
+        scrollableState.kuiklyInfo.scrollView = scrollViewRef
+        scrollableState.kuiklyInfo.orientation = orientation
+        val rp = scrollViewRef?.obtainRenderProps()
+        rp?.kuiklyScrollInfo = scrollableState.kuiklyInfo
         val kuiklyInfo = scrollableState.kuiklyInfo
 
         // Bind the new scrollView after computing reset flags so density is available for reset
@@ -313,23 +320,7 @@ fun SubcomposeLayout(
                 }
 
                 // 更新当前的contentSize大小
-                val oldContentSize = kuiklyInfo.currentContentSize
-                val newContentSize = scrollableState.calculateContentSize()
-
-                // 如果contentSize变小了，需要确保composeOffset不会超出边界
-                if (newContentSize < oldContentSize) {
-                    val newMaxScrollOffset = maxOf(0, newContentSize - kuiklyInfo.viewportSize)
-                    if (kuiklyInfo.composeOffset > newMaxScrollOffset) {
-                        // 如果composeOffset超出新的边界，增加contentSize来保持composeOffset不变
-                        val requiredContentSize = kuiklyInfo.composeOffset.toInt() + kuiklyInfo.viewportSize
-                        kuiklyInfo.currentContentSize = maxOf(newContentSize, requiredContentSize)
-                    } else {
-                        kuiklyInfo.currentContentSize = newContentSize
-                    }
-                } else {
-                    kuiklyInfo.currentContentSize = newContentSize
-                }
-                kuiklyInfo.updateContentSizeToRender()
+                scrollableState.calculateAndUpdateContentSize()
 
                 val toButtomDelta = if (kuiklyInfo.realContentSize == null) {
                     null
@@ -358,8 +349,13 @@ fun SubcomposeLayout(
 
             // Listen to native "scroll to top" event and scroll to index 0
             scrollToTop {
-                coroutineScope.launch {
-                    scrollableState.animateScrollToTop()
+                // If scrollToTop callback is set, invoke it instead of default behavior
+                // This aligns with iOS behavior where scrollToTop event can be intercepted
+                val handled = scrollableState.handleScrollToTopCallback()
+                if (!handled) {
+                    coroutineScope.launch {
+                        scrollableState.animateScrollToTop()
+                    }
                 }
             }
         }
@@ -407,7 +403,8 @@ fun SubcomposeLayout(
                 scrollViewRef = this.view as? ScrollerView<ScrollerAttr, ScrollerEvent>
                 scrollableState.kuiklyInfo.scrollView = scrollViewRef
                 scrollableState.kuiklyInfo.orientation = orientation
-                scrollViewRef?.extProps?.set(KuiklyInfoKey, scrollableState.kuiklyInfo as Any)
+                val rp = scrollViewRef?.obtainRenderProps()
+                rp?.kuiklyScrollInfo = scrollableState.kuiklyInfo
                 scrollViewSize =
                     Size(
                         width = scrollViewRef?.renderView?.currentFrame?.width ?: 0f,
