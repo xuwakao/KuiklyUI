@@ -106,6 +106,9 @@ export const zhSidebar = sidebar({
                         },
                         "view-external-prop.md",
                         "text-measure.md",
+                        "text-post-processor-guide.md",
+                        "font-size-and-display-scale.md",
+                        "get-component-size-and-position.md",
                         "protobuf.md",
                         "thread-and-coroutines.md",
                         "multi-page.md"]
@@ -119,7 +122,7 @@ export const zhSidebar = sidebar({
                                 {
                                     text: "开发方式与集成",
                                     collapsible: true,
-                                    children : ["dev-overview.md", "android-dev.md", "ios-dev.md", "harmony-dev.md", "h5-dev.md", "miniapp-dev.md"]
+                                    children : ["dev-overview.md", "android-dev.md", "ios-dev.md", "harmony-dev.md", "h5-dev.md", "miniapp-dev.md", "miniapp-wx-components.md"]
                                 },
                                 {
                                     text: "调试与工具",
@@ -128,7 +131,9 @@ export const zhSidebar = sidebar({
                                 },
                             ]
                         },
-                        "multi_module.md"
+                        "multi_module.md",
+                        "version_skills.md",
+                        "compile_skills.md"
                     ]
                 },
 
@@ -158,7 +163,7 @@ export const zhSidebar = sidebar({
                     text: "Web教程",
                     collapsible: false,
                     children: [
-                        "web-import-jssdk.md", "h5-image-path.md", "h5-spa-demo.md", "h5-custom-font.md"
+                        "web-import-jssdk.md", "h5-image-path.md", "h5-spa-demo.md", "h5-custom-font.md", "h5-css-class.md"
                     ]
                 }
             ],
@@ -170,7 +175,7 @@ export const zhSidebar = sidebar({
             text: "组件",
             prefix: "/API/components",
             children: [
-                "override.md", "basic-attr-event.md", "pager.md", "ios26-liquid-glass.md", "view.md", "text.md", "rich-text.md", "image.md", "input.md", "text-area.md",  "canvas.md",
+                "override.md", "basic-attr-event.md", "pager.md", "ios26-liquid-glass.md", "view.md", "text.md", "rich-text.md", "text-selection.md", "image.md", "input.md", "text-area.md",  "canvas.md",
                 "button.md", "scroller.md", "list.md", "waterfall-list.md", "slider-page.md", "page-list.md", "modal.md", "refresh.md",
                 "footer-refresh.md", "date-picker.md", "scroll-picker.md", "slider.md", "switch.md", "blur.md",
                 "activity-indicator.md", "hover.md", "mask.md", "checkbox.md", "pag.md","apng.md", "tabs.md","alert-dialog.md","action-sheet.md", "video.md",
@@ -206,6 +211,7 @@ export const zhSidebar = sidebar({
                 "layout.md",
                 "list-and-scroll.md",
                 "core-components.md",
+                "text-selection.md",
                 "modifier.md",
                 "animation-system.md",
                 "gesture-system.md",
@@ -261,6 +267,7 @@ export const zhSidebar = sidebar({
     ],
     "/AI/": false,
     "/Blog": [
+        "roadmap2026.md",
         "roadmap2025.md",
         {
             text: "架构原理",

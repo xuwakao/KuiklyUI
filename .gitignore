@@ -11,6 +11,8 @@
 local.properties
 *.so
 *.js
+!demo/webpack.config.d/*.js
+!h5App/webpack.config.d/*.js
 node_modules
 Pods
 Pods/*
@@ -46,3 +48,11 @@ proto/**/*.kt
 /compose/compose.podspec
 /core/core.podspec
 /core-ksp/bin/
+.build
+
+## Profiler / tool logs
+/logs/
+/iosApp/logs/
+/.claude-internal
+/.cursor/
+.mcp.json

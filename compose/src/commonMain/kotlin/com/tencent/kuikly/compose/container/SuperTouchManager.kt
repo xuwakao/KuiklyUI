@@ -28,6 +28,7 @@ import com.tencent.kuikly.compose.ui.node.KNode
 import com.tencent.kuikly.compose.ui.platform.InteractionView
 import com.tencent.kuikly.compose.ui.scene.ComposeScene
 import com.tencent.kuikly.compose.ui.scene.ComposeScenePointer
+import com.tencent.kuikly.compose.scroller.TouchActivityTracker
 import com.tencent.kuikly.core.base.Attr.StyleConst
 import com.tencent.kuikly.core.base.event.Touch
 import com.tencent.kuikly.core.views.DivEvent
@@ -40,6 +41,7 @@ class SuperTouchManager {
     private lateinit var scene: ComposeScene
 
     private var layoutNode: KNode<*>? = null
+    private val touchActivityOwner = Any()
 
     private var _useSyncMove: Boolean? = null
     private val DivEvent.useSyncMove
@@ -55,11 +57,13 @@ class SuperTouchManager {
             setTouchMove(useSyncMove)
             setTouchUp(false)
             setTouchCancel(false)
+            setMouseHover()
         }
     }
 
     fun DivEvent.setTouchDown(isSync: Boolean) {
         touchDown(isSync) {
+            TouchActivityTracker.onTouchDown(container.getPager().pageData, touchActivityOwner)
             val result = touchesDelegate.onTouchesEvent(it.touches, PointerEventType.Press, it.timestamp)
             if (result.dispatchedToAPointerInputModifier) {
                 getView()?.getViewAttr()?.forceUpdate = true
@@ -71,6 +75,7 @@ class SuperTouchManager {
     internal fun DivEvent.setTouchUp(isSync: Boolean) {
         touchUp(isSync) {
             touchesDelegate.onTouchesEvent(it.touches, PointerEventType.Release, it.timestamp, it.consumed)
+            TouchActivityTracker.onTouchEnd(container.getPager().pageData, touchActivityOwner)
             if (container.getViewAttr().getProp(StyleConst.PREVENT_TOUCH) == true) {
                 container.getViewAttr().preventTouch(false)
                 if (useSyncMove) {
@@ -97,6 +102,7 @@ class SuperTouchManager {
     internal fun DivEvent.setTouchCancel(isSync: Boolean) {
         touchCancel(isSync) {
             touchesDelegate.onTouchesEvent(it.touches, PointerEventType.Release, it.timestamp, true)
+            TouchActivityTracker.onTouchEnd(container.getPager().pageData, touchActivityOwner)
             if (container.getViewAttr().getProp(StyleConst.PREVENT_TOUCH) == true) {
                 container.getViewAttr().preventTouch(false)
                 if (useSyncMove) {
@@ -104,6 +110,57 @@ class SuperTouchManager {
                 }
             }
         }
+    }
+
+    /**
+     * 注册 macOS 鼠标悬停事件，将 mouseEnter/mouseExit 转换为
+     * PointerType.Mouse 类型的 PointerEvent 注入 Compose pointer 系统，
+     * 使 HitPathTracker 自动合成 PointerEventType.Enter/Exit，
+     * 从而驱动 HoverInteraction 和 Modifier.hoverable() 标准 API。
+     */
+    @OptIn(ExperimentalComposeUiApi::class)
+    internal fun DivEvent.setMouseHover() {
+        mouseEnter {
+            sendHoverPointerEvent(PointerEventType.Enter)
+        }
+        mouseExit {
+            sendHoverPointerEvent(PointerEventType.Exit)
+        }
+    }
+
+    @OptIn(ExperimentalComposeUiApi::class)
+    private fun sendHoverPointerEvent(eventType: PointerEventType) {
+        val pageDensity = container.getPager().pagerDensity()
+        val containerWidth = (container.getViewAttr().getProp("width") as? Number)?.toFloat() ?: 0f
+        val containerHeight = (container.getViewAttr().getProp("height") as? Number)?.toFloat() ?: 0f
+        // Enter 时坐标在容器内（中心），Exit 时坐标在容器外
+        val position = when (eventType) {
+            PointerEventType.Enter -> Offset(
+                containerWidth * pageDensity * 0.5f,
+                containerHeight * pageDensity * 0.5f
+            )
+            else -> Offset(-1f, -1f)
+        }
+        // 直接发送 Enter/Exit 类型，PointerType.Mouse 保证 issuesEnterExitEvent = true，
+        // HitPathTracker 会直接传递 Enter/Exit 给 PointerInputModifierNode
+        scene.sendPointerEvent(
+            eventType = eventType,
+            pointers = listOf(
+                ComposeScenePointer(
+                    id = HOVER_POINTER_ID,
+                    position = position,
+                    pressed = false,
+                    type = PointerType.Mouse,
+                )
+            ),
+            timeMillis = com.tencent.kuikly.core.datetime.DateTime.currentTimestamp(),
+            rootNode = layoutNode
+        )
+    }
+
+    companion object {
+        /** hover 专用的 pointerId，与 touch 事件的 pointerId 隔离 */
+        private val HOVER_POINTER_ID = PointerId(Long.MAX_VALUE - 1)
     }
 
     @OptIn(InternalComposeUiApi::class, ExperimentalComposeUiApi::class)

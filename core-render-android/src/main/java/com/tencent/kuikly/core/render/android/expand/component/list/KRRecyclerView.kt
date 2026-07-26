@@ -18,8 +18,10 @@ package com.tencent.kuikly.core.render.android.expand.component.list
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
@@ -148,6 +150,12 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     private var mNestedScrollAxesNonTouch = SCROLL_AXIS_NONE
 
     /**
+     * Reference count for nested scrolling children (TYPE_TOUCH).
+     * Only reset mNestedScrollAxesTouch when all children have stopped nested scrolling.
+     */
+    private var mNestedScrollTouchCount = 0
+
+    /**
      * 向前滑动
      */
     private var scrollForwardMode = KRNestedScrollMode.SELF_FIRST
@@ -164,6 +172,19 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     private var lastScrollParentX = 0
 
     private var lastScrollParentY = 0
+
+    /**
+     * 用于在嵌套滚动场景中追踪真实的触摸速度 (px/s)，
+     * 替代之前使用 lastScrollParentX/Y（单帧位移）作为速度的不准确做法。
+     */
+    private var nestedScrollVelocityTracker: VelocityTracker? = null
+
+    /**
+     * Timestamp (uptimeMillis) of the last ACTION_MOVE event.
+     * Used to detect finger-pause before lift: if the gap between the last MOVE and ACTION_UP
+     * exceeds [VELOCITY_DECAY_THRESHOLD_MS], the velocity is considered stale and should be zeroed.
+     */
+    private var nestedScrollLastMoveTime: Long = 0L
 
     private var pagerSnapHelper: KRPagerSnapHelper? = null
 
@@ -218,6 +239,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     private val minimumFlingVelocity by lazy {
         ViewConfiguration.get(context).scaledMinimumFlingVelocity
     }
+
+    /**
+     * Returns the velocity threshold (in px/s) that must be exceeded for a fling
+     * to trigger a page change. Set to 3× the system [minimumFlingVelocity] so
+     * that only deliberate swipes—not accidental micro-flings—advance the page.
+     */
+    private fun pageFlingVelocityThreshold(): Int = 3 * minimumFlingVelocity
 
     private val scrollConflictHandler by lazy {
         RVScrollConflictHandler(context)
@@ -302,6 +330,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         isFocusable = false
         overScrollMode = OVER_SCROLL_NEVER
         isFocusableInTouchMode = false
+        isNestedScrollingEnabled = true
     }
 
     fun setContentInsert(contentInset: KRRecyclerContentViewContentInset?, immediately: Boolean = false) {
@@ -449,20 +478,14 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
     private fun setBouncesEnable(propValue: Any): Boolean {
         bouncesEnable = (propValue as Int) == 1
-        updateOverscrollHandler()
-        return true
-    }
-
-    private fun updateOverscrollHandler() {
-        val isBouncesEnable =
-            bouncesEnable && !isNestedScrollingEnabled
-        if (isBouncesEnable) {
+        if (bouncesEnable) {
             if (childCount > 0) {
                 setupOverscrollHandler(contentView)
             }
         } else {
             overScrollHandler = null
         }
+        return true
     }
 
     private fun setFlingEnable(propValue: Any): Boolean {
@@ -486,6 +509,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 scrollAnimationManager.cancel()
                 stopScroll()
             }
+            METHOD_PREPARE_FOR_COMPOSE_REUSE -> prepareForComposeReuse()
             else -> super.call(method, params, callback)
         }
     }
@@ -564,9 +588,32 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         accumulatedPositionOffsetY = 0
         lastLayoutLeft = -1
         lastLayoutTop = -1
+        nestedScrollVelocityTracker?.recycle()
+        nestedScrollVelocityTracker = null
+        nestedScrollLastMoveTime = 0L
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Track touch velocity for nested scroll scenarios.
+        // The VelocityTracker is used in onStopNestedScroll to provide real velocity (px/s)
+        // to fireWillDragEndEvent, instead of using lastScrollParentX/Y (single-frame displacement).
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                nestedScrollVelocityTracker?.recycle()
+                nestedScrollVelocityTracker = VelocityTracker.obtain()
+                nestedScrollVelocityTracker?.addMovement(ev)
+                nestedScrollLastMoveTime = ev.eventTime
+            }
+            MotionEvent.ACTION_MOVE -> {
+                nestedScrollVelocityTracker?.addMovement(ev)
+                nestedScrollLastMoveTime = ev.eventTime
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                nestedScrollVelocityTracker?.addMovement(ev)
+                nestedScrollVelocityTracker?.computeCurrentVelocity(1000,
+                    ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat())
+            }
+        }
         return if (overScrollHandler?.forceOverScroll == true) {
             val r = super.dispatchTouchEvent(ev)
             touchDelegate?.dispatchHRRecyclerViewTouchEvent(ev)
@@ -644,8 +691,8 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         if (overScrollHandler?.overScrolling != true) { // over scroll 时, willDragEnd 由 over scroll handler 处理
             // abs value is more than 450px can cause the pager to slide
             // this fix the issue some times the velocity is negative because dragBigFrontAndSmallBack
-            if (abs(adjustedVelocityX) >  3 * minimumFlingVelocity
-                || abs(adjustedVelocityY) > 3 * minimumFlingVelocity) {
+            if (abs(adjustedVelocityX) > pageFlingVelocityThreshold()
+                || abs(adjustedVelocityY) > pageFlingVelocityThreshold()) {
                 fireWillDragEndEvent(adjustedVelocityX, adjustedVelocityY)
             } else {
                 fireWillDragEndEvent(0, 0)
@@ -656,8 +703,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             // 导致 RV 内部的状态一直都 DRAGGING，因此在 onInterceptEvent的时候，RV 内部一直拦截事件
             // 导致 RV 内部的横向子 List 无法滑动
             // 触发条件：先在横向子 List 滑动然后触发 cancel
-            scrollAnimationManager.cancel()
-            stopScroll()
+            // When Pager dragEnd is sync, there is no need to stop the animation,
+            // otherwise the scroll animation is unexpectedly interrupted.
+//            scrollAnimationManager.cancel()
+//            stopScroll()
             return true
         }
         return super.fling(adjustedVelocityX, adjustedVelocityY)
@@ -1027,10 +1076,6 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             JSONObject(propValue).apply {
                 scrollForwardMode = getNestScrollMode(optString("forward", ""))
                 scrollBackwardMode = getNestScrollMode(optString("backward", ""))
-                if (!isNestedScrollingEnabled) {
-                    isNestedScrollingEnabled = true
-                }
-                updateOverscrollHandler()
             }
         }
         return true
@@ -1270,6 +1315,35 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         overScrollHandler?.bounceWithContentInset(KRRecyclerContentViewContentInset(kuiklyRenderContext, ci))
     }
 
+    /**
+     * Clear transient native state for Compose DSL reuse (not the native reuse pool).
+     */
+    private fun prepareForComposeReuse() {
+        // Reset scroll event dedup cache so restored offset fires a scroll event
+        contentOffsetX = -Float.MAX_VALUE
+        contentOffsetY = -Float.MAX_VALUE
+        // Reset drag state
+        isDragging = false
+        needFireWillEndDragEvent = true
+        // Reset nested scroll axes
+        mNestedScrollAxesTouch = SCROLL_AXIS_NONE
+        mNestedScrollAxesNonTouch = SCROLL_AXIS_NONE
+        mNestedScrollTouchCount = 0
+        // Reset nested scroll transient state
+        skipFlingIfNestOverScroll = false
+        lastScrollParentX = 0
+        lastScrollParentY = 0
+        nestedScrollLastMoveTime = 0L
+        // Reset position offset compensation
+        accumulatedPositionOffsetX = 0
+        accumulatedPositionOffsetY = 0
+        lastLayoutLeft = -1
+        lastLayoutTop = -1
+        // Reset OverScrollHandler transient state
+        overScrollHandler?.prepareForComposeReuse()
+    }
+
+
     private fun dispatchOnScroll(offsetX: Float, offsetY: Float) {
         for (listener in krRecyclerViewListeners) {
             listener.onScroll(offsetX, offsetY)
@@ -1410,6 +1484,12 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         private const val BOUNCES_ENABLE = "bouncesEnable"
         private const val LIMIT_HEADER_BOUNCES = "limitHeaderBounces"
         private const val FLING_ENABLE = "flingEnable"
+
+        /**
+         * If the time gap between the last ACTION_MOVE and ACTION_UP exceeds this threshold (ms),
+         * the VelocityTracker velocity is considered stale (finger paused) and will be zeroed.
+         */
+        private const val VELOCITY_DECAY_THRESHOLD_MS = 150L
         private const val SCROLL_WITH_PARENT = "scrollWithParent"
 
         private const val METHOD_CONTENT_OFFSET = "contentOffset" // 设置内容的偏移量，会把List滚到对应的位置
@@ -1417,6 +1497,8 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             "contentInsetWhenEndDrag" // 结束拖拽时，设置的ContentInset
         private const val METHOD_CONTENT_INSET = "contentInset" // 设置内容边距
         private const val METHOD_ABORT_CONTENT_OFFSET_ANIMATE = "abortContentOffsetAnimate" // 停止滚动动画
+        private const val METHOD_PREPARE_FOR_COMPOSE_REUSE = "prepareForComposeReuse" // Compose DSL 复用前重置瞬态
+
         private const val NESTED_SCROLL = "nestedScroll"
 
         private const val OFFSET_X = "offsetX"
@@ -1483,6 +1565,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         if (myAxes != View.SCROLL_AXIS_NONE) {
             if (type == ViewCompat.TYPE_TOUCH) {
                 mNestedScrollAxesTouch = myAxes
+                mNestedScrollTouchCount++
             } else {
                 mNestedScrollAxesNonTouch = myAxes
             }
@@ -1519,7 +1602,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
     override fun onStopNestedScroll(target: View, type: Int) {
         if (type == ViewCompat.TYPE_TOUCH) {
-            mNestedScrollAxesTouch = View.SCROLL_AXIS_NONE
+            mNestedScrollTouchCount = (mNestedScrollTouchCount - 1).coerceAtLeast(0)
+            if (mNestedScrollTouchCount == 0) {
+                mNestedScrollAxesTouch = View.SCROLL_AXIS_NONE
+            }
         } else {
             mNestedScrollAxesNonTouch = View.SCROLL_AXIS_NONE
         }
@@ -1528,17 +1614,30 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         if (overScrollHandler?.overScrolling != true) {
             // over scroll 时, willDragEnd 由 over scroll handler 处理
             if (lastScrollParentX != 0 || lastScrollParentY != 0) {
+                // Use real touch velocity from VelocityTracker instead of single-frame displacement.
+                val tracker = nestedScrollVelocityTracker
+                // Negate velocity: VelocityTracker reports touch movement direction (positive = finger moves right/down),
+                // but scroll consumption (lastScrollParentX/Y) uses opposite convention (positive = content moves left/up).
+                val rawVelocityX = -(tracker?.xVelocity?.toInt() ?: 0)
+                val rawVelocityY = -(tracker?.yVelocity?.toInt() ?: 0)
+                // Discard velocity when the finger has paused before lifting:
+                // 1. If the time gap between last MOVE and UP exceeds the decay threshold,
+                //    the velocity is stale and should be zeroed.
+                // 2. Otherwise, discard velocity below the page-fling threshold,
+                //    consistent with the direct-drag fling() path.
+                val velocityStale = (SystemClock.uptimeMillis() - nestedScrollLastMoveTime) > VELOCITY_DECAY_THRESHOLD_MS
+                val flingThreshold = pageFlingVelocityThreshold()
+                val realVelocityX = if (!velocityStale && abs(rawVelocityX) > flingThreshold) rawVelocityX else 0
+                val realVelocityY = if (!velocityStale && abs(rawVelocityY) > flingThreshold) rawVelocityY else 0
                 if (pagerSnapHelper != null) {
-                    pagerSnapHelper?.snapFromFling(lastScrollParentX, lastScrollParentY)
+                    pagerSnapHelper?.snapFromFling(realVelocityX, realVelocityY)
                 } else {
-                    // 用上次滚动父亲的距离作为WillDragEnd的速度，以驱动Pager选择滑动的方向
-                    fireWillDragEndEvent(lastScrollParentX, lastScrollParentY)
+                    fireWillDragEndEvent(realVelocityX, realVelocityY)
                 }
                 lastScrollParentX = 0
                 lastScrollParentY = 0
             }
         }
-
         // 嵌套滚动结束时，无论是否处于 OverScroll 状态都需要重置累积偏移量
         // 原因：
         // 1. 滚动结束后，位置变化已经通过滚动补偿处理完毕
@@ -1910,4 +2009,18 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     fun isNestScrolling() = nestedScrollAxes != SCROLL_AXIS_NONE
+
+    override fun canScrollHorizontally(direction: Int): Boolean {
+        if (!scrollEnabled) {
+            return false
+        }
+        return super.canScrollHorizontally(direction)
+    }
+
+    override fun canScrollVertically(direction: Int): Boolean {
+        if (!scrollEnabled) {
+            return false
+        }
+        return super.canScrollVertically(direction)
+    }
 }

@@ -18,6 +18,7 @@ package com.tencent.kuikly.android.demo
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -67,6 +68,9 @@ class KuiklyRenderActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent.getBooleanExtra(KEY_FORCE_LANDSCAPE, false)) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+        }
         // 优化重绘范围的实验性开关，谨慎开启
         KuiklyRenderView.enableLazyClipChildren()
         // 1. 创建一个Kuikly页面打开的封装处理器
@@ -80,6 +84,11 @@ class KuiklyRenderActivity : AppCompatActivity() {
         hrContainerView = findViewById(R.id.hr_container)
         loadingView = findViewById(R.id.hr_loading)
         errorView = findViewById(R.id.hr_error)
+        // 横竖屏 Demo 转屏间隙需要宿主容器黑底兜底；其他页面保持默认，避免全局变黑。
+        if (pageName == "ComposeVideoOrientationDemo" || pageName == "ComposeOrientationOverlayDemo") {
+            findViewById<View>(android.R.id.content).setBackgroundColor(Color.BLACK)
+            hrContainerView.setBackgroundColor(Color.BLACK)
+        }
         // 4. 触发Kuikly View实例化
         // hrContainerView：承载Kuikly的容器View
         // contextCode: jvm模式下传递""
@@ -168,7 +177,7 @@ class KuiklyRenderActivity : AppCompatActivity() {
             KuiklyRenderAdapterManager.krVideoViewAdapter = VideoViewAdapter()
         }
         if (KuiklyRenderAdapterManager.krTextPostProcessorAdapter == null) {
-            KuiklyRenderAdapterManager.krTextPostProcessorAdapter = KRTextPostProcessorAdapter()
+            KuiklyRenderAdapterManager.krTextPostProcessorAdapter = KRTextPostProcessorAdapter(this)
         }
     }
 
@@ -254,6 +263,8 @@ class KuiklyRenderActivity : AppCompatActivity() {
     companion object {
         private const val KEY_PAGE_NAME = "pageName"
         private const val KEY_PAGE_DATA = "pageData"
+        /** Demo/调试：与 `pageName` 一并传入，强制横屏以便复现横屏键盘等问题 */
+        private const val KEY_FORCE_LANDSCAPE = "forceLandscape"
 
         fun start(context: Context, pageName: String, pageData: JSONObject) {
             val starter = Intent(context, KuiklyRenderActivity::class.java)

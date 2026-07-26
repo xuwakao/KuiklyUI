@@ -21,6 +21,9 @@
 #import "KuiklyRenderView.h"
 #import "KRDisplayLink.h"
 #import "KRView+Compose.h"
+#import "KRView+TextSelection.h"
+#import "NSObject+KR.h"
+#import "KRMemoryCacheModule.h"
 
 /// 层级置顶方法
 #define CSS_METHOD_BRING_TO_FRONT @"bringToFront"
@@ -28,6 +31,8 @@
 #define CSS_METHOD_ACCESSIBILITY_FOCUS @"accessibilityFocus"
 /// 无障碍朗读语音
 #define CSS_METHOD_ACCESSIBILITY_ANNOUNCE @"accessibilityAnnounce"
+/// view 截图
+#define CSS_METHOD_TOIMAGE @"toImage"
 
 
 #pragma mark - KRView Private Interface
@@ -76,7 +81,12 @@
         if (params && params.length > 0) {
             UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, params);
         }
+	} else if ([self kr_handleTextSelectionMethod:method params:params callback:callback]) {
+        // Text selection methods handled by category
+    } else if ([method isEqualToString:CSS_METHOD_TOIMAGE]) {
+        [self kr_toImageWithParams:params callback:callback];
     }
+
 }
 
 #pragma mark - CSS Property
@@ -104,67 +114,113 @@
     }
 }
 
+#pragma mark - Override - Mouse Hover (macOS)
+
+#if TARGET_OS_OSX
+- (void)setCss_mouseEnter:(KuiklyRenderCallback)css_mouseEnter {
+    _css_mouseEnter = css_mouseEnter;
+    [self updateTrackingAreas];
+}
+
+- (void)setCss_mouseExit:(KuiklyRenderCallback)css_mouseExit {
+    _css_mouseExit = css_mouseExit;
+    [self updateTrackingAreas];
+}
+#endif
+
 #pragma mark - Override - Base Touch
 
 #if !TARGET_OS_OSX // [macOS]
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesBegan:touches withEvent:event];
     // 如果走compose(superTouch)，由手势驱动，不由touch驱动事件
+    BOOL handled = NO;
     if (_css_touchDown && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchDown([self p_generateBaseParamsWithEvent:event eventName:@"touchDown"]);
+    }
+    if (!handled) {
+        [super touchesBegan:touches withEvent:event];
     }
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesEnded:touches withEvent:event];
+    BOOL handled = NO;
     if (_css_touchUp && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchUp([self p_generateBaseParamsWithEvent:event eventName:@"touchUp"]);
+    }
+    if (!handled) {
+        [super touchesEnded:touches withEvent:event];
     }
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesMoved:touches withEvent:event];
+    BOOL handled = NO;
     if (_css_touchMove && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchMove([self p_generateBaseParamsWithEvent:event eventName:@"touchMove"]);
+    }
+    if (!handled) {
+        [super touchesMoved:touches withEvent:event];
     }
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    [super touchesCancelled:touches withEvent:event];
+    BOOL handled = NO;
     if (_css_touchUp && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchUp([self p_generateBaseParamsWithEvent:event eventName:@"touchCancel"]);
+    }
+    if (!handled) {
+        [super touchesCancelled:touches withEvent:event];
     }
 }
 
 #else
 
 - (void)touchesBeganWithEvent:(NSEvent *)event {
-    [super touchesBeganWithEvent:event];
     // 如果走compose(superTouch)，由手势驱动，不由touch驱动事件
+    BOOL handled = NO;
     if (_css_touchDown && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchDown([self p_generateBaseParamsWithEvent:event eventName:@"touchDown"]);
+    }
+    if (!handled) {
+        [super touchesBeganWithEvent:event];
     }
 }
 
 - (void)touchesEndedWithEvent:(UIEvent *)event {
-    [super touchesEndedWithEvent:event];
+    BOOL handled = NO;
     if (_css_touchUp && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchUp([self p_generateBaseParamsWithEvent:event eventName:@"touchUp"]);
+    }
+    if (!handled) {
+        [super touchesEndedWithEvent:event];
     }
 }
 
 - (void)touchesMovedWithEvent:(UIEvent *)event {
-    [super touchesMovedWithEvent:event];
+    BOOL handled = NO;
     if (_css_touchMove && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchMove([self p_generateBaseParamsWithEvent:event eventName:@"touchMove"]);
+    }
+    if (!handled) {
+        [super touchesMovedWithEvent:event];
     }
 }
 
 - (void)touchesCancelledWithEvent:(UIEvent *)event {
-    [super touchesCancelledWithEvent:event];
+    BOOL handled = NO;
     if (_css_touchUp && ![self.css_superTouch boolValue]) {
+        handled = YES;
         _css_touchUp([self p_generateBaseParamsWithEvent:event eventName:@"touchCancel"]);
+    }
+    if (!handled) {
+        [super touchesCancelledWithEvent:event];
     }
 }
 
@@ -273,6 +329,19 @@
     CGPoint locationInSelf = [self convertPoint:locationInWindow fromView:nil];
     CGPoint locationInRootView = self.hr_rootView ? [self.hr_rootView convertPoint:locationInWindow fromView:nil] : locationInWindow;
 #endif // macOS]
+#if TARGET_OS_OSX // [macOS]
+    // macOS 上鼠标永远是单点操作，使用固定 pointerId 确保
+    // mouseDown/mouseDragged/mouseUp 序列中 pointerId 一致。
+    static const NSUInteger kMacMousePointerId = 0;
+    return @{
+        @"x" : @(locationInSelf.x),
+        @"y" : @(locationInSelf.y),
+        @"pageX" : @(locationInRootView.x),
+        @"pageY" : @(locationInRootView.y),
+        @"hash"  : @(kMacMousePointerId),
+        @"pointerId" : @(kMacMousePointerId),
+    };
+#else
     return @{
         @"x" : @(locationInSelf.x),
         @"y" : @(locationInSelf.y),
@@ -281,6 +350,7 @@
         @"hash"  : @(touch.hash),
         @"pointerId" : [NSNumber numberWithUnsignedLong:touch.hash],
     };
+#endif // macOS]
 }
 
 
@@ -291,6 +361,195 @@
         }
     }
     return NO;
+}
+
+#pragma mark - ToImage
+
+- (void)kr_toImageWithParams:(NSString *)params callback:(KuiklyRenderCallback)callback {
+    if (!callback) {
+        return;
+    }
+    // 主线程保护
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self kr_toImageWithParams:params callback:callback];
+        });
+        return;
+    }
+    
+    NSDictionary *paramsDict = [params hr_stringToDictionary];
+    NSString *type = paramsDict[@"type"];
+    if (!type || type.length == 0) {
+        callback(@{
+            @"code": @(-1),
+            @"message": @"type is required"
+        });
+        return;
+    }
+    NSInteger sampleSize = MAX(1, [paramsDict[@"sampleSize"] integerValue]);
+    
+    CGRect bounds = self.bounds;
+    if (CGRectIsEmpty(bounds) || bounds.size.width <= 0 || bounds.size.height <= 0) {
+        callback(@{
+            @"code": @(-1),
+            @"message": @"snapshot failed: view bounds is empty"
+        });
+        return;
+    }
+    
+    // 截图（主线程同步完成）
+#if TARGET_OS_OSX // [macOS]
+    CGFloat screenScale = [NSScreen mainScreen].backingScaleFactor ?: 1.0;
+#else
+    CGFloat screenScale = [UIScreen mainScreen].scale;
+#endif // [macOS]
+    CGFloat scale = MAX(screenScale / (CGFloat)sampleSize, 0.01);
+    UIImage *image = [self kr_safeSnapshotWithLayer:self.layer bounds:bounds scale:scale];
+    
+    if (!image || image.size.width == 0) {
+        callback(@{
+            @"code": @(-1),
+            @"message": @"snapshot failed: image is nil or empty"
+        });
+        return;
+    }
+    
+    if ([type isEqualToString:@"dataUri"]) {
+        // dataUri 模式：base64 编码，采用异步写入
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSData *pngData = UIImagePNGRepresentation(image);
+            if (!pngData) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    callback(@{
+                        @"code": @(-1),
+                        @"message": @"snapshot failed: PNG encoding failed"
+                    });
+                });
+                return;
+            }
+            NSString *base64 = [pngData base64EncodedStringWithOptions:0];
+            NSString *dataUri = [NSString stringWithFormat:@"data:image/png;base64,%@", base64 ?: @""];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                callback(@{
+                    @"code": @(0),
+                    @"data": dataUri
+                });
+            });
+        });
+    } else if ([type isEqualToString:@"file"]) {
+        // file 模式：磁盘存储，采用异步写入
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *filePath = [KRView kr_saveSnapshotToTempFile:image];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (filePath) {
+                    callback(@{
+                        @"code": @(0),
+                        @"data": [NSString stringWithFormat:@"file://%@", filePath]
+                    });
+                } else {
+                    callback(@{
+                        @"code": @(-1),
+                        @"message": @"failed to save snapshot to file"
+                    });
+                }
+            });
+        });
+    } else if ([type isEqualToString:@"cacheKey"]) {
+        // cacheKey 模式：内存缓存，主线程同步执行，存入 KRMemoryCacheModule
+        KuiklyRenderView *rootView = self.hr_rootView;
+        if (!rootView) {
+            callback(@{
+                @"code": @(-1),
+                @"message": @"snapshot failed: rootView is nil"
+            });
+            return;
+        }
+        KRMemoryCacheModule *module = (KRMemoryCacheModule *)[rootView moduleWithName:NSStringFromClass([KRMemoryCacheModule class])];
+        if (!module) {
+            callback(@{
+                @"code": @(-1),
+                @"message": @"snapshot failed: KRMemoryCacheModule not found"
+            });
+            return;
+        }
+        
+        NSString *cacheKey = [NSString stringWithFormat:@"data:image_Md5_snapshot_%llu_%u",
+            (unsigned long long)(CFAbsoluteTimeGetCurrent() * 1000),
+            arc4random_uniform(0xFFFFFF)];
+        
+        [module setMemoryObjectWithKey:cacheKey value:image];
+        
+        callback(@{
+            @"code": @(0),
+            @"data": cacheKey
+        });
+        
+    } else {
+        callback(@{
+            @"code": @(-1),
+            @"message": [NSString stringWithFormat:@"unsupported type: %@", type]
+        });
+    }
+}
+
+- (UIImage *)kr_safeSnapshotWithLayer:(CALayer *)layer bounds:(CGRect)bounds scale:(CGFloat)scale {
+    @autoreleasepool {
+#if TARGET_OS_OSX // [macOS]
+        // macOS: 使用 CGBitmapContext 同步渲染，避免 NSImage drawingHandler 延迟绘制导致子线程 crash
+        size_t width = (size_t)ceil(bounds.size.width * scale);
+        size_t height = (size_t)ceil(bounds.size.height * scale);
+        if (width == 0 || height == 0) {
+            return nil;
+        }
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4, colorSpace,
+                                                  kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
+        CGColorSpaceRelease(colorSpace);
+        if (!ctx) {
+            return nil;
+        }
+        // CGBitmapContext 坐标系原点在左下角，CALayer 绘制基于左上角，需翻转 y 轴
+        CGContextTranslateCTM(ctx, 0, (CGFloat)height);
+        CGContextScaleCTM(ctx, scale, -scale);
+        [layer renderInContext:ctx];
+        CGImageRef cgImage = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        if (!cgImage) {
+            return nil;
+        }
+        NSImage *image = [[NSImage alloc] initWithCGImage:cgImage size:bounds.size];
+        CGImageRelease(cgImage);
+        return image;
+#else
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+        format.scale = scale;
+        format.opaque = layer.isOpaque;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:bounds.size format:format];
+        return [renderer imageWithActions:^(UIGraphicsImageRendererContext *rendererContext) {
+            [layer renderInContext:rendererContext.CGContext];
+        }];
+#endif // [macOS]
+    }
+}
+
++ (NSString *)kr_saveSnapshotToTempFile:(UIImage *)image {
+    if (!image) {
+        return nil;
+    }
+    @try {
+        NSString *fileName = [NSString stringWithFormat:@"kr_snapshot_%llu_%u.png",
+            (unsigned long long)(CFAbsoluteTimeGetCurrent() * 1000),
+            arc4random_uniform(0xFFFFFF)];
+        NSString *filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+        NSData *pngData = UIImagePNGRepresentation(image);
+        if (!pngData || pngData.length == 0) {
+            return nil;
+        }
+        BOOL success = [pngData writeToFile:filePath atomically:YES];
+        return success ? filePath : nil;
+    } @catch (NSException *exception) {
+        return nil;
+    }
 }
 
 #pragma mark - Dealloc

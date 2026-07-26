@@ -23,12 +23,25 @@ import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
 
 class InputView : DeclarativeBaseView<InputAttr, InputEvent>() {
 
+    // 标记是否正在处理原生事件，避免反向同步导致选择状态被重置
+    internal var isProcessingNativeEvent: Boolean = false
+    // 记录上一次原生层真实生效的编辑态，用于判断是否需要重新同步
+    internal var lastSyncedTextInputState: TextInputState? = null
+
     override fun createAttr(): InputAttr {
         return InputAttr()
     }
 
     override fun createEvent(): InputEvent {
-        return InputEvent()
+        val event = InputEvent()
+        // 设置原生事件触发前的回调，用于标记正在处理原生事件
+        event.beforeNativeEventCallback = {
+            this.isProcessingNativeEvent = true
+        }
+        event.nativeTextInputStateCallback = {
+            this.lastSyncedTextInputState = it
+        }
+        return event
     }
 
     override fun viewName(): String {
@@ -39,6 +52,24 @@ class InputView : DeclarativeBaseView<InputAttr, InputEvent>() {
         super.createRenderView()
         if (attr.autofocus) {
             focus()
+        }
+    }
+
+    override fun didSetProp(propKey: String, propValue: Any) {
+        // 处理 TEXT_INPUT_STATE prop，添加防循环同步逻辑
+        if (propKey == InputAttr.TEXT_INPUT_STATE) {
+            val state = TextInputState.decode(JSONObject(propValue.toString()))
+            val hasSameEditingState = lastSyncedTextInputState?.hasSameEditingState(state) ?: false
+            // 只有完整编辑态真的不同，或者不是来自原生事件时，才同步到原生层
+            val shouldSyncToNative = !isProcessingNativeEvent || !hasSameEditingState
+            if (shouldSyncToNative) {
+                super.didSetProp(propKey, propValue)
+            }
+            lastSyncedTextInputState = state
+            // 重置标志，等待下一次原生事件
+            isProcessingNativeEvent = false
+        } else {
+            super.didSetProp(propKey, propValue)
         }
     }
 
@@ -89,6 +120,26 @@ class InputView : DeclarativeBaseView<InputAttr, InputEvent>() {
         }
     }
 
+    /**
+     * Atomically set raw text, selection, and composition state.
+     */
+    fun setTextInputState(state: TextInputState) {
+        performTaskWhenRenderViewDidLoad {
+            renderView?.callMethod("setTextInputState", state.encode())
+        }
+    }
+
+    /**
+     * Get raw text, selection, and composition state from native input view.
+     */
+    fun getTextInputState(callback: (TextInputState) -> Unit) {
+        performTaskWhenRenderViewDidLoad {
+            renderView?.callMethod("getTextInputState", "") {
+                callback(TextInputState.decode(it))
+            }
+        }
+    }
+
 }
 
 class InputAttr : Attr() {
@@ -101,6 +152,29 @@ class InputAttr : Attr() {
      */
     fun text(text: String): InputAttr {
         TextConst.VALUE with text
+        return this
+    }
+
+    /**
+     * Atomically set raw text, selection, and composition state.
+     */
+    fun textInputState(state: TextInputState): InputAttr {
+        TEXT_INPUT_STATE with state.encode()
+        return this
+    }
+
+    fun textInputState(stateProvider: () -> TextInputState): InputAttr {
+        TEXT_INPUT_STATE with { stateProvider().encode() }
+        return this
+    }
+
+    /**
+     * Set text post-processor name.
+     * Works with KRTextPostProcessorAdapter to enable features like emoji shortcode replacement.
+     * @param processor processor name, e.g. "input"
+     */
+    fun textPostProcessor(processor: String): InputAttr {
+        "textPostProcessor" with processor
         return this
     }
 
@@ -155,6 +229,11 @@ class InputAttr : Attr() {
 
     fun placeholderColor(color: Color) {
         TextConst.PLACEHOLDER_COLOR with color.toString()
+    }
+
+    fun selectionColor(color: Color): InputAttr {
+        TextConst.SELECTION_COLOR with color.toString()
+        return this
     }
 
     fun placeholder(placeholder: String) {
@@ -225,13 +304,17 @@ class InputAttr : Attr() {
     }
 
     @Deprecated(
-        "Use maxTextLength(length: Int, type: LengthLimitType) instead",
-        ReplaceWith("maxTextLength(maxLength, LengthLimitType)")
+        "Use maxTextLength(length: Int, type: LengthLimitType) instead, and choose the type explicitly when migrating."
     )
     fun maxTextLength(maxLength: Int) {
         "maxTextLength" with maxLength
     }
 
+    /**
+     * 设置最大文本长度限制
+     * @param length 最大长度值
+     * @param type 内置长度限制类型
+     */
     fun maxTextLength(length: Int, type: LengthLimitType) {
         "lengthLimitType" with type.value
         "maxTextLength" with length
@@ -287,9 +370,22 @@ class InputAttr : Attr() {
         return this
     }
 
+    /**
+     * 设置是否在点击 IME 动作按钮（如 Send/Go/Search）时自动收起键盘
+     *
+     * @param autoHide 是否自动收起键盘, 默认状态由三端各自的autoHideKeyboardOnImeAction决定
+     *                 - 若设置为true: 点击 Send 等按钮后自动收起键盘
+     *                 - 若设置为false: 点击 Send 等按钮后保持键盘打开，由业务自己控制
+     */
+    fun autoHideKeyboardOnImeAction(enable: Boolean): InputAttr {
+        TextConst.AUTO_HIDE_KEYBOARD_ON_IME_ACTION with (if (enable) 1 else 0)
+        return this
+    }
+
     companion object {
         const val RETURN_KEY_TYPE = "returnKeyType"
         const val KEYBOARD_TYPE = "keyboardType"
+        const val TEXT_INPUT_STATE = "textInputState"
         const val IME_NO_FULLSCREEN = "imeNoFullscreen"
         const val ENABLES_RETURN_KEY_AUTOMATICALLY =  "enablesReturnKeyAutomatically"
     }
@@ -308,6 +404,11 @@ data class KeyboardParams(
 )
 
 class InputEvent : Event() {
+    // 原生事件触发前的回调，用于设置 View 的标志位
+    internal var beforeNativeEventCallback: (() -> Unit)? = null
+    // 原生层真实编辑态回调，用于避免业务回填同一状态时反向覆盖 selection/composition
+    internal var nativeTextInputStateCallback: ((TextInputState) -> Unit)? = null
+
     /**
      * 当文本发生变化时调用的方法
      * @param isSyncEdit 是否同步编辑，该值为true则可以实现同步修改输入文本不会异步更新带来的跳变
@@ -320,6 +421,32 @@ class InputEvent : Event() {
             val length = if (it.has("length")) it.optInt("length") else null
             handler(InputParams(text, length = length))
         }, isSync = isSyncEdit)
+    }
+
+    /**
+     * Called when raw text, selection, or composition changes.
+     */
+    fun textInputStateChange(isSyncEdit: Boolean = true, handler: TextInputStateHandlerFn) {
+        register(TEXT_INPUT_STATE_CHANGE, {
+            // 标记正在处理原生事件，避免 didSetProp 反向同步导致选择状态被重置
+            beforeNativeEventCallback?.invoke()
+            val state = TextInputState.decode(it as? JSONObject)
+            nativeTextInputStateCallback?.invoke(state)
+            handler(state)
+        }, isSync = isSyncEdit)
+    }
+
+    /**
+     * Called when selection changes without requiring text changes.
+     */
+    fun selectionChange(handler: TextInputStateHandlerFn) {
+        register(SELECTION_CHANGE, {
+            // 标记正在处理原生事件，避免 didSetProp 反向同步导致选择状态被重置
+            beforeNativeEventCallback?.invoke()
+            val state = TextInputState.decode(it as? JSONObject)
+            nativeTextInputStateCallback?.invoke(state)
+            handler(state)
+        }, isSync = true)
     }
 
     /**
@@ -363,10 +490,18 @@ class InputEvent : Event() {
 
     /**
      * Called when keyboard height changes.
-     * @param isSync Sync callback to ensure UI animation syncs with keyboard, default true
      * @param handler Callback handler with keyboard params
      */
-    fun keyboardHeightChange(isSync: Boolean = true, handler: (KeyboardParams) -> Unit) {
+    fun keyboardHeightChange(handler: (KeyboardParams) -> Unit) {
+        keyboardHeightChange(isSync = false, handler = handler)
+    }
+
+    /**
+     * Called when keyboard height changes.
+     * @param isSync Sync callback to ensure UI animation syncs with keyboard, default false
+     * @param handler Callback handler with keyboard params
+     */
+    fun keyboardHeightChange(isSync: Boolean = false, handler: (KeyboardParams) -> Unit) {
         register(KEYBOARD_HEIGHT_CHANGE, {
             it as JSONObject
             val height = it.optDouble("height").toFloat()
@@ -398,6 +533,8 @@ class InputEvent : Event() {
 
     companion object {
         const val TEXT_DID_CHANGE = "textDidChange"
+        const val TEXT_INPUT_STATE_CHANGE = "textInputStateChange"
+        const val SELECTION_CHANGE = "selectionChange"
         const val INPUT_FOCUS = "inputFocus"
         const val INPUT_BLUR = "inputBlur"
         const val KEYBOARD_HEIGHT_CHANGE = "keyboardHeightChange"

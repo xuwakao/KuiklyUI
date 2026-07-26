@@ -70,21 +70,7 @@ object PlatformUtils {
     fun isOhOs(): Boolean {
         return getCurrentPageData()?.isOhOs ?: false
     }
-
-    /**
-     * 判断当前是否为Web平台
-     */
-    fun isWeb(): Boolean {
-        return getCurrentPageData()?.isWeb ?: false
-    }
-
-    /**
-     * 判断当前是否为小程序平台
-     */
-    fun isMiniApp(): Boolean {
-        return getCurrentPageData()?.isMiniApp ?: false
-    }
-
+    
     /**
      * 获取当前平台名称
      */

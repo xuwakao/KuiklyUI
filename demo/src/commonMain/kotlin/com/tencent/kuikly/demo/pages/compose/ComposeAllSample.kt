@@ -49,6 +49,7 @@ import com.tencent.kuikly.compose.ui.text.font.FontWeight
 import com.tencent.kuikly.compose.ui.unit.dp
 import com.tencent.kuikly.compose.ui.unit.sp
 import com.tencent.kuikly.core.annotations.Page
+import com.tencent.kuikly.compose.ui.semantics.testTag
 import com.tencent.kuikly.core.module.RouterModule
 import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
 import com.tencent.kuikly.core.utils.urlParams
@@ -63,6 +64,7 @@ internal data class DemoItem(
 
 @Page("ComposeAllSample")
 internal class ComposeAllSample : ComposeContainer() {
+    override fun debugUIInspector(): Boolean = true
     // 预定义一组美观的Material Design颜色
     private val demoColors =
         listOf(
@@ -108,8 +110,11 @@ internal class ComposeAllSample : ComposeContainer() {
             DemoItem("焦点处理", "Focus焦点处理示例", "focusDemo"),
             DemoItem("TextField", "TextField 组件示例", "TextFieldDemo"),
             DemoItem("PullToRefresh", "PullToRefresh 组件示例", "PullToRefreshDemo"),
+            DemoItem("PTR Padding Bug", "Issue #1325 HeaderBar+PTR padding", "BugReproPullRefreshPaddingPage"),
             // 其他
             DemoItem("封装KuiklyView", "封装Kuikly的VideoView为一个Composeable组件示例", "ComposeVideoDemo"),
+            DemoItem("转屏调试", "全屏蒙层+蓝色方块，横竖屏切换", "ComposeOrientationOverlayDemo"),
+            DemoItem("视频横竖屏", "MovableContent视频横竖屏切换示例", "ComposeVideoOrientationDemo"),
             DemoItem("iOS LiquidGlass", "iOS LiquidGlass 组件示例", "LiquidGlassComposeDemo"),
 
             // 动画
@@ -152,9 +157,7 @@ internal class ComposeAllSample : ComposeContainer() {
             DemoItem("AnchoredDraggableDemo", "AnchoredDraggable使用案例", "AnchoredDraggableDemo"),
             DemoItem("ScaffoldDemo", "Scaffold使用案例", "ScaffoldDemo"),
             DemoItem("NavigationBarDemo", "Material3 NavigationBar底部导航栏", "NavigationBarDemo"),
-            DemoItem("NavHostDemo", "跨平台NavHost导航组件", "NavHostDemo"),
-            DemoItem("NavHostTestDemo", "NavHost测试页面-验证与官方原生表现对齐", "NavHostTestDemo"),
-            DemoItem("NavHostNewAPIDemo", "NavHost新增API演示-自定义Navigator等", "NavHostNewAPIDemo"),
+            DemoItem("NavHostDemo", "跨平台NavHost导航组件(含Test/NewAPI子Demo)", "NavHostDemo"),
             DemoItem("AI对话Demo", "支持Markdown渲染的AI对话示例", "ChatDemo"),
             DemoItem("DensityScaleDemo", "基于Density实现跨端缩放", "DensityScaleDemo"),
             DemoItem("BackHandlerDemo", "监听并拦截返回键", "BackHandlerDemo"),
@@ -164,6 +167,10 @@ internal class ComposeAllSample : ComposeContainer() {
             DemoItem("InteractionSourceDemo", "交互源Demo", "InteractionSourceDemo"),
             DemoItem("ViewModel示例", "Lifecycle和ViewModel", "ViewModelDemo"),
             DemoItem("GradientAnimationDemo", "Offset or color animate ", "GradientAnimationDemo"),
+            DemoItem("重组性能分析", "RecompositionProfiler追踪重组热点", "RecompositionProfilerDemo"),
+            DemoItem("TextFieldEmoji", "TextField 自定义表情示例（暂不支持鸿蒙）", "TextFieldEmojiDemo"),
+            DemoItem("MoveableDrawer", "侧边栏组件示例（全屏/非全屏）", "MoveableDrawerDemo"),
+            DemoItem("iOS键盘InputTextField", "业务侧 InputTextField iOS 键盘复现", "IosKeyboardInputTextFieldDemo"),
         )
 
     @Composable
@@ -184,7 +191,7 @@ internal class ComposeAllSample : ComposeContainer() {
         ) {
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().testTag("demo_list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp), // 减小间距
                 contentPadding = PaddingValues(all = 8.dp),
             ) {
@@ -206,6 +213,7 @@ internal class ComposeAllSample : ComposeContainer() {
             modifier =
                 Modifier
                     .fillMaxWidth()
+                    .testTag("demo_card_${demo.pageName}")
                     .clickable(onClick = onClick),
             shape = RoundedCornerShape(8.dp),
             colors =

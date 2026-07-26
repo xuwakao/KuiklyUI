@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalComposeUiApi::class)
+@file:OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 
 package com.tencent.kuikly.compose
 
@@ -22,12 +22,20 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.InternalComposeApi
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import com.tencent.kuikly.compose.foundation.ExperimentalFoundationApi
+import com.tencent.kuikly.compose.foundation.lazy.layout.LocalKuiklyPrefetchScheduler
+import com.tencent.kuikly.compose.foundation.lazy.layout.PrefetchScheduler
 import com.tencent.kuikly.compose.container.LocalSlotProvider
 import com.tencent.kuikly.compose.container.SlotProvider
 import com.tencent.kuikly.compose.coroutines.internal.ComposeDispatcher
 import com.tencent.kuikly.compose.foundation.event.OnBackPressedDispatcher
 import com.tencent.kuikly.compose.foundation.event.OnBackPressedDispatcherOwner
 import com.tencent.kuikly.compose.platform.Configuration
+import com.tencent.kuikly.compose.profiler.RecompositionProfiler
+import com.tencent.kuikly.compose.profiler.RecompositionTracker
+import com.tencent.kuikly.compose.profiler.output.ProfilerOverlaySlot
+import com.tencent.kuikly.core.module.FileModule
+import com.tencent.kuikly.core.module.Module
 import com.tencent.kuikly.compose.ui.ExperimentalComposeUiApi
 import com.tencent.kuikly.compose.ui.InternalComposeUiApi
 import com.tencent.kuikly.compose.ui.platform.WindowInfoImpl
@@ -106,6 +114,19 @@ open class ComposeContainer :
 
     private var configuration: Configuration? = null
 
+    /**
+     * Profiler 生命周期监听器，负责在 Profiler start 时把 FileModule 实例传入。
+     * 页面销毁时注销，避免内存泄漏。
+     */
+    private val fileModuleListener = object : RecompositionProfiler.ProfilerLifecycleListener {
+        override fun onProfilerStarted(tracker: RecompositionTracker) {
+            getModule<FileModule>(FileModule.MODULE_NAME)?.let {
+                RecompositionProfiler.setFileModule(it)
+            }
+        }
+        override fun onProfilerStopped() { /* nothing */ }
+    }
+
     override fun viewDidLoad() {
         super.viewDidLoad()
         val ctx = this
@@ -117,6 +138,8 @@ open class ComposeContainer :
                 layoutFrameDidChange { }
             }
         }
+        // 注册 Profiler 生命周期回调，确保 start() 在页面创建后调用时也能拿到 FileModule
+        RecompositionProfiler.addLifecycleListener(fileModuleListener)
     }
 
     override fun onCreatePager(
@@ -141,6 +164,13 @@ open class ComposeContainer :
             this.content?.invoke()
         }
         startFrameDispatcher()
+
+        // 如果 Profiler 已启用（start 先于页面创建），此时补传 FileModule
+        if (RecompositionProfiler.isEnabled) {
+            getModule<FileModule>(FileModule.MODULE_NAME)?.let {
+                RecompositionProfiler.setFileModule(it)
+            }
+        }
     }
 
     private fun startFrameDispatcher() {
@@ -185,6 +215,7 @@ open class ComposeContainer :
         mediator?.updateAppState(false)
         dispose()
         updateLifecycleState(Lifecycle.State.DESTROYED)
+        RecompositionProfiler.removeLifecycleListener(fileModuleListener)
     }
 
     private fun updateLifecycleState(state: Lifecycle.State) {
@@ -195,6 +226,7 @@ open class ComposeContainer :
     private fun createComposeScene(
         invalidate: () -> Unit,
         coroutineContext: CoroutineContext,
+        prefetchScheduler: PrefetchScheduler,
     ): ComposeScene =
         KuiklyComposeScene(
             rootKView,
@@ -203,6 +235,7 @@ open class ComposeContainer :
             boundsInWindow = IntRect(0, 0, windowInfo.containerSize.width, windowInfo.containerSize.height),
             invalidate = invalidate,
             coroutineContext = coroutineContext,
+            prefetchScheduler = prefetchScheduler,
         )
 
     private fun createMediatorIfNeeded() {
@@ -282,13 +315,19 @@ open class ComposeContainer :
             LocalActivity provides this,
             LocalOnBackPressedDispatcherOwner provides this,
             LocalSlotProvider provides slotProvider,
-            LocalConfiguration provides configuration!!
+            LocalConfiguration provides configuration!!,
+            LocalKuiklyPrefetchScheduler provides mediator!!.prefetchScheduler,
         ) {
             content()
             LocalSlotProvider.current.slots.forEach { slotContent ->
                 key(slotContent.first) {
                     slotContent.second?.invoke()
                 }
+            }
+            // Profiler Overlay — 始终最后渲染，覆盖所有业务弹层
+            val overlayStrategy = RecompositionProfiler.currentOverlayStrategy
+            if (overlayStrategy != null) {
+                ProfilerOverlaySlot(overlayStrategy)
             }
         }
     }
@@ -320,4 +359,7 @@ open class ComposeContainer :
     /**
      * 注册扩展module接口，（注：注册时机为override ComponentActivity.createExternalModules中统一注册）
      */
+    override fun createExternalModules(): Map<String, Module>? {
+        return null
+    }
 }

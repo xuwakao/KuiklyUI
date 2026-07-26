@@ -1,5 +1,9 @@
+@file:JsExport
+
 package com.tencent.kuikly.core.render.web
 
+import kotlin.js.JsExport
+import kotlin.js.JsName
 import com.tencent.kuikly.core.render.web.exception.ErrorReason
 import com.tencent.kuikly.core.render.web.export.IKuiklyRenderModuleExport
 import com.tencent.kuikly.core.render.web.export.IKuiklyRenderShadowExport
@@ -14,6 +18,8 @@ import org.w3c.dom.Element
  * for Kuikly pages.
  * External interactions and communication with Kuikly pages are handled through Views implementing this interface.
  */
+@JsExport
+@JsName("IKuiklyRenderView")
 interface IKuiklyRenderView {
     // View container
     val view: Element
@@ -51,6 +57,21 @@ interface IKuiklyRenderView {
      * @param data Event data sent to kuikly side
      */
     fun sendEvent(event: String, data: Map<String, Any>)
+
+    /**
+     * Imperatively notify the Kuikly Pager that the root view size has changed,
+     * so pages relayout responsively.
+     *
+     * This is a thin wrapper around [sendEvent] with the reserved event name
+     * `rootViewSizeDidChanged`. Business code (or WebRender's built-in auto
+     * resize forwarder, see `KuiklyProcessor.autoUpdateRootViewSizeOnResize`)
+     * calls this whenever the root container has been resized (e.g. desktop
+     * window resize, split-pane drag, sidebar collapse).
+     *
+     * @param width  New root view width in pixels
+     * @param height New root view height in pixels
+     */
+    fun updateRootViewSize(width: Int, height: Int)
 
     /**
      * Get [KuiklyRenderBaseModule]
@@ -138,6 +159,8 @@ interface IKuiklyRenderContext {
  * Get exposed classes for Kuikly pages, which can be exposed to Kuikly side are:
  * IKuiklyRenderViewExport, IKuiklyRenderModuleExport and IKuiklyRenderShadowExport
  */
+@JsExport
+@OptIn(ExperimentalJsExport::class)
 interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
     /**
      * Register and expose module to kuikly pages
@@ -145,6 +168,7 @@ interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
      * @param name Module name
      * @param creator Module creation closure
      */
+    @JsName("moduleExport")
     fun moduleExport(name: String, creator: () -> IKuiklyRenderModuleExport)
 
     /**
@@ -154,6 +178,7 @@ interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
      * @param renderViewExportCreator Closure to create renderView
      * @param shadowExportCreator Closure to create shadow
      */
+    @JsName("renderViewExport")
     fun renderViewExport(
         viewName: String,
         renderViewExportCreator: () -> IKuiklyRenderViewExport,
@@ -165,6 +190,7 @@ interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
      *
      * @param name Name corresponding to the module
      */
+    @JsName("createModule")
     fun createModule(name: String): IKuiklyRenderModuleExport
 
     /**
@@ -172,6 +198,7 @@ interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
      *
      * @param name Name corresponding to renderView
      */
+    @JsName("createRenderView")
     fun createRenderView(name: String): IKuiklyRenderViewExport
 
     /**
@@ -179,12 +206,14 @@ interface IKuiklyRenderExport: IKuiklyRenderViewPropExternalHandler {
      *
      * @param name Shadow name
      */
+    @JsName("createRenderShadow")
     fun createRenderShadow(name: String): IKuiklyRenderShadowExport
 
     /**
      * add View attribute custom handler
      * @param handler  custom handler
      */
+    @JsName("viewPropExternalHandlerExport")
     fun viewPropExternalHandlerExport(handler: IKuiklyRenderViewPropExternalHandler)
 }
 

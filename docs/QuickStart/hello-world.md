@@ -65,6 +65,7 @@
 :::tip 注意
 1. Kuikly鸿蒙跨端产物已支持Windows平台编译，请参考[鸿蒙平台开发方式](../DevGuide/harmony-dev.md/#windows平台编译配置)进行配置 
 2. 若想通过插件生成Ohos工程，需要更新插件至1.1.0版本以上
+3. 鸿蒙模拟器不支持X86版的Mac，推荐使用Apple Silicon(Arm)版的Mac进行鸿蒙的开发
 
 :::
 1. 如果是首次运行Ohos的话，需要用鸿蒙DevEco-Studio打开ohosApp目录
@@ -124,8 +125,6 @@ kotlin 2.0 以上运行: ./gradlew :h5App:jsBrowserDevelopmentRun -t
 微信小程序先通过 gradle 编译js，然后通过微信开发者工具来运行
 1. 编译demo代码成js
 ```shell
-# 运行 demo 项目 dev server 服务器，没有安装 npm 包则先 npm install 安装一下依赖
-npm run serve
 #  构建 demo 项目 Debug 版
 ./gradlew :shared:packLocalJsBundleDebug
 ```

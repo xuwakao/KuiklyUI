@@ -18,6 +18,8 @@ package com.tencent.kuikly.demo.pages.compose
 import androidx.compose.runtime.Composable
 import com.tencent.kuikly.compose.extension.MakeKuiklyComposeNode
 import com.tencent.kuikly.compose.ui.Modifier
+import com.tencent.kuikly.core.nvi.serialization.json.JSONObject
+import com.tencent.kuikly.core.views.PlayState
 import com.tencent.kuikly.core.views.VideoPlayControl
 import com.tencent.kuikly.core.views.VideoView
 
@@ -25,29 +27,29 @@ import com.tencent.kuikly.core.views.VideoView
 fun Video(
     src: String,
     playControl: VideoPlayControl,
-    playTimeDidChanged: (curTime: Int, totalTime: Int) -> Unit,
     modifier: Modifier = Modifier,
+    onPlayStateChanged: ((state: PlayState, extInfo: JSONObject) -> Unit)? = null,
+    onPlayTimeChanged: ((curTime: Int, totalTime: Int) -> Unit)? = null,
 ) {
     MakeKuiklyComposeNode<VideoView>(
-        factory = {
-            VideoView()
-        },
+        factory = { VideoView() },
         modifier = modifier,
         viewInit = {
             getViewAttr().run {
-                playControl(VideoPlayControl.PLAY)
-                src(src)
-            }
-        },
-        viewUpdate = {
-            it.getViewAttr().run {
                 src(src)
                 playControl(playControl)
             }
-            it.getViewEvent().run {
-                playTimeDidChanged(handlerFn = playTimeDidChanged)
-                playStateDidChanged(handlerFn = { state, b ->
-                })
+            onPlayStateChanged?.let { getViewEvent().playStateDidChanged(it) }
+            onPlayTimeChanged?.let { cb ->
+                getViewEvent().playTimeDidChanged { cur, total ->
+                    cb(cur, total)
+                }
+            }
+        },
+        viewUpdate = { view ->
+            view.getViewAttr().run {
+                src(src)
+                playControl(playControl)
             }
         }
     )

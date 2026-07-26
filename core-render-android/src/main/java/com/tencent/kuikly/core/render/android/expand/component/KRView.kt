@@ -37,6 +37,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.drawCommonDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.drawCommonForegroundDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.nativeGestureViewHashCodeSet
 import com.tencent.kuikly.core.render.android.css.ktx.toDpF
+import com.tencent.kuikly.core.render.android.css.ktx.toJSONObjectSafely
 import com.tencent.kuikly.core.render.android.css.ktx.touchDownConsumeOnce
 import com.tencent.kuikly.core.render.android.css.ktx.optViewDecorator
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
@@ -61,6 +62,9 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
     private var rippleColor: Int = Color.BLACK
     private var ripplePressedAlpha: Float = 0.12f
     private var rippleBounded: Boolean = true
+
+    internal var textSelector: KRTextSelector? = null
+        private set
 
     override val reusable: Boolean
         get() = true
@@ -155,6 +159,39 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
                 updateRippleState(propValue as String)
                 true
             }
+            // selectable begin
+            ATTR_SELECTABLE -> {
+                val selector = getOrCreateTextSelector()
+                selector.setSelectable(propValue as Int)
+                true
+            }
+            ATTR_SELECTION_COLOR -> {
+                val selector = getOrCreateTextSelector()
+                val json = (propValue as? String).toJSONObjectSafely()
+                selector.setSelectionColor(json)
+                true
+            }
+            EVENT_SELECT_START -> {
+                val selector = getOrCreateTextSelector()
+                selector.setSelectStartCallback(propValue as KuiklyRenderCallback)
+                true
+            }
+            EVENT_SELECT_CHANGE -> {
+                val selector = getOrCreateTextSelector()
+                selector.setSelectChangeCallback(propValue as KuiklyRenderCallback)
+                true
+            }
+            EVENT_SELECT_END -> {
+                val selector = getOrCreateTextSelector()
+                selector.setSelectEndCallback(propValue as KuiklyRenderCallback)
+                true
+            }
+            EVENT_SELECT_CANCEL -> {
+                val selector = getOrCreateTextSelector()
+                selector.setSelectCancelCallback(propValue as KuiklyRenderCallback)
+                true
+            }
+            // selectable end
             else -> super.setProp(propKey, propValue)
         }
     }
@@ -192,9 +229,45 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
                 // State is transient, just reset
                 true
             }
+            ATTR_SELECTABLE, ATTR_SELECTION_COLOR,
+            EVENT_SELECT_START, EVENT_SELECT_CHANGE, EVENT_SELECT_END, EVENT_SELECT_CANCEL -> {
+                resetTextSelector()
+                true
+            }
             else -> super.resetProp(propKey)
         }
     }
+
+    override fun call(
+        method: String,
+        params: String?,
+        callback: KuiklyRenderCallback?
+    ): Any? {
+        return when (method) {
+            METHOD_CREATE_SELECTION -> {
+                if (params != null) {
+                    textSelector?.createSelection(params.toJSONObjectSafely())
+                }
+                null
+            }
+            METHOD_CREATE_SELECTION_ALL -> {
+                textSelector?.selectAll()
+                null
+            }
+            METHOD_GET_SELECTION -> {
+                if (callback != null) {
+                    textSelector?.getSelection(callback)
+                }
+                null
+            }
+            METHOD_CLEAR_SELECTION -> {
+                textSelector?.clearSelection()
+                null
+            }
+            else -> super.call(method, params, callback)
+        }
+    }
+
     override fun setOnTouchListener(l: OnTouchListener?) {
         touchListenerProxy = object : OnTouchListener {
             override fun onTouch(v: View, event: MotionEvent): Boolean {
@@ -371,6 +444,11 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
                 })
             }
         }
+    }
+
+    override fun onDetachedFromWindow() {
+        resetTextSelector()
+        super.onDetachedFromWindow()
     }
 
     override fun onDestroy() {
@@ -608,6 +686,15 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         parentView?.requestedLayout = false
     }
 
+    private fun getOrCreateTextSelector(): KRTextSelector {
+        return textSelector ?: KRTextSelector(this).also { textSelector = it }
+    }
+
+    private fun resetTextSelector() {
+        textSelector?.destroy()
+        textSelector = null
+    }
+
     companion object {
         const val VIEW_NAME = "KRView"
         private const val COMPOSE_ROOT_TAG_ID = -0x7C03905E // random unique negative int
@@ -634,6 +721,17 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         private const val RIPPLE_STATE_PRESSED = "pressed"
         private const val RIPPLE_STATE_RELEASED = "released"
         private const val RIPPLE_STATE_CANCELLED = "cancelled"
+
+        private const val ATTR_SELECTABLE = "selectable"
+        private const val ATTR_SELECTION_COLOR = "selectionColor"
+        private const val METHOD_CREATE_SELECTION = "createSelection"
+        private const val METHOD_CREATE_SELECTION_ALL = "createSelectionAll"
+        private const val METHOD_GET_SELECTION = "getSelection"
+        private const val METHOD_CLEAR_SELECTION = "clearSelection"
+        private const val EVENT_SELECT_START = "selectStart"
+        private const val EVENT_SELECT_CHANGE = "selectChange"
+        private const val EVENT_SELECT_END = "selectEnd"
+        private const val EVENT_SELECT_CANCEL = "selectCancel"
 
         /**
          * Whether the given View is marked as a compose root (SuperTouch enabled).

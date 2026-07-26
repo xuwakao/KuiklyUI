@@ -98,6 +98,13 @@ typedef NS_ENUM(NSInteger, KRTextDecorationLineType) {
 + (BOOL)hr_isJsonArray:(id)value;
 + (id)nativeObjectToKotlinObject:(id)ocObject;
 + (UIBezierPath *)hr_parseClipPath:(NSString *)pathData density:(CGFloat)density;
++ (UIWindow *)keyWindow;
+
+/// 选中高亮色 alpha 上限（0x66/255 ≈ 40%），避免高亮完全覆盖文字，多端统一
+extern const CGFloat KRSelectionColorMaxAlpha;
+
+/// 限制选中色 alpha 不超过 KRSelectionColorMaxAlpha，避免高亮完全覆盖文字，多端统一
++ (UIColor *)clampSelectionColorAlpha:(UIColor *)color;
 
 #if TARGET_OS_OSX
 
