@@ -124,7 +124,13 @@ class KRTextFieldView : IKuiklyRenderViewExport {
             }
 
             MAX_TEXT_LENGTH -> {
-                ele.maxLength = propValue.unsafeCast<Int>()
+                // Compose sends -1 to clear the limit (CoreTextField), and Android treats any
+                // non-positive value as "unlimited". The DOM refuses a negative maxLength with
+                // IndexSizeError, which aborts the whole render batch and leaves a blank page,
+                // so drop the attribute instead. Absent maxlength reads back as -1, keeping the
+                // `ele.maxLength > 0` guards below correct.
+                val limit = propValue.unsafeCast<Int>()
+                if (limit > 0) ele.maxLength = limit else ele.removeAttribute("maxlength")
                 true
             }
 

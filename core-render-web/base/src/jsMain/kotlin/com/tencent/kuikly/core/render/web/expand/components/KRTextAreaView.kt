@@ -112,7 +112,10 @@ class KRTextAreaView : IKuiklyRenderViewExport {
             }
 
             MAX_TEXT_LENGTH -> {
-                ele.maxLength = propValue.unsafeCast<Int>()
+                // See KRTextFieldView: compose sends -1 for "no limit" and the DOM throws
+                // IndexSizeError on a negative maxLength, aborting the render batch.
+                val limit = propValue.unsafeCast<Int>()
+                if (limit > 0) ele.maxLength = limit else ele.removeAttribute("maxlength")
                 true
             }
 

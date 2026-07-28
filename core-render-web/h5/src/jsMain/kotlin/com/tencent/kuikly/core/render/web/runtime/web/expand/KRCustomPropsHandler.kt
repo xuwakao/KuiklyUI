@@ -34,7 +34,28 @@ internal class KRCustomPropsHandler : IKuiklyRenderViewPropExternalHandler {
                 ele.setAttribute(TRACKED_CSS_CLASS_ATTR, cssClassValue)
                 return true
             }
-            else -> return false
+            TEST_TAG -> {
+                // `Modifier.testTag` / `Attr.testTag` already reaches the native views on Android
+                // (KRConst.TEST_TAG) and iOS (css_testTag), but web had no handler, so the prop was
+                // dropped silently and the tag was invisible to browser-driven tests. Surface it as
+                // data-testid, which is what Playwright's getByTestId reads by default.
+                val ele = renderViewExport.ele.unsafeCast<HTMLElement>()
+                ele.setAttribute(TEST_ID_ATTR, propValue.unsafeCast<String>())
+                return true
+            }
+            else -> {
+                // Pass `data-*` props straight through to the element.
+                //
+                // Kuikly renders every control as a plain <div>, so state that a browser would
+                // normally read from the element itself — disabled, checked, selected, busy — is
+                // only expressed as styling and is invisible to anything driving the page from
+                // outside. Letting callers emit their own data-* attributes gives that state a
+                // machine-readable form without inventing a prop name per widget.
+                if (!propKey.startsWith(DATA_ATTR_PREFIX)) return false
+                val ele = renderViewExport.ele.unsafeCast<HTMLElement>()
+                ele.setAttribute(propKey, propValue.toString())
+                return true
+            }
         }
     }
 
@@ -51,7 +72,15 @@ internal class KRCustomPropsHandler : IKuiklyRenderViewPropExternalHandler {
                 ele.removeAttribute(TRACKED_CSS_CLASS_ATTR)
                 true
             }
-            else -> false
+            TEST_TAG -> {
+                renderViewExport.ele.unsafeCast<HTMLElement>().removeAttribute(TEST_ID_ATTR)
+                true
+            }
+            else -> {
+                if (!propKey.startsWith(DATA_ATTR_PREFIX)) return false
+                renderViewExport.ele.unsafeCast<HTMLElement>().removeAttribute(propKey)
+                true
+            }
         }
     }
 
@@ -67,5 +96,12 @@ internal class KRCustomPropsHandler : IKuiklyRenderViewPropExternalHandler {
 
     companion object {
         private const val TRACKED_CSS_CLASS_ATTR = "data-kuikly-css-class"
+
+        /** Matches StyleConst.TEST_TAG in core / KRConst.TEST_TAG on Android. */
+        private const val TEST_TAG = "testTag"
+        private const val TEST_ID_ATTR = "data-testid"
+
+        /** Props with this prefix are written to the element verbatim. */
+        private const val DATA_ATTR_PREFIX = "data-"
     }
 }
