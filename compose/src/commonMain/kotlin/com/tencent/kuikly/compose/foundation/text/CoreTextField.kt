@@ -410,15 +410,26 @@ internal fun CoreTextField(
                     set(textStyle) {
                         if (textStyle == null ||  textStyle == TextStyle.Default) return@set
                         withTextAreaView {
-                            getViewAttr().setTextStyle(resolveDefaults(textStyle, layoutDirection), density)
+                            getViewAttr().setTextStyle(resolveDefaults(textStyle, layoutDirection), density, layoutDirection)
                         }
                         isUpdate = true
                     }
                     if (!isUpdate) {
                         set(density) {
                             withTextAreaView {
-                                getViewAttr().setTextStyle(resolveDefaults(textStyle, layoutDirection), density)
+                                getViewAttr().setTextStyle(resolveDefaults(textStyle, layoutDirection), density, layoutDirection)
                             }
+                        }
+                    }
+                    // Ronaq: the layout direction is a trigger in its own right. An
+                    // in-app language switch changes the direction without changing the
+                    // style, and the field would otherwise keep the previous direction's
+                    // alignment for its text and placeholder. Charter C-5.
+                    // 布局方向本身即触发条件：应用内切换语言只改方向、不改样式，
+                    // 缺此项时输入框的文本与占位符会保留旧方向的对齐。
+                    set(layoutDirection) {
+                        withTextAreaView {
+                            getViewAttr().setTextStyle(resolveDefaults(textStyle, layoutDirection), density, layoutDirection)
                         }
                     }
 

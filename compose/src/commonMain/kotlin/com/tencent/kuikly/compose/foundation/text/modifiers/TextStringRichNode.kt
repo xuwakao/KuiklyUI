@@ -24,6 +24,7 @@ import com.tencent.kuikly.compose.foundation.text.applyOverflow
 import com.tencent.kuikly.compose.foundation.text.applyShadow
 import com.tencent.kuikly.compose.foundation.text.applySoftWrap
 import com.tencent.kuikly.compose.foundation.text.applyStyleColor
+import com.tencent.kuikly.compose.foundation.text.applyTextAlign
 import com.tencent.kuikly.compose.foundation.text.applyTextDecoration
 import com.tencent.kuikly.compose.foundation.text.applyTextStyle
 import com.tencent.kuikly.compose.material3.EmptyInlineContent
@@ -45,6 +46,7 @@ import com.tencent.kuikly.compose.ui.node.SemanticsModifierNode
 import com.tencent.kuikly.compose.ui.node.invalidateMeasurement
 import com.tencent.kuikly.compose.ui.node.invalidateSemantics
 import com.tencent.kuikly.compose.ui.node.requireDensity
+import com.tencent.kuikly.compose.ui.node.requireLayoutDirection
 import com.tencent.kuikly.compose.ui.node.requireLayoutNode
 import com.tencent.kuikly.compose.ui.semantics.SemanticsPropertyReceiver
 import com.tencent.kuikly.compose.ui.semantics.text
@@ -58,6 +60,7 @@ import com.tencent.kuikly.compose.ui.unit.Constraints
 import com.tencent.kuikly.compose.ui.unit.Constraints.Companion.fitPrioritizingWidth
 import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.compose.ui.unit.IntSize
+import com.tencent.kuikly.compose.ui.unit.LayoutDirection
 import com.tencent.kuikly.compose.ui.unit.constrain
 import com.tencent.kuikly.core.layout.Frame
 import com.tencent.kuikly.core.manager.BridgeManager
@@ -92,6 +95,18 @@ internal class TextStringRichNode(
 ) : Modifier.Node(), LayoutModifierNode, SemanticsModifierNode {
 
     private var cacheResult: TextLayoutResult? = null
+
+    /**
+     * Ronaq: the layout direction the native text view's alignment was last resolved
+     * against. A direction change only invalidates measurement — it does not re-run
+     * [updateLayoutProperties] — so without this a text whose content did not change
+     * (a number, a Latin name, a label already in the target language) would keep the
+     * alignment of the previous direction after an in-app language switch. Charter C-5.
+     * 上次解析原生文本对齐所用的布局方向。方向变化只会失效测量，不会重跑
+     * updateLayoutProperties；缺此字段时，内容未变的文本（数字、拉丁名、已是目标语言的
+     * 文案）在应用内切换语言后仍保持旧方向的对齐。
+     */
+    private var alignedLayoutDirection: LayoutDirection? = null
 
     /**
      * Element has text params to update
@@ -324,6 +339,15 @@ internal class TextStringRichNode(
         measurable: Measurable,
         constraints: Constraints
     ): MeasureResult {
+        // Ronaq: a layout-direction change reaches a modifier node only as a
+        // measurement invalidation, so re-resolve the alignment here. Alignment does
+        // not affect the measured size, so this runs before measuring.
+        // 布局方向变化只以「测量失效」的形式到达 modifier 节点，故在此重新解析对齐；
+        // 对齐不影响测量尺寸，因此放在测量之前。
+        if (alignedLayoutDirection != layoutDirection) {
+            alignedLayoutDirection = layoutDirection
+            withTextView { attr -> attr.applyTextAlign(style.textAlign, layoutDirection) }
+        }
 
         val intSize = measureTextView(constraints.maxWidth, constraints.maxHeight)
         val layoutSize = constraints.constrain(
@@ -404,16 +428,20 @@ internal class TextStringRichNode(
      * update RichTextView layout properties
      */
     private fun updateLayoutProperties() {
+        // Ronaq: TextAlign.Start / End resolve against the node's layout direction.
+        // Start / End 需按节点布局方向解析。
+        val direction = if (isAttached) requireLayoutDirection() else LayoutDirection.Ltr
+        alignedLayoutDirection = direction
 
         withTextView { attr ->
             if (annotatedText != null) {
-                attr.applyAnnotatedString(annotatedText!!, inlineContent, density)
+                attr.applyAnnotatedString(annotatedText!!, inlineContent, density, direction)
             } else {
                 attr.setProp(TextConst.VALUE, plainText ?: "")
             }
 
             // 应用文本样式
-            attr.applyTextStyle(style, density)
+            attr.applyTextStyle(style, density, direction)
 
             // 应用布局属性
             attr.applyOverflow(overflow)

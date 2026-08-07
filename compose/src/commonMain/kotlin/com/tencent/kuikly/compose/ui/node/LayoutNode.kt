@@ -496,21 +496,6 @@ open class LayoutNode(
         this.owner = owner
         this.depth = (parent?.depth ?: -1) + 1
 
-        // Ronaq: inherit the layout direction from the parent, or from the owner for
-        // a root node.
-        //
-        // `compositionLocalMap` is where upstream Compose delivers LocalLayoutDirection
-        // to a node, but nothing in this renderer ever sets it — verified by probe: the
-        // setter never runs, so every node keeps the `Ltr` default and Row/Arrangement
-        // measure left-to-right no matter what the application provides. Inheriting at
-        // attach makes a scene-wide direction reach the whole tree, which is what an
-        // RTL locale needs; a node that later receives locals still overrides this.
-        // 继承布局方向：本渲染器从不设置 compositionLocalMap（探针确认 setter 从未执行），
-        // 故所有节点停留在默认 Ltr，Row/Arrangement 恒按从左到右测量，应用层无论提供什么都无效。
-        // 在 attach 时继承，使场景级方向覆盖整棵树 —— 这正是 RTL 语言所需；
-        // 若节点后续收到 locals，仍以 locals 为准。
-        layoutDirection = parent?.layoutDirection ?: owner.layoutDirection
-
         pendingModifier?.let { applyModifier(it) }
         pendingModifier = null
 

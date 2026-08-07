@@ -42,10 +42,22 @@ import com.tencent.kuikly.compose.ui.text.input.TextFieldValue
 import com.tencent.kuikly.compose.ui.text.input.VisualTransformation
 import com.tencent.kuikly.compose.ui.text.style.TextAlign
 import com.tencent.kuikly.compose.ui.unit.Density
+import com.tencent.kuikly.compose.ui.unit.LayoutDirection
 import com.tencent.kuikly.compose.ui.unit.isSpecified
 import com.tencent.kuikly.core.views.TextAreaAttr
 
-internal fun TextAreaAttr.setTextStyle(style: TextStyle, density: Density) {
+internal fun TextAreaAttr.setTextStyle(
+    style: TextStyle,
+    density: Density,
+    // Ronaq: TextAlign.Start / End are relative to the reading direction. The caller
+    // already resolved the style with `resolveDefaults(style, layoutDirection)`, which
+    // turns Unspecified into Start — but Start then fell into the left branch below, so
+    // an Arabic field's text and placeholder still hugged the left edge. Charter C-5.
+    // Start / End 相对阅读方向。调用方已用 resolveDefaults(style, layoutDirection) 解析，
+    // 将 Unspecified 变为 Start —— 但 Start 随后落入下面的「左对齐」分支，
+    // 故阿语输入框的文本与占位符仍贴左。
+    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
+) {
     style.color.also {
         color(it.toKuiklyColor())
     }
@@ -54,12 +66,14 @@ internal fun TextAreaAttr.setTextStyle(style: TextStyle, density: Density) {
         fontSize(this.scaleToDensity(density, style.fontSize.value))
     }
     style.textAlign?.also {
-        if (it.value == TextAlign.Right.value || it.value == TextAlign.End.value) {
-            textAlignRight()
-        } else if (it.value == TextAlign.Center.value || it.value == TextAlign.Center.value) {
-            textAlignCenter()
-        } else {
-            textAlignLeft() // default is left
+        val rtl = layoutDirection == LayoutDirection.Rtl
+        when (it.value) {
+            TextAlign.Center.value -> textAlignCenter()
+            TextAlign.Right.value -> textAlignRight()
+            TextAlign.Left.value -> textAlignLeft()
+            TextAlign.End.value -> if (rtl) textAlignLeft() else textAlignRight()
+            // Start, Justify and anything unresolved read from the start edge.
+            else -> if (rtl) textAlignRight() else textAlignLeft()
         }
     }
     style.fontWeight?.also {

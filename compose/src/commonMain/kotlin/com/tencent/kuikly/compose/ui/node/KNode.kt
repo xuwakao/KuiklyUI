@@ -28,6 +28,7 @@ import com.tencent.kuikly.compose.ui.graphics.Matrix
 import com.tencent.kuikly.compose.ui.graphics.isIdentity
 import com.tencent.kuikly.compose.ui.layout.LayoutCoordinates
 import com.tencent.kuikly.compose.ui.platform.LocalDensity
+import com.tencent.kuikly.compose.ui.platform.LocalLayoutDirection
 import com.tencent.kuikly.compose.ui.unit.IntSize
 import com.tencent.kuikly.compose.views.VirtualNodeView
 import com.tencent.kuikly.compose.layout.resetViewVisible
@@ -166,6 +167,20 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         set(value) {
             field = value
             density = value[LocalDensity]
+            // Ronaq: also deliver LocalLayoutDirection, as LayoutNode's own setter does.
+            //
+            // This override shadows LayoutNode.compositionLocalMap, and dropping this
+            // assignment made LocalLayoutDirection inert for every node the renderer
+            // builds — Layout() constructs KNode, so the base setter never ran. Row,
+            // Arrangement, padding(start/end) and Alignment all read the node's
+            // direction, so an application that provides Rtl still measured Ltr, and a
+            // direction change at runtime reached nothing at all.
+            // 同时下发 LocalLayoutDirection —— 与 LayoutNode 自身的 setter 一致。
+            // 本 override 遮蔽了 LayoutNode.compositionLocalMap，缺这一行使
+            // LocalLayoutDirection 对渲染器构建的所有节点失效（Layout() 构造的是 KNode，
+            // 基类 setter 从不执行）。Row / Arrangement / padding(start,end) / Alignment
+            // 读的都是节点方向，故应用提供 Rtl 仍按 Ltr 测量，运行时切换方向更是毫无作用。
+            layoutDirection = value[LocalLayoutDirection]
             nodes.headToTail(Nodes.CompositionLocalConsumer) { modifierNode ->
                 val delegatedNode = modifierNode.node
                 if (delegatedNode.isAttached) {

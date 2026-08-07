@@ -39,6 +39,7 @@ import com.tencent.kuikly.compose.ui.text.style.TextDecoration
 import com.tencent.kuikly.compose.ui.text.style.TextIndent
 import com.tencent.kuikly.compose.ui.text.style.TextOverflow
 import com.tencent.kuikly.compose.ui.unit.Density
+import com.tencent.kuikly.compose.ui.unit.LayoutDirection
 import com.tencent.kuikly.compose.ui.unit.TextUnit
 import com.tencent.kuikly.compose.ui.unit.isSpecified
 import com.tencent.kuikly.core.base.Attr
@@ -64,7 +65,14 @@ private fun TextAttr.defaultFontSize(): Float {
     }
 }
 
-internal fun TextAttr.applyTextStyle(style: TextStyle, density: Density) {
+internal fun TextAttr.applyTextStyle(
+    style: TextStyle,
+    density: Density,
+    // Ronaq: TextAlign.Start / End are relative to the layout direction; the caller
+    // knows the node's direction, this function only maps.
+    // Start / End 相对于布局方向，方向由调用方给出，此处只做映射。
+    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
+) {
     // Font properties
     applyFontSize(style.fontSize, density)
     applyFontWeight(style.fontWeight)
@@ -74,7 +82,7 @@ internal fun TextAttr.applyTextStyle(style: TextStyle, density: Density) {
     // Layout properties
     applyLetterSpacing(style.letterSpacing, density)
     applyLineHeight(style.lineHeight, density)
-    applyTextAlign(style.textAlign)
+    applyTextAlign(style.textAlign, layoutDirection)
     applyTextIndent(style.textIndent)
 }
 
@@ -215,14 +223,49 @@ internal fun TextAttr.applyShadow(shadow: Shadow?) {
     }
 }
 
-internal fun TextAttr.applyTextAlign(textAlign: TextAlign?) {
-    // Perf: skip when stays at native default (left) and has never been set
-    val align = when (textAlign) {
-        TextAlign.Left, TextAlign.Unspecified, null -> com.tencent.kuikly.core.views.TextAlign.LEFT.value
-        TextAlign.Center -> com.tencent.kuikly.core.views.TextAlign.CENTER.value
-        TextAlign.Right -> com.tencent.kuikly.core.views.TextAlign.RIGHT.value
-        else -> com.tencent.kuikly.core.views.TextAlign.LEFT.value
+/**
+ * Ronaq: resolve [TextAlign] against the layout direction before handing it to the
+ * native text view, which only understands the absolute left / center / right.
+ *
+ * Upstream mapped `Start`, `End`, `Justify` and `Unspecified` all onto LEFT, so text
+ * always hugged the left edge. In an RTL locale that leaves every label that fills its
+ * box — a `weight(1f)` row label, a `fillMaxWidth` title — pinned to the wrong edge
+ * while the row around it mirrors correctly. `End` was wrong even in LTR: it rendered
+ * left. Compose's contract is that `Unspecified` resolves to `Start` and `Start` / `End`
+ * resolve against the layout direction (see `resolveParagraphStyleDefaults`); this
+ * restores it. Charter C-5.
+ * 将 TextAlign 按布局方向解析后再交给原生文本视图（原生只认绝对的 left/center/right）。
+ * 上游把 Start / End / Justify / Unspecified 一律映射为 LEFT，故文本恒贴左：RTL 下
+ * 所有撑满自身盒子的标签（weight(1f) 行标签、fillMaxWidth 标题）都贴错边，
+ * 而其外层 Row 却已正确镜像；End 连在 LTR 下都是错的（渲染成左对齐）。
+ * Compose 的约定是 Unspecified → Start、Start/End 随布局方向解析，此处予以恢复。
+ */
+internal fun TextAttr.applyTextAlign(
+    textAlign: TextAlign?,
+    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
+) {
+    val rtl = layoutDirection == LayoutDirection.Rtl
+    val start = if (rtl) {
+        com.tencent.kuikly.core.views.TextAlign.RIGHT.value
+    } else {
+        com.tencent.kuikly.core.views.TextAlign.LEFT.value
     }
+    val end = if (rtl) {
+        com.tencent.kuikly.core.views.TextAlign.LEFT.value
+    } else {
+        com.tencent.kuikly.core.views.TextAlign.RIGHT.value
+    }
+    val align = when (textAlign) {
+        TextAlign.Left -> com.tencent.kuikly.core.views.TextAlign.LEFT.value
+        TextAlign.Right -> com.tencent.kuikly.core.views.TextAlign.RIGHT.value
+        TextAlign.Center -> com.tencent.kuikly.core.views.TextAlign.CENTER.value
+        TextAlign.End -> end
+        // Start, Justify, Unspecified and null all lay out from the reading start edge.
+        // Start / Justify / Unspecified / null 均自阅读起始边排布。
+        else -> start
+    }
+    // Perf: skip when the resolved value is the native default (left) and was never set.
+    // 性能：解析结果即原生默认值（left）且从未设置过时跳过。
     if (align == com.tencent.kuikly.core.views.TextAlign.LEFT.value &&
         getProp(TextConst.TEXT_ALIGN) == null
     ) {
@@ -307,7 +350,10 @@ internal fun TextAttr.applyMaxLines(maxLines: Int) {
 internal fun RichTextAttr.applyAnnotatedString(
     annoText: AnnotatedString,
     inlineContent: Map<String, InlineTextContent> = EmptyInlineContent,
-    density: Density
+    density: Density,
+    // Ronaq: paragraph styles carry TextAlign too — resolve them against the same
+    // direction as the plain-text path. 段落样式同样带 TextAlign，须按同一方向解析。
+    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
 ) {
     val spans = fastArrayListOf<ISpan>()
 
@@ -386,7 +432,7 @@ internal fun RichTextAttr.applyAnnotatedString(
                     .filter { range -> !(end <= range.start || start >= range.end) }
                     .forEach { range ->
                         range.item.let { style ->
-                            applyTextAlign(style.textAlign)
+                            applyTextAlign(style.textAlign, layoutDirection)
                             setProp(TextConst.LINE_HEIGHT, style.lineHeight.value)
                             applyTextIndent(style.textIndent)
                         }
