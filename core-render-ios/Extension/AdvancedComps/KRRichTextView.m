@@ -442,8 +442,14 @@ NSString *const kGradientInfoKeyGlobalRange = @"globalRange";
         [attributedString addAttribute:NSForegroundColorAttributeName value:attrs.color range:range];
     }
 
-    // 强制使用LTR文本方向
-    [attributedString addAttribute:NSWritingDirectionAttributeName value:@[@((NSInteger)NSWritingDirectionLeftToRight | (NSInteger)NSWritingDirectionOverride)] range:range];
+    // Ronaq: no NSWritingDirectionAttributeName override here. A
+    // `LeftToRight | Override` value is the Unicode LRO control: it forces every
+    // character, including strong RTL ones, onto an even (left-to-right) bidi
+    // level, so an Arabic run is laid out in logical order from the left and
+    // reads backwards. The Unicode bidi algorithm already produces the right
+    // result for Latin text without it.
+    // 不再强制 LTR 文本方向：LeftToRight|Override 等价于 Unicode LRO，
+    // 会把阿拉伯语等强 RTL 字符也压成从左到右排列，导致文字倒序。
 
     if (attrs.letterSpacing) {
         [attributedString addAttribute:NSKernAttributeName value:@(attrs.letterSpacing) range:range];
@@ -511,7 +517,10 @@ NSString *const kGradientInfoKeyGlobalRange = @"globalRange";
 
     NSAttributedString *attrString = [NSAttributedString attributedStringWithAttachment:attachment];
     NSMutableAttributedString *mutableAttrString = [[NSMutableAttributedString alloc] initWithAttributedString:attrString];
-    [mutableAttrString kr_addAttribute:NSWritingDirectionAttributeName value:@[@((NSInteger)NSWritingDirectionLeftToRight | (NSInteger)NSWritingDirectionOverride)] range:NSMakeRange(0, mutableAttrString.length)];
+    // Ronaq: the placeholder is U+FFFC, a bidi-neutral character. Leaving it to the
+    // bidi algorithm lets it sit where its neighbours put it; the former LRO
+    // override pinned it to a left-to-right island inside an RTL line.
+    // 占位符是中性字符 U+FFFC，交给 bidi 定位即可，不再强制 LTR。
     return mutableAttrString;
 }
 
@@ -527,8 +536,14 @@ NSString *const kGradientInfoKeyGlobalRange = @"globalRange";
                                 font:(UIFont *)font {
     NSMutableParagraphStyle *style  = [[NSMutableParagraphStyle alloc] init];
     style.alignment = textAliment;
-    // 强制使用LTR文本方向，确保文本始终从左到右显示
-    style.baseWritingDirection = NSWritingDirectionLeftToRight;
+    // Ronaq: natural base direction — the TextKit default, i.e. the paragraph takes
+    // the direction of its first strong character. A hardcoded LeftToRight base is
+    // not what reverses glyphs (the override above was), but it does put the trailing
+    // Latin run of a mixed line ("… عبر Google") at the right edge instead of the
+    // left, which is not how the Web renderer draws the same string.
+    // 段落基准方向改回 natural（TextKit 默认：取首个强方向字符的方向）。
+    // 硬编码 LTR 本身不会导致文字倒序，但会把混排行里的拉丁片段排到行尾右侧，与 Web 渲染不一致。
+    style.baseWritingDirection = NSWritingDirectionNatural;
     if (lineSpacing) {
          style.lineSpacing = ceil([lineSpacing floatValue]) ;
     }

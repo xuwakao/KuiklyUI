@@ -172,3 +172,106 @@ adding a Ronaq concept:
   `LayoutNode`'s — that is the better shape, but it also starts forwarding
   `viewConfiguration`, which is a gesture-timing change and needs its own evidence.
 - §2 is a plain bug for `TextAlign.End` even outside RTL markets.
+
+## 3. The iOS text renderer stops forcing left-to-right — RTL
+
+**Files** · `core-render-ios/Extension/AdvancedComps/KRRichTextView.m`
+**Driven by** · Charter C-5
+**Date** · 2026-08-07
+
+### What goes wrong here
+
+On iOS every Arabic string rendered with its characters in **reversed order** — «رونق» as
+«قنور», «الإعدادات» as «تاداعإلا» — while the layout around it mirrored correctly and
+Latin text was untouched. Android and Web render the same shared Kotlin correctly, so
+nothing above the renderer was reversing the string.
+
+`KRRichTextShadow` builds the `NSAttributedString` for every text node and stamps two
+"force LTR" decisions onto it:
+
+```objc
+// p_createSpanAttributedStringWithAttributes — every span
+[attributedString addAttribute:NSWritingDirectionAttributeName
+                         value:@[@(NSWritingDirectionLeftToRight | NSWritingDirectionOverride)]
+                         range:range];
+// p_applyTextAttributeWithAttr — every paragraph style
+style.baseWritingDirection = NSWritingDirectionLeftToRight;
+```
+
+The first one is the defect. `LeftToRight | Override` is the Unicode **LRO** control
+(U+202D): it does not merely pick a base direction, it *overrides the bidi class of every
+character in the range*, so strong right-to-left characters are resolved to an even
+(left-to-right) embedding level and laid out in logical order from the left. Arabic then
+reads backwards. Latin is unaffected because LTR is where the algorithm already put it.
+
+Measured directly against CoreText, `اللغة` with a system font:
+
+| attributes | run direction | character indices in visual order |
+| --- | --- | --- |
+| `LRO` + base LTR (as shipped) | LTR | `0, 1, 2, 3, 3, 4` — logical order, drawn leftward |
+| base LTR, no `LRO` | RTL | `4, 3, 3, 2, 1, 0` — correct |
+| natural base, no `LRO` | RTL | `4, 3, 3, 2, 1, 0` — correct |
+
+The same probe explains why `Google` stayed readable inside an Arabic line: under `LRO`
+every run is left-to-right, which happens to be right for the Latin one. That also rules
+out "reverse the string to compensate" as a fix — it would break exactly that case.
+
+The second one, `baseWritingDirection`, is a real but separate defect: it does not reverse
+anything, it decides where a *mixed* line's runs sit. With a hardcoded left-to-right base,
+`المتابعة عبر Google` put `Google` against the right edge; the Web renderer puts it on the
+left, which is what an Arabic reader expects.
+
+### The change
+
+- Drop the `NSWritingDirectionAttributeName` override from text spans and from the
+  attachment placeholder span. U+FFFC is bidi-neutral and should take its neighbours'
+  direction like any inline object.
+- `style.baseWritingDirection = NSWritingDirectionNatural` — the TextKit default: the
+  paragraph takes the direction of its first strong character.
+
+Alignment is not affected: §2 already resolves `TextAlign.Start` / `End` in Kotlin and
+hands the native view an absolute `left` / `right`.
+
+### Verification (§3)
+
+Device: simulator iPhone 16 `0E856C63-3808-4174-B808-4999C982DFAB`, iOS 18.6, Debug,
+`useLocalKuikly=true`, mock server on :8099. Screenshots in the client's
+`build/rtl-evidence/ios/`, `ar-launch-*.png` / `en-*.png` before, `after-*.png` after.
+
+- **Arabic at launch** — Login, Home, Me and Settings read correctly:
+  «رونق», «الإعدادات», «اللغة», «سياسة الخصوصية», «من يمكنه مراسلتي», «مركز VIP».
+- **Mixed line** — «المتابعة عبر Google» is correct end to end, with `Google` on the left
+  as the Web capture `build/rtl-evidence/web/ar-launch-login.png` draws it. Before the
+  change the Arabic was reversed around a correctly-ordered `Google`.
+- **English regression** — Login, Home and Me are **pixel-identical** to the pre-change
+  build (0 pixels differing above threshold, status bar excluded). English Settings
+  differs in exactly one 104x39 region: the «العربية» row of the language list, which is
+  the fix.
+- **CoreText unit check** — 12 Latin/Turkish strings (including `Türkçe`,
+  `Sign in (recommended)`, `1,234 coins`, `Room #12 — Lv.7`) produce byte-identical glyph
+  IDs and positions before and after. Only the string containing Arabic differs.
+- `RonaqAppUITests/RonaqFlowTests` — `testEnglishBaselineScreens`,
+  `testArabicLaunchScreens`, `testArabicByInAppLanguageSwitch`,
+  `testGuestReachesHomeAndTheTabsRespond`: all pass.
+
+### Known limitation
+
+Base direction is inferred per paragraph from the first strong character rather than taken
+from `LocalLayoutDirection`. A string that *starts* with Latin in an Arabic build therefore
+gets a left-to-right base. Carrying the real direction across the bridge means a new text
+prop in the Kotlin core plus all four renderers, and would need Android and Web evidence
+this change does not have. Not attempted here.
+
+`core-render-android`'s `KRRichTextView.createStaticLayoutBuilder` hardcodes
+`setTextDirection(TextDirectionHeuristics.LTR)`, which is the same class of defect as the
+`baseWritingDirection` half — Android has no equivalent of the `LRO` override, which is why
+Arabic glyph order is right there. Left alone: it cannot be verified without an Arabic
+emulator run, and per the client's `CLAUDE.md` an unverified RTL change does not ship.
+
+### Upstream
+
+Worth offering, and narrowly scoped. Neither line has a test or a stated reason behind it —
+both arrive with the comment «强制使用LTR文本方向» in the initial open-source drop
+(`b35568f4`), and `62432216` only renamed the deprecated constant. Removing the `LRO`
+override is not a behaviour trade-off: it makes every right-to-left script render at all,
+and provably changes nothing for Latin.
