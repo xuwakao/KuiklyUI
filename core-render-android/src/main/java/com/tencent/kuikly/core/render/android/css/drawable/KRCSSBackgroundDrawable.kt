@@ -185,16 +185,49 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
 
     private fun updateBackgroundImage(backgroundImage: String) {
         if (backgroundImage == KRCssConst.EMPTY_STRING) {
+            // Ronaq: a drawable is reused across views, so the gradient *type* has to be
+            // put back as well as the colors — otherwise the next linear gradient on this
+            // view would still be drawn as a sweep.
+            // Ronaq: drawable 会跨视图复用，除颜色外还需复位渐变类型，
+            // 否则该视图上的下一个线性渐变仍会按扫描渐变绘制。
+            gradientType = GradientDrawable.LINEAR_GRADIENT
             colors = intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT) // 清除渐变背景
-        } else {
-            val backgroundImageTriple = parseBackgroundImage(backgroundImage)
-            orientation = backgroundImageTriple.first
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setColors(backgroundImageTriple.second, backgroundImageTriple.third)
-            } else {
-                colors = backgroundImageTriple.second
-            }
+            return
         }
+        val sweep = parseSweepGradient(backgroundImage)
+        if (sweep != null) {
+            applySweepGradient(sweep)
+            return
+        }
+        gradientType = GradientDrawable.LINEAR_GRADIENT
+        val backgroundImageTriple = parseBackgroundImage(backgroundImage)
+        orientation = backgroundImageTriple.first
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            setColors(backgroundImageTriple.second, backgroundImageTriple.third)
+        } else {
+            colors = backgroundImageTriple.second
+        }
+    }
+
+    /**
+     * Ronaq: draw a sweep (conic) gradient with the platform's own [SweepGradient].
+     * Ronaq：以平台自身的 SweepGradient 绘制扫描（锥形）渐变。
+     *
+     * [GradientDrawable] can build a sweep shader — but only ever with `null` positions:
+     * its `SWEEP_GRADIENT` branch passes `tempPositions`, which stays `null` unless
+     * `mUseLevel` is set, so `setColors(colors, offsets)` has no effect on a sweep on any
+     * API level (checked against platform sources for API 30, 35 and 36). The stops are
+     * therefore resolved here into an evenly spaced color ramp, which is exactly what a
+     * `null` position array means to the shader.
+     * GradientDrawable 能构建扫描着色器，但其 SWEEP_GRADIENT 分支恒以 null 位置数组
+     * 调用（除非 mUseLevel），即 setColors(colors, offsets) 对扫描渐变不生效
+     * （已对照 API 30/35/36 平台源码确认）。故此处先把色标解析为等距色带，
+     * 这正是 null 位置数组对着色器的含义。
+     */
+    private fun applySweepGradient(sweep: KRCSSSweepGradient) {
+        gradientType = GradientDrawable.SWEEP_GRADIENT
+        setGradientCenter(sweep.centerX, sweep.centerY)
+        colors = sweep.samples
     }
 
     override fun draw(canvas: Canvas) {
@@ -266,6 +299,46 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         private const val BACKGROUND_IMAGE_COLORS_COLOR_INDEX = 0
         private const val BACKGROUND_IMAGE_COLORS_OFFSET_INDEX = 1
 
+        // Ronaq: the two forms the `backgroundImage` prop can carry.
+        // Ronaq：backgroundImage 属性可承载的两种形式。
+        private const val LINEAR_GRADIENT_PREFIX = "linear-gradient("
+        private const val SWEEP_GRADIENT_PREFIX = "sweep-gradient("
+
+        private const val SWEEP_HEAD_ANGLE_INDEX = 0
+        private const val SWEEP_HEAD_CENTER_X_INDEX = 1
+        private const val SWEEP_HEAD_CENTER_Y_INDEX = 2
+        private const val SWEEP_CENTER_DEFAULT = 0.5f
+        private const val DEGREES_PER_TURN = 360f
+
+        /**
+         * Ronaq: where the wire's offset `0` sits relative to [SweepGradient]'s own zero.
+         * Ronaq：线上偏移 0 相对 SweepGradient 自身零点的位置。
+         *
+         * The wire measures `startAngle` from twelve o'clock and carries a further -90
+         * (see the web renderer's `getCSSConicGradient`, whose CSS `from` angle is
+         * `startAngle - 90`), while [SweepGradient] starts at three o'clock. Twelve
+         * o'clock is a quarter turn *before* three o'clock, so the two conventions differ
+         * by -90 - 90 = -180 degrees.
+         * 线上 startAngle 自十二点起算并再偏 -90（见 Web 渲染层 getCSSConicGradient），
+         * 而 SweepGradient 自三点起算；十二点比三点早四分之一圈，故两者相差 -180 度。
+         */
+        private const val SWEEP_WIRE_ZERO_DEG = -180f
+
+        /**
+         * Ronaq: how finely the turn is sampled for the platform's evenly spaced ramp.
+         * Ronaq：为平台等距色带采样一圈的精度。
+         *
+         * A hard boundary (the same color written at two adjacent offsets, which is how a
+         * wheel divides into wedges) survives as a blend one sample wide, here
+         * `360 / 1023 = 0.35` degrees. On the design's 228dp wheel disc at 3x — 684px
+         * across, 2149px around — that is a 2.1px blend, and the ramp costs one 4KB int
+         * array per background change.
+         * 硬分界（同色写在相邻两个偏移上，即转盘分格的做法）会退化为一个采样宽度的过渡，
+         * 即 0.35 度；在设计的 228dp 转盘上（3 倍屏，直径 684px、周长 2149px）
+         * 相当于 2.1 像素，代价是每次背景变更一个 4KB 数组。
+         */
+        private const val SWEEP_SAMPLE_COUNT = 1024
+
         fun isAllBorderRadiusEqual(radii: FloatArray): Boolean {
             val tl = radii[BORDER_RADII_TL]
             val tr = radii[BORDER_RADII_TR]
@@ -275,8 +348,24 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         }
 
         fun parseBackgroundImage(backgroundImage: String): Triple<Orientation, IntArray, FloatArray> {
-            val linearGradientPrefix = "linear-gradient("
-            val lg = backgroundImage.substring(linearGradientPrefix.length, backgroundImage.length - 1)
+            // Ronaq: a sweep gradient travels in the same prop, so a caller that can only
+            // draw a line (a text foreground span, an image mask) reaches this function
+            // with it. It used to slice at a fixed `"linear-gradient(".length` and then
+            // call `toInt()` on whatever that produced — a NumberFormatException rather
+            // than a fallback. Those callers now get the same stops laid along a line,
+            // which is the approximation they would have had to write by hand.
+            // Ronaq：扫描渐变走同一属性，只会画直线的调用方（文字前景 span、图片蒙版）
+            // 也会走到这里。此前按 "linear-gradient(" 的固定长度切片再 toInt()，
+            // 前缀不同即抛 NumberFormatException 而非回落；现改为把同一组色标铺成直线。
+            if (isSweepGradient(backgroundImage)) {
+                val stops = parseColorStops(splitGradient(backgroundImage, SWEEP_GRADIENT_PREFIX))
+                    ?: return transparentGradient()
+                return Triple(Orientation.LEFT_RIGHT, stops.colors, stops.offsets)
+            }
+            if (!backgroundImage.startsWith(LINEAR_GRADIENT_PREFIX)) {
+                return transparentGradient()
+            }
+            val lg = backgroundImage.substring(LINEAR_GRADIENT_PREFIX.length, backgroundImage.length - 1)
             val splits = lg.split(",")
 
             // parse color
@@ -296,6 +385,160 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
 
             return Triple(direction, colors, offsets)
         }
+
+        /** Ronaq: does this `backgroundImage` carry a sweep gradient? 是否为扫描渐变。 */
+        fun isSweepGradient(backgroundImage: String): Boolean =
+            backgroundImage.startsWith(SWEEP_GRADIENT_PREFIX)
+
+        /**
+         * Ronaq: parse `sweep-gradient(<startAngleDeg> <cxFrac> <cyFrac>,<argb> <stop>,…)`
+         * into the center and the evenly spaced color ramp [SweepGradient] wants.
+         * Ronaq：把上述扫描渐变字符串解析为圆心与 SweepGradient 所需的等距色带。
+         *
+         * Returns `null` for anything that is not a sweep, so the caller can carry on
+         * down the linear path.
+         * 非扫描渐变返回 null，调用方据此继续走线性路径。
+         */
+        fun parseSweepGradient(backgroundImage: String): KRCSSSweepGradient? {
+            if (!isSweepGradient(backgroundImage)) {
+                return null
+            }
+            val splits = splitGradient(backgroundImage, SWEEP_GRADIENT_PREFIX)
+            val stops = parseColorStops(splits) ?: return null
+            val head = splits.first().trim().split(KRCssConst.BLANK_SEPARATOR)
+            val startAngle = head.getOrNull(SWEEP_HEAD_ANGLE_INDEX)?.toFloatOrNull() ?: 0f
+            val centerX = head.getOrNull(SWEEP_HEAD_CENTER_X_INDEX)?.toFloatOrNull()
+                ?: SWEEP_CENTER_DEFAULT
+            val centerY = head.getOrNull(SWEEP_HEAD_CENTER_Y_INDEX)?.toFloatOrNull()
+                ?: SWEEP_CENTER_DEFAULT
+            val shift = wrapTurn((startAngle + SWEEP_WIRE_ZERO_DEG) / DEGREES_PER_TURN)
+            return KRCSSSweepGradient(centerX, centerY, sampleTurn(stops, shift))
+        }
+
+        /**
+         * Ronaq: the body of `<name>(…)`, split on commas. Head first, then the stops.
+         * Ronaq：取 `<name>(…)` 的内容按逗号切分，首项为头部，其余为色标。
+         */
+        private fun splitGradient(value: String, prefix: String): List<String> {
+            val end = if (value.endsWith(")")) value.length - 1 else value.length
+            if (end <= prefix.length) {
+                return emptyList()
+            }
+            return value.substring(prefix.length, end).split(",")
+        }
+
+        /**
+         * Ronaq: the `<argb> <stop>` pairs that follow the head, in wire order.
+         * Ronaq：头部之后的 `<argb> <stop>` 色标序列，保持线上顺序。
+         */
+        private fun parseColorStops(splits: List<String>): KRCSSGradientStops? {
+            if (splits.size < 2) {
+                return null
+            }
+            val colors = ArrayList<Int>(splits.size - 1)
+            val offsets = ArrayList<Float>(splits.size - 1)
+            for (i in 1 until splits.size) {
+                val colorAndOffset = splits[i].trim().split(KRCssConst.BLANK_SEPARATOR)
+                val color = colorAndOffset.getOrNull(BACKGROUND_IMAGE_COLORS_COLOR_INDEX)
+                if (color.isNullOrEmpty()) {
+                    continue
+                }
+                colors.add(color.toColor())
+                offsets.add(
+                    colorAndOffset.getOrNull(BACKGROUND_IMAGE_COLORS_OFFSET_INDEX)?.toFloatOrNull()
+                        ?: 0f
+                )
+            }
+            if (colors.isEmpty()) {
+                return null
+            }
+            if (colors.size == 1) {
+                // A shader needs two ends even when the design only names one color.
+                // 即便设计只给一种颜色，着色器仍需两端。
+                colors.add(colors[0])
+                offsets[0] = 0f
+                offsets.add(1f)
+            }
+            return KRCSSGradientStops(colors.toIntArray(), offsets.toFloatArray())
+        }
+
+        /**
+         * Ronaq: resolve the stops into [SWEEP_SAMPLE_COUNT] evenly spaced colors, turned
+         * by [shift] so the wire's offset `0` lands where the design puts it.
+         * Ronaq：把色标解析为 SWEEP_SAMPLE_COUNT 个等距颜色，并按 shift 旋转，
+         * 使线上偏移 0 落在设计规定的方位。
+         *
+         * Sample `i` is drawn at turn `i / (n - 1)` measured from three o'clock, and shows
+         * the color the wire declares at `that - shift`, wrapped around the turn.
+         * 第 i 个采样绘制于自三点起算的 i/(n-1) 圈处，取线上在 (该值 - shift) 处的颜色，
+         * 越界则绕圈回卷。
+         */
+        private fun sampleTurn(stops: KRCSSGradientStops, shift: Float): IntArray {
+            val last = SWEEP_SAMPLE_COUNT - 1
+            return IntArray(SWEEP_SAMPLE_COUNT) { i ->
+                rampColorAt(stops, wrapTurn(i / last.toFloat() - shift))
+            }
+        }
+
+        /** Ronaq: fold any number of turns into `[0, 1)`. 将任意圈数折回 [0,1)。 */
+        private fun wrapTurn(turn: Float): Float {
+            val wrapped = turn % 1f
+            return if (wrapped < 0f) wrapped + 1f else wrapped
+        }
+
+        /**
+         * Ronaq: the color the stop list declares at [at], clamped outside its range —
+         * the same reading CSS gives a `conic-gradient` whose stops do not span the turn.
+         * Ronaq：色标列表在 at 处的颜色，超出范围则钳制 —— 与 CSS conic-gradient
+         * 对未铺满整圈的色标的处理一致。
+         */
+        private fun rampColorAt(stops: KRCSSGradientStops, at: Float): Int {
+            val offsets = stops.offsets
+            val colors = stops.colors
+            if (at <= offsets.first()) {
+                return colors.first()
+            }
+            for (i in 0 until offsets.size - 1) {
+                val from = offsets[i]
+                val to = offsets[i + 1]
+                if (at >= from && at < to) {
+                    return lerpColor(colors[i], colors[i + 1], (at - from) / (to - from))
+                }
+            }
+            return colors.last()
+        }
+
+        /** Ronaq: straight per-channel ARGB interpolation. 按 ARGB 各通道线性插值。 */
+        private fun lerpColor(from: Int, to: Int, fraction: Float): Int {
+            if (fraction <= 0f) {
+                return from
+            }
+            if (fraction >= 1f) {
+                return to
+            }
+            return Color.argb(
+                lerpChannel(Color.alpha(from), Color.alpha(to), fraction),
+                lerpChannel(Color.red(from), Color.red(to), fraction),
+                lerpChannel(Color.green(from), Color.green(to), fraction),
+                lerpChannel(Color.blue(from), Color.blue(to), fraction)
+            )
+        }
+
+        private fun lerpChannel(from: Int, to: Int, fraction: Float): Int =
+            (from + (to - from) * fraction + 0.5f).toInt().coerceIn(0, 255)
+
+        /**
+         * Ronaq: what an unreadable `backgroundImage` resolves to — nothing drawn, rather
+         * than an exception thrown at whichever component happened to set it. A fresh
+         * pair of arrays each time, because callers keep the ones they are given.
+         * Ronaq：无法解析的 backgroundImage 的结果 —— 不绘制，而非向调用方抛异常。
+         * 每次返回新数组，因为调用方会持有拿到的数组。
+         */
+        private fun transparentGradient(): Triple<Orientation, IntArray, FloatArray> = Triple(
+            Orientation.BOTTOM_TOP,
+            intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT),
+            floatArrayOf(0f, 1f)
+        )
 
         fun parseLinearGradient(backgroundImage: String, size: SizeF, titleMode: Shader.TileMode): LinearGradient? {
             val backgroundImageParseTriple = parseBackgroundImage(backgroundImage)
@@ -387,3 +630,25 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         }
     }
 }
+
+/**
+ * Ronaq: a sweep (conic) gradient resolved for [android.graphics.SweepGradient].
+ * Ronaq：已解析为 android.graphics.SweepGradient 所需形式的扫描（锥形）渐变。
+ *
+ * [samples] is an evenly spaced color ramp rather than a stop list, because
+ * [android.graphics.drawable.GradientDrawable] never hands a sweep its positions —
+ * see `KRCSSBackgroundDrawable.applySweepGradient`.
+ * samples 是等距色带而非色标列表：GradientDrawable 从不把位置数组交给扫描着色器，
+ * 见 KRCSSBackgroundDrawable.applySweepGradient。
+ */
+class KRCSSSweepGradient(
+    val centerX: Float,
+    val centerY: Float,
+    val samples: IntArray
+)
+
+/** Ronaq: the `<argb> <stop>` pairs of a gradient, in wire order. 线上顺序的渐变色标。 */
+private class KRCSSGradientStops(
+    val colors: IntArray,
+    val offsets: FloatArray
+)

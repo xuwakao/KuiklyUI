@@ -45,6 +45,7 @@ import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.compose.ui.unit.LayoutDirection
 import com.tencent.kuikly.compose.ui.unit.isSpecified
 import com.tencent.kuikly.core.views.TextAreaAttr
+import com.tencent.kuikly.core.views.TextConst
 
 internal fun TextAreaAttr.setTextStyle(
     style: TextStyle,
@@ -77,17 +78,15 @@ internal fun TextAreaAttr.setTextStyle(
         }
     }
     style.fontWeight?.also {
-        if (it.weight <= 400) {
-            fontWeightNormal()
-        } else if (it.weight == 500) {
-            fontWeightMedium()
-        } else if (it.weight == 600) {
-            fontWeightBold()
-        } else if (it.weight >= 700) {
-            fontWeightBold()
-        } else {
-            fontWeightNormal()
-        }
+        // Ronaq: the same ladder the read-only text path uses. TextAreaAttr only exposes
+        // normal / medium / bold setters, but they all write the one `fontWeight` prop
+        // and every renderer's table covers 100..900 — so the whole ladder is written
+        // through the prop rather than folded onto three rungs. Before this, 600 and 900
+        // both arrived as "700" and a placeholder could not be lighter than 400.
+        // Ronaq：与只读文本走同一套字重梯度。TextAreaAttr 只暴露 normal/medium/bold，
+        // 但三者写的是同一个 fontWeight 属性，而各渲染层的表覆盖 100..900，
+        // 故直接写属性而非压到三档。此前 600 与 900 同样下发 "700"，占位符也无法细于 400。
+        setProp(TextConst.FONT_WEIGHT, it.toKuiklyFontWeight())
     }
 
     if (style.lineHeight.isSpecified) {

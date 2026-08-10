@@ -55,8 +55,11 @@ import com.tencent.kuikly.core.exception.throwRuntimeError
  * @param shape shape of the border
  */
 @Stable
-fun Modifier.border(border: BorderStroke, shape: Shape = RectangleShape) =
-    border(width = border.width, brush = border.brush, shape = shape)
+fun Modifier.border(
+    border: BorderStroke,
+    shape: Shape = RectangleShape,
+    style: BorderStyle = BorderStyle.SOLID
+) = border(width = border.width, brush = border.brush, shape = shape, style = style)
 
 /**
  * Modify element to add border with appearance specified with a [width], a [color] and a [shape]
@@ -67,8 +70,12 @@ fun Modifier.border(border: BorderStroke, shape: Shape = RectangleShape) =
  * @param shape shape of the border
  */
 @Stable
-fun Modifier.border(width: Dp, color: Color, shape: Shape = RectangleShape) =
-    border(width, SolidColor(color), shape)
+fun Modifier.border(
+    width: Dp,
+    color: Color,
+    shape: Shape = RectangleShape,
+    style: BorderStyle = BorderStyle.SOLID
+) = border(width, SolidColor(color), shape, style)
 
 /**
  * Modify element to add border with appearance specified with a [width], a [brush] and a [shape]
@@ -79,20 +86,26 @@ fun Modifier.border(width: Dp, color: Color, shape: Shape = RectangleShape) =
  * @param shape shape of the border
  */
 @Stable
-fun Modifier.border(width: Dp, brush: Brush, shape: Shape) =
-    this then BorderModifierNodeElement(width, brush, shape)
+fun Modifier.border(
+    width: Dp,
+    brush: Brush,
+    shape: Shape,
+    style: BorderStyle = BorderStyle.SOLID
+) = this then BorderModifierNodeElement(width, brush, shape, style)
 
 internal data class BorderModifierNodeElement(
     val width: Dp,
     val brush: Brush,
-    val shape: Shape
+    val shape: Shape,
+    val style: BorderStyle = BorderStyle.SOLID
 ) : ModifierNodeElement<BorderModifierNode>() {
-    override fun create() = BorderModifierNode(width, brush, shape)
+    override fun create() = BorderModifierNode(width, brush, shape, style)
 
     override fun update(node: BorderModifierNode) {
         node.width = width
         node.brush = brush
         node.shape = shape
+        node.style = style
     }
 
     override fun InspectorInfo.inspectableProperties() {
@@ -105,13 +118,23 @@ internal data class BorderModifierNodeElement(
             properties["brush"] = brush
         }
         properties["shape"] = shape
+        properties["style"] = style
     }
 }
 
 internal class BorderModifierNode(
     var width: Dp,
     var brush: Brush,
-    shape: Shape
+    shape: Shape,
+    // Ronaq: the line style the border is stroked with. Kuikly's core `Border` has
+    // carried solid / dashed / dotted since the first drop and every renderer forwards
+    // it (web writes CSS `border-style`, Android and iOS draw the dash pattern); the
+    // Compose DSL was the only layer that hardcoded SOLID, which is why a design
+    // calling for a dashed placeholder outline could not be expressed at all.
+    // Ronaq：描边线型。core 的 Border 自始即含 solid/dashed/dotted，各渲染层也都转发
+    //（Web 写 CSS border-style，Android/iOS 绘制虚线），只有 Compose DSL 写死了 SOLID，
+    // 故设计中的虚线占位边框此前根本无法表达。
+    var style: BorderStyle = BorderStyle.SOLID
 ) : DrawModifierNode, LayoutAwareModifierNode, Modifier.Node() {
 
     var shape: Shape = shape
@@ -163,7 +186,7 @@ internal class BorderModifierNode(
             view!!.borderRadius(roundRect!!)
         }
 
-        view!!.getViewAttr().border(Border(width.value, BorderStyle.SOLID, color.toKuiklyColor()))
+        view!!.getViewAttr().border(Border(width.value, style, color.toKuiklyColor()))
 
         drawContent()
     }

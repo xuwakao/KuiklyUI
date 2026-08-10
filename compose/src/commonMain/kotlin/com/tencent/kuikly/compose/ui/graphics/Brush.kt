@@ -21,7 +21,9 @@ import androidx.compose.runtime.Stable
 import com.tencent.kuikly.compose.ui.geometry.Offset
 import com.tencent.kuikly.compose.ui.geometry.Size
 import com.tencent.kuikly.compose.ui.geometry.isFinite
+import com.tencent.kuikly.compose.ui.geometry.isSpecified
 import com.tencent.kuikly.compose.ui.text.style.modulate
+import com.tencent.kuikly.core.base.Attr
 import com.tencent.kuikly.core.base.ColorStop
 import com.tencent.kuikly.core.base.DeclarativeBaseView
 import com.tencent.kuikly.core.base.Direction
@@ -272,6 +274,68 @@ sealed class Brush {
             start = Offset(0.0f, startY),
             end = Offset(0.0f, endY),
             tileMode = tileMode
+        )
+
+        /**
+         * Creates a sweep (angular / conic) gradient: the colors are swept around
+         * [center] rather than along a line.
+         * 创建扫描（角度／锥形）渐变：颜色绕 [center] 旋转分布，而非沿直线分布。
+         *
+         * ```
+         *  Brush.sweepGradient(
+         *      0.00f to Color.Red,
+         *      0.25f to Color.Red,     // a hard edge: repeat the color at both ends
+         *      0.25f to Color.Blue,    // 硬分界：同一颜色在两端各写一次
+         *      1.00f to Color.Blue,
+         *  )
+         * ```
+         *
+         * As in `androidx.compose.ui.graphics.Brush.sweepGradient`, offset `0` is at
+         * three o'clock and the sweep runs clockwise. [startAngle] rotates the whole
+         * sweep and is the one addition over the androidx signature: it exists because
+         * a wheel or ring almost always wants its first boundary at twelve o'clock
+         * (`startAngle = -90f`), which otherwise has to be folded into every stop.
+         * 与 androidx 一致：偏移 0 在三点方向、顺时针扫描。[startAngle] 旋转整个扫描，
+         * 是相对 androidx 签名唯一的增补 —— 转盘/圆环通常希望首个分界在十二点方向
+         *（startAngle = -90f），否则每个色标都要自行折算。
+         *
+         * @param colorStops Colors and their offset (0..1) around the turn
+         * @param center Centre of the sweep in pixels; [Offset.Unspecified] means the
+         * centre of the drawing area
+         * @param startAngle Degrees the sweep is rotated by; 0 keeps androidx behaviour
+         */
+        @Stable
+        fun sweepGradient(
+            vararg colorStops: Pair<Float, Color>,
+            center: Offset = Offset.Unspecified,
+            startAngle: Float = 0f
+        ): Brush = SweepGradient(
+            colors = List<Color>(colorStops.size) { i -> colorStops[i].second },
+            stops = List<Float>(colorStops.size) { i -> colorStops[i].first },
+            center = center,
+            startAngle = startAngle
+        )
+
+        /**
+         * Creates a sweep (angular / conic) gradient with the colors evenly distributed
+         * around the turn.
+         * 创建颜色沿一周均匀分布的扫描（锥形）渐变。
+         *
+         * @param colors Colors to be swept around [center]
+         * @param center Centre of the sweep in pixels; [Offset.Unspecified] means the
+         * centre of the drawing area
+         * @param startAngle Degrees the sweep is rotated by; 0 keeps androidx behaviour
+         */
+        @Stable
+        fun sweepGradient(
+            colors: List<Color>,
+            center: Offset = Offset.Unspecified,
+            startAngle: Float = 0f
+        ): Brush = SweepGradient(
+            colors = colors,
+            stops = null,
+            center = center,
+            startAngle = startAngle
         )
     }
 }
@@ -638,3 +702,150 @@ class LinearGradient internal constructor(
                 "tileMode=$tileMode)"
     }
 }
+/**
+ * Ronaq: brush implementation for a sweep (angular / conic) gradient.
+ * Ronaq：扫描（角度／锥形）渐变画刷。
+ *
+ * ### Why this exists
+ *
+ * The kit had linear gradients and nothing else, so every design that reads as a *ring*
+ * — a lucky wheel divided into wedges, an avatar frame, a rotating halo — could only be
+ * approximated by a horizontal ramp. For a wheel the approximation loses the thing that
+ * carries the meaning: the wedge boundaries are what make the pointer say anything, and
+ * a smooth left-to-right ramp has none.
+ * 套件此前只有线性渐变，因此一切「环形」表达 —— 分格转盘、头像框、旋转光晕 ——
+ * 只能用横向渐变近似。对转盘而言，近似恰好丢掉了承载语义的部分：
+ * 有了分格边界指针才有意义，而平滑的横向渐变一条边界也没有。
+ *
+ * ### How it reaches a renderer
+ *
+ * The core layer models a background gradient as one string under the `backgroundImage`
+ * prop, `linear-gradient(<directionOrdinal>,<color> <stop>,...)`, which every renderer
+ * parses positionally. A sweep is emitted in the same prop as
+ * `sweep-gradient(<startAngleDeg> <centreXFraction> <centreYFraction>,<color> <stop>,...)`.
+ * 核心层把背景渐变建模为 backgroundImage 属性下的一个字符串，各渲染层按位置解析；
+ * 扫描渐变以同一属性、上述形状下发。
+ *
+ * **Only the web renderer parses that form today**, so this brush asks the pager which
+ * renderer it is talking to and falls back to the horizontal ramp everywhere else —
+ * i.e. exactly the approximation callers write by hand now, rather than a blank view.
+ * The fallback is not a preference: `KRCSSBackgroundDrawable.parseBackgroundImage`
+ * (Android) slices the string at a fixed `"linear-gradient(".length` and would parse a
+ * differently-prefixed value into a `NumberFormatException`, and
+ * `UIView+CSS.p_tryToParseWithLinearGradient` (iOS) requires the same prefix and draws
+ * nothing without it. Giving those two, and OHOS, a real sweep is a change inside each
+ * renderer and is listed in `CHANGES.md` as outstanding.
+ * **目前仅 Web 渲染层解析该形式**，故此画刷询问 pager 当前渲染层，其余平台回落为横向渐变 ——
+ * 即调用方现在手写的那种近似，而非空白视图。回落并非偏好：Android 的解析按
+ * "linear-gradient(" 的固定长度切片，前缀不同会抛 NumberFormatException；
+ * iOS 则要求同一前缀，否则不绘制。为这两端与 OHOS 补真正的扫描渐变属各渲染层内部改动，
+ * 已在 CHANGES.md 记为未完成项。
+ */
+@Immutable
+class SweepGradient internal constructor(
+    val colors: List<Color>,
+    val stops: List<Float>? = null,
+    val center: Offset = Offset.Unspecified,
+    val startAngle: Float = 0f
+) : Brush() {
+
+    val colorStops: ArrayList<ColorStop> by lazy {
+        val tStops = stops ?: evenlyDistributedStops(colors.size)
+        val res = arrayListOf<ColorStop>()
+        colors.forEachIndexed { index, color ->
+            val stop = tStops.getOrNull(index) ?: 1f
+            res.add(ColorStop(color.toKuiklyColor(), stop))
+        }
+        res
+    }
+
+    /**
+     * Sets itself as the paint's shader, as [LinearGradient] does. A Canvas draw does
+     * not honour it yet: `Paint.toKuiklyLinearGradient` casts the shader to
+     * [LinearGradient] and a sweep safely resolves to null there, so the shape is
+     * painted with the paint's flat colour rather than a wrong gradient.
+     * 与 LinearGradient 一样把自身设为 shader。Canvas 绘制暂不支持：
+     * Paint.toKuiklyLinearGradient 将 shader 安全转型为 LinearGradient，扫描渐变在
+     * 那里解析为 null，于是以纯色而非错误的渐变绘制。
+     */
+    override fun applyTo(size: Size, p: Paint, alpha: Float) {
+        p.alpha = DefaultAlpha
+        p.shader = if (alpha == DefaultAlpha) this else copy(alpha)
+    }
+
+    override fun applyTo(view: DeclarativeBaseView<*, *>, alpha: Float) {
+        val brush = if (alpha.isNaN() || alpha >= 1f) this else copy(alpha)
+        if (view.getPager().pageData.isWeb) {
+            view.getViewAttr().setProp(Attr.StyleConst.BACKGROUND_IMAGE, brush.toPropValue(view))
+        } else {
+            // Same stops, laid out along the closest line the renderer can draw.
+            // 同样的色标，铺成该渲染层能画的最接近的直线渐变。
+            view.getViewAttr().backgroundLinearGradient(
+                Direction.TO_RIGHT,
+                *brush.colorStops.toTypedArray()
+            )
+        }
+    }
+
+    /**
+     * The `backgroundImage` value for this sweep, with the centre resolved against the
+     * view's own frame when it has one.
+     * 本扫描渐变对应的 backgroundImage 值；视图已有 frame 时据其解析圆心。
+     */
+    internal fun toPropValue(view: DeclarativeBaseView<*, *>?): String {
+        var centreX = CENTRE_FRACTION
+        var centreY = CENTRE_FRACTION
+        if (center.isSpecified) {
+            val frame = view?.renderView?.currentFrame
+            if (frame != null && frame.width > 0f && frame.height > 0f) {
+                centreX = center.x / frame.width
+                centreY = center.y / frame.height
+            }
+        }
+        val builder = StringBuilder(SWEEP_GRADIENT_PREFIX)
+        builder.append(startAngle).append(' ').append(centreX).append(' ').append(centreY)
+        colorStops.forEach { builder.append(',').append(it) }
+        return builder.append(')').toString()
+    }
+
+    override fun copy(alpha: Float): SweepGradient = SweepGradient(
+        colors = colors.map { it.modulate(alpha) },
+        stops = stops,
+        center = center,
+        startAngle = startAngle
+    )
+
+    private fun evenlyDistributedStops(colorCount: Int): List<Float> {
+        if (colorCount <= 1) return listOf(0f)
+        return List(colorCount) { i -> i.toFloat() / (colorCount - 1) }
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is SweepGradient) return false
+
+        if (colors != other.colors) return false
+        if (stops != other.stops) return false
+        if (center != other.center) return false
+        if (startAngle != other.startAngle) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = colors.hashCode()
+        result = 31 * result + (stops?.hashCode() ?: 0)
+        result = 31 * result + center.hashCode()
+        result = 31 * result + startAngle.hashCode()
+        return result
+    }
+
+    override fun toString(): String =
+        "SweepGradient(colors=$colors, stops=$stops, center=$center, startAngle=$startAngle)"
+}
+
+/** The prefix the web renderer keys a sweep gradient on. Web 渲染层据以识别扫描渐变的前缀。 */
+private const val SWEEP_GRADIENT_PREFIX = "sweep-gradient("
+
+/** Centre of the drawing area, used when no explicit centre is given. 默认圆心。 */
+private const val CENTRE_FRACTION = 0.5f

@@ -21,6 +21,7 @@ import com.tencent.kuikly.compose.ui.graphics.Brush
 import com.tencent.kuikly.compose.ui.graphics.Color
 import com.tencent.kuikly.compose.ui.graphics.LinearGradient
 import com.tencent.kuikly.compose.ui.graphics.SolidColor
+import com.tencent.kuikly.compose.ui.graphics.SweepGradient
 import com.tencent.kuikly.compose.ui.graphics.lerp as lerpColor
 import com.tencent.kuikly.compose.ui.graphics.isSpecified
 import kotlin.jvm.JvmName
@@ -81,6 +82,15 @@ internal interface TextForegroundStyle {
                 null -> Unspecified
                 is SolidColor -> from(brush.value.modulate(alpha))
                 is LinearGradient -> BrushStyle(brush, alpha)
+                // Ronaq: a sweep brush paints a view background, not glyphs. The text
+                // path hands the renderer a `backgroundImage` string that only the
+                // linear form is parsed from on the way into a foreground span, so a
+                // sweep would arrive as an unpaintable value; the style resolves to
+                // Unspecified and the text keeps its declared colour instead.
+                // Ronaq：扫描画刷用于视图背景而非字形。文本路径下发的 backgroundImage
+                // 在转为前景 span 时只解析线性形式，扫描值到那里无法绘制；
+                // 故此处解析为 Unspecified，文本保留其声明颜色。
+                is SweepGradient -> Unspecified
 //                is ShaderBrush -> BrushStyle(brush, alpha)
             }
         }

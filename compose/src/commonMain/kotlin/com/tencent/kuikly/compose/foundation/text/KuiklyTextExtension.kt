@@ -172,21 +172,44 @@ internal fun TextAttr.applyFontStyle(fontStyle: FontStyle?) {
 
 // Handles font weight with reuse optimization
 internal fun TextAttr.applyFontWeight(fontWeight: FontWeight?) {
-    val weightValue: String = when (fontWeight) {
-        FontWeight.W100 -> "300"
-        FontWeight.W200 -> "200"
-        FontWeight.W300 -> "300"
-        FontWeight.W400, null -> "400"
-        FontWeight.W500 -> "500"
-        FontWeight.W600 -> "600"
-        FontWeight.W700, FontWeight.W800, FontWeight.W900 -> "700"
-        else -> "400"
-    }
-    
-    if (weightValue == "400" && getProp(TextConst.FONT_WEIGHT) == null) {
+    val weightValue: String = fontWeight.toKuiklyFontWeight()
+
+    if (weightValue == KUIKLY_FONT_WEIGHT_DEFAULT && getProp(TextConst.FONT_WEIGHT) == null) {
         return
     }
     setProp(TextConst.FONT_WEIGHT, weightValue)
+}
+
+/** The wire value every renderer's font-weight table is keyed on. 各渲染层字重表的键。 */
+internal const val KUIKLY_FONT_WEIGHT_DEFAULT = "400"
+
+/**
+ * Ronaq: maps a Compose [FontWeight] onto the `fontWeight` prop the renderers read.
+ * Ronaq：将 Compose 的 FontWeight 映射为各渲染层读取的 fontWeight 属性值。
+ *
+ * The previous table collapsed W700/W800/W900 onto "700" and W100 onto "300", so a
+ * label declared `FontWeight.Black` was indistinguishable from `FontWeight.Bold` on
+ * every platform at once. Nothing below this point required it: `TextAttr` already
+ * offers `fontWeightExtraBold()` / `fontWeightBlack()` ("800" / "900"), iOS maps those
+ * strings to `UIFontWeightHeavy` / `UIFontWeightBlack`, Android to its extra-bold and
+ * black stroke widths, and the web renderer assigns them straight to CSS
+ * `font-weight`. The cap lived only in this `when`.
+ * 旧表把 W700/W800/W900 一并压成 "700"、把 W100 压成 "300"，于是 FontWeight.Black
+ * 与 Bold 在三端同时不可分辨。下游从未要求如此：TextAttr 本就提供 "800"/"900"，
+ * iOS 映射为 Heavy/Black，Android 映射为其加粗描边，Web 直接写入 CSS font-weight。
+ * 上限只存在于这张表里。
+ *
+ * The value is snapped to the nearest hundred in 100..900 because that is the wire
+ * contract: the iOS and Android lookup tables key on those exact strings and fall back
+ * to regular for anything else, so an arbitrary `FontWeight(650)` must not be forwarded
+ * verbatim — it would render lighter than the 600 it sits above.
+ * 取值就近取整到 100..900：iOS/Android 的查表以这些字符串为键，其余一律回落常规字重，
+ * 故 FontWeight(650) 不能原样下发 —— 那会比它上面的 600 还细。
+ */
+internal fun FontWeight?.toKuiklyFontWeight(): String {
+    val weight = this?.weight ?: return KUIKLY_FONT_WEIGHT_DEFAULT
+    val snapped = ((weight + 50) / 100 * 100).coerceIn(100, 900)
+    return snapped.toString()
 }
 
 internal fun TextAttr.applyFontFamily(fontFamily: FontFamily?) {

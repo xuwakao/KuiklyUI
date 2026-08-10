@@ -275,3 +275,470 @@ both arrive with the comment «强制使用LTR文本方向» in the initial open
 (`b35568f4`), and `62432216` only renamed the deprecated constant. Removing the `LRO`
 override is not a behaviour trade-off: it makes every right-to-left script render at all,
 and provably changes nothing for Latin.
+
+## 4. The Compose DSL stops capping font weight at 700
+
+**Files** · `compose/.../foundation/text/KuiklyTextExtension.kt`,
+`compose/.../foundation/text/BasicTextField.kt`
+**Driven by** · `prototype/` — the presentation baseline (parent `CLAUDE.md` §4). The
+design declares 800 or 900 on the labels that carry a screen; `:shared` already asks for
+a weight above 700 at 260 call sites (136 of them `FontWeight.Black` or `ExtraBold` by
+name), and every one of them rendered 700.
+**Date** · 2026-08-09
+
+### What goes wrong here
+
+Every label the design draws at 800 or 900 rendered at 700, on every screen at once. The
+cap is one `when` in the Compose text path:
+
+```kotlin
+// KuiklyTextExtension.applyFontWeight — before
+FontWeight.W100 -> "300"
+…
+FontWeight.W700, FontWeight.W800, FontWeight.W900 -> "700"
+```
+
+`FontWeight.Black` and `FontWeight.Bold` were therefore indistinguishable, and `W100`
+came out two rungs heavier than asked. A second, independent table in
+`TextAreaAttr.setTextStyle` did the same to text fields, and folded 600 onto bold as
+well:
+
+```kotlin
+if (it.weight <= 400) fontWeightNormal()
+else if (it.weight == 500) fontWeightMedium()
+else if (it.weight == 600) fontWeightBold()   // 600 → "700"
+else if (it.weight >= 700) fontWeightBold()   // 800, 900 → "700"
+```
+
+**Nothing below this layer required either.** The cap is a mapping, not a renderer
+limit, and the evidence is in the renderers themselves:
+
+| layer | what it does with the `fontWeight` prop |
+| --- | --- |
+| `core` `TextAttr` | already offers `fontWeightExtraBold()` = `"800"`, `fontWeightBlack()` = `"900"` |
+| iOS `KRConvertUtil` | `gFontWeightMap` maps `"800"` → `UIFontWeightHeavy`, `"900"` → `UIFontWeightBlack` |
+| Android `KRRichTextBuilder.FontWeightSpan` | keys on `"800"` / `"900"` for its extra-bold and black stroke widths |
+| Web `KuiklyRenderCSSKTX` / `KRRichTextView` | assigns the string straight to CSS `font-weight` |
+
+Every one of them has understood 100..900 all along; only the DSL narrowed it.
+
+### The change
+
+Both tables now go through one function, `FontWeight?.toKuiklyFontWeight()`, which snaps
+the weight to the nearest hundred in 100..900 and emits it. Snapping is deliberate: the
+iOS and Android tables key on those exact strings and fall back to *regular* for anything
+else, so forwarding an arbitrary `FontWeight(650)` verbatim would render it lighter than
+the 600 beneath it. `TextAreaAttr` has only three weight setters, so the text-field path
+writes the same `TextConst.FONT_WEIGHT` prop those setters write.
+
+### Verification (§4)
+
+Web build on 127.0.0.1:8231 against the design on 127.0.0.1:8111, both at 430x932 @2x
+under touch emulation, driven through `scripts/web-harness.mjs`.
+
+Login screen, computed `font-weight` per string, design vs implementation:
+
+| string | design | impl before | impl after |
+| --- | --- | --- | --- |
+| `Ronaq` | 900 | 700 | **900** |
+| `Continue with Google` | 800 | 700 | **800** |
+| `Continue with Phone` | 800 | 700 | **800** |
+| `Voice rooms, friends & gifts…` | 400 | 400 | 400 |
+| `Explore as guest` | 400 | 400 | 400 |
+
+Home screen census went from `{400, 700}` to `{400, 700, 800, 900}` — 900 on `Create
+Room`, `Golden Gala Week`, `Claim +50`, `LIVE`; 800 on `Daily check-in` and the day
+chips; 700 retained on the room-card tags. `./gradlew :shared:compileKotlinJs` passes.
+
+### Known limitation — the web build renders no weight above 600 *yet*, for a second reason
+
+The mapping was half the gap. The other half is not in the fork and cannot be fixed here:
+**the web build loads no font.** `document.fonts.size === 0`, no `@font-face` is declared
+in `h5App/src/jsMain/resources/index.html`, and nothing sets a `FontFamily`, so text
+resolves to the platform default — PingFang SC on the macOS baseline — which has no face
+above Semibold. Measured in that browser, `Continue with Google` at 15px:
+
+| declared weight | 400 | 600 | 700 | 800 | 900 |
+| --- | --- | --- | --- | --- | --- |
+| PingFang SC (default) | 150.72px | 154.75px | 154.75px | 154.75px | 154.75px |
+| Helvetica | 143.44px | — | 154.98px | 154.98px | 154.98px |
+
+One synthesised bold serves 600 and above; 700, 800 and 900 are metrically identical. The
+design bundles Cairo at 400/600/700/800/900 as `@font-face` and gets five distinct faces.
+
+So after this change the web DOM matches the design's weights exactly and **iOS and
+Android render differently immediately** (their system fonts do have Heavy and Black, and
+Android's span picks a heavier stroke per rung), while web will not look different until
+a family with those faces is bundled and selected. That is app-side work — a webfont in
+`h5App`'s `index.html` plus a `FontFamily` in the shared theme — and is reported rather
+than done here, because the fork must not carry product assets.
+
+### Upstream
+
+Worth offering, and it is a plain bug rather than a trade-off: the mapping contradicted
+the layer directly beneath it, which has always accepted 100..900, and no test or comment
+defended the collapse. The snapping rule is the only judgement call, and it can be dropped
+if upstream would rather widen the iOS and Android tables to interpolate.
+
+## 5. `Modifier.border` can draw the dashed and dotted styles core already models
+
+**Files** · `compose/.../foundation/Border.kt`
+**Driven by** · `prototype/` — the presentation baseline (parent `CLAUDE.md` §4): an
+unoccupied mic seat is `1.5px dashed rgba(255,255,255,.15)`, the "Become guardian" chip
+`1px dashed rgba(255,255,255,.3)`
+**Date** · 2026-08-09
+
+### What goes wrong here
+
+`BorderModifierNode.draw` hardcoded the line style:
+
+```kotlin
+view.getViewAttr().border(Border(width.value, BorderStyle.SOLID, color.toKuiklyColor()))
+```
+
+`BorderStyle` has had `SOLID` / `DOTTED` / `DASHED` since the initial open-source drop,
+`Attr.border` serialises whichever it is given, and the web renderer assigns it straight
+to CSS `border-style`. Only the Compose DSL threw the choice away, so a dashed outline —
+which the design uses for every "this slot is empty, act on it" affordance — could not be
+expressed at all, and the client's `unimplemented.md` recorded it twice as *"this
+renderer has no dash"*. It has one; the DSL did not reach it.
+
+### The change
+
+An optional `style: BorderStyle = BorderStyle.SOLID` on the three `Modifier.border`
+overloads, threaded through `BorderModifierNodeElement` to the node and into `Border`.
+Every existing call site is source-compatible and keeps solid borders by construction.
+
+The parameter type is core's own `BorderStyle` rather than a new Compose enum: it is
+already in `Modifier.border`'s file (it was the hardcoded constant), it is what `Attr`
+takes, and inventing a parallel enum would mean a mapping table for three values.
+
+### Verification (§5)
+
+Verified in the browser with a real caller: `RoomScreen`'s mic grid passes
+`style = if (seat.occupant == null) BorderStyle.DASHED else BorderStyle.SOLID`, and the
+two empty seats in the Saudi Majlis room report
+`border: 1px dashed rgba(255, 255, 255, 0.15)` at 58x58 with a 50% radius. The design's
+own DOM for the same seats reports `1px dashed rgba(255, 255, 255, 0.15)` at 56x56.
+Occupied seats in the same grid still report `solid`, as does every other bordered
+element on the screen (chips, banner, avatars, LIVE pill) — the default did not move.
+
+### Upstream
+
+Worth offering. It exposes a capability the kit already ships end to end and adds no
+concept: one defaulted parameter, no behaviour change for any existing call site, and the
+renderers need no work. `androidx` has no dashed-border modifier, so a maintainer may want
+the parameter named or placed differently, but the gap it closes is real for any design
+system that uses a dashed outline for an empty slot.
+
+## 6. A sweep (conic) gradient brush, and the web renderer that draws it
+
+**Files** · `compose/.../ui/graphics/Brush.kt`,
+`compose/.../ui/text/style/TextForegroundStyle.kt`,
+`core-render-web/base/.../ktx/KuiklyRenderCSSKTX.kt`
+**Driven by** · `prototype/` — the presentation baseline (parent `CLAUDE.md` §4): the
+lucky wheel disc is
+`conic-gradient(#8E1B4B 0deg 45deg, #3B2B8E 45deg 90deg, … #B4233A 315deg 360deg)`
+**Date** · 2026-08-09
+
+### What goes wrong here
+
+The kit had `Brush.linearGradient` and its horizontal / vertical shorthands, and nothing
+else. Every ring in the design — the eight-wedge lucky wheel, the rotating avatar frames,
+the halo behind a live badge — had to be approximated by a horizontal ramp, and the
+client's `RoomScreen` says so in a comment at each site.
+
+For the wheel the approximation loses the part that carries the meaning. The wheel exists
+to be pointed at: the pointer sits at twelve o'clock and a spin settles on a wedge. A
+smooth left-to-right ramp has no wedges, so the pointer indicates nothing, and no amount
+of colour tuning recovers it. This is the one case where "closest available brush" is not
+a near miss but a different object.
+
+### The change
+
+`Brush.sweepGradient(…)`, matching `androidx.compose.ui.graphics.Brush.sweepGradient`
+(offset 0 at three o'clock, clockwise, optional pixel `center`) with one addition: a
+`startAngle` in degrees. A wheel or ring nearly always wants its first boundary at twelve
+o'clock, and without the parameter that has to be folded into every stop by hand, which
+is exactly the kind of arithmetic that silently rotates a wheel by one wedge.
+
+A hard boundary is a repeated colour at two adjacent offsets, as in CSS. The design's
+disc is:
+
+```kotlin
+Brush.sweepGradient(
+    0.000f to wedge0, 0.125f to wedge0,
+    0.125f to wedge1, 0.250f to wedge1,
+    …
+    0.875f to wedge7, 1.000f to wedge7,
+    startAngle = -90f,
+)
+```
+
+**Transport.** The core layer models a background gradient as one string under the
+`backgroundImage` prop, `linear-gradient(<directionOrdinal>,<color> <stop>,…)`, parsed
+positionally by each renderer. A sweep goes in the same prop as
+`sweep-gradient(<startAngleDeg> <centreXFraction> <centreYFraction>,<color> <stop>,…)`,
+and `getCSSBackgroundImage` turns it into `conic-gradient(from <angle-90>deg at x% y%, …)`.
+The fixed -90 is the difference between the two conventions: CSS starts a conic gradient
+at twelve o'clock, `Brush.sweepGradient` at three.
+
+**Why the brush asks which renderer it is talking to.** `SweepGradient.applyTo(view)`
+emits the sweep form only when `pageData.isWeb`, and otherwise falls back to
+`backgroundLinearGradient` with the same stops — Android, iOS, OHOS and the mini-program
+runtime all take the fallback. This is not a preference between platforms; two of those
+renderers cannot survive the string at all:
+
+- Android `KRCSSBackgroundDrawable.parseBackgroundImage` slices at a fixed
+  `"linear-gradient(".length` and then calls `.toInt()` on what it finds — a
+  differently-prefixed value is a `NumberFormatException`, not a fallback.
+- iOS `UIView+CSS.p_tryToParseWithLinearGradient` requires the same prefix and returns
+  `NO` without it, leaving the view with no background at all.
+
+So the fallback is the approximation callers write by hand today, and nothing regresses
+where the capability is not yet implemented. Giving Android, iOS and OHOS a real sweep is
+a change inside each renderer (Android has `android.graphics.SweepGradient`; iOS needs a
+drawn `CGGradient` since `CAGradientLayer` has no conic type) and is **outstanding** —
+listed here so the next person does not have to rediscover why web is ahead.
+
+> **Corrected by §7 (2026-08-10).** Android and iOS now parse and draw the sweep form.
+> Two statements above did not survive contact with the platforms and are left in place
+> only because this file records what was believed at the time: iOS **does** have a conic
+> `CAGradientLayer` (`kCAGradientLayerConic`, iOS 12 / macOS 10.14), so no drawn
+> `CGGradient` was needed; and Android's `GradientDrawable` *can* build a sweep shader but
+> never gives it stop positions, so the Android half is not a straight port of the linear
+> parser. The `pageData.isWeb` gate in `SweepGradient.applyTo` is **still in place** and
+> still has to be lifted before either renderer sees a sweep — see §7 «What is still
+> missing».
+
+`SweepGradient` deliberately has **no companion object**; its two constants are private
+top-level ones. With them in a companion, `:shared`'s `kspKotlinJs` died with
+`KotlinIllegalArgumentException … from RAW_FIR to TYPES, current declaration phase
+COMPANION_GENERATION` the moment a shared file referenced `Brush.sweepGradient` — KSP's
+Analysis API resolves this module from source under `useLocalKuikly=true`, and it cannot
+take that companion. Moving the constants out fixed it with no other change. Do not put
+one back without re-running `./gradlew :shared:compileKotlinJs`.
+（`SweepGradient` 刻意不带 companion object：带上后，共享层一旦引用
+`Brush.sweepGradient`，`:shared:kspKotlinJs` 即在 COMPANION_GENERATION 阶段崩溃。）
+
+`TextForegroundStyle.from` resolves a sweep brush to `Unspecified` rather than a
+`BrushStyle`: the text path converts a background-image string into a foreground span and
+only parses the linear form, so a sweep would arrive there unpaintable. Text keeps its
+declared colour instead.
+
+### Verification (§6)
+
+Web build on :8231 against the design on :8111, driven through `scripts/web-harness.mjs`.
+
+Verified with the real caller: `RoomScreen`'s lucky wheel now builds its disc with
+`Brush.sweepGradient(colorStops = wheelWedgeStops(), startAngle = WHEEL_TOP_DEG)`, and the
+rendered disc is eight discrete wedges with a visible boundary per prize and the first
+boundary at twelve o'clock under the pointer — the same reading as the design's own
+`conic-gradient(#8E1B4B 0deg 45deg, …)`. The element reported
+`linear-gradient(to right, …)` before and `conic-gradient(from …deg at 50% 50%, …)` after.
+
+An earlier instrumented build, in which every `Brush.horizontalGradient(List)` was routed
+through the sweep, confirmed the same conversion on unrelated elements and that the
+angle convention holds (`startAngle = -90f` arrives as CSS `from -180deg`, since the
+renderer subtracts a further 90 for the twelve-o'clock CSS origin).
+
+Regression: with the instrumentation removed, every gradient on the room screen reports
+`linear-gradient` again, byte-identical to the pre-change strings.
+
+Frames: `build/wh-fork-evidence/` — `impl-wheel-before-sweep.png`,
+`impl-wheel-after-sweep.png`, `design-wheel.png`.
+
+### Upstream
+
+`Brush.sweepGradient` restores an androidx API this port dropped rather than adding a
+Kuikly concept, and the renderer half is 30 lines beside the linear parser. Worth
+offering. A maintainer may reasonably want the three remaining renderers in the same
+change, and may prefer the fallback to live in each renderer rather than in the brush —
+both are improvements on this shape, and neither was reachable from a web-only slice.
+
+## 7. Android and iOS draw the sweep gradient the web renderer already draws
+
+**Files** · `core-render-android/.../css/drawable/KRCSSBackgroundDrawable.kt`,
+`core-render-ios/Extension/Category/UIView+CSS.m`
+**Driven by** · `prototype/` — the presentation baseline (parent `CLAUDE.md` §4): the
+lucky wheel disc is
+`conic-gradient(#8E1B4B 0deg 45deg, #3B2B8E 45deg 90deg, … #B4233A 315deg 360deg)`, and
+the wheel float is `conic-gradient(#FF5C8A,#F5C15C,#4EE1C1,#7B5CFF,#FF5C8A)`
+**Date** · 2026-08-10
+
+### What goes wrong here
+
+§6 added `Brush.sweepGradient` and taught the web renderer to draw it, and recorded why
+the other three renderers could not take the string at all. Both reasons were real:
+
+- Android `KRCSSBackgroundDrawable.parseBackgroundImage` sliced at a fixed
+  `"linear-gradient(".length` and then called `.toInt()` on whatever that produced —
+  a `NumberFormatException` on any other prefix, not a fallback.
+- iOS `CSSGradientLayer.p_tryToParseWithLinearGradient` required the same prefix and
+  returned `NO` without it; `initWithLayer:cssGradient:` ignored the result, so the layer
+  ended up with no colors and drew **nothing**.
+
+So the wheel is eight discrete wedges on web and a smooth left-to-right ramp on the two
+platforms that ship. The wedge boundaries are the part that carries the meaning — the
+pointer sits at twelve o'clock and has to indicate one prize — so this is not a colour
+nuance, it is a different object.
+Web 已能绘制扫描渐变，Android／iOS 仍只能得到横向渐变近似；分格边界正是指针语义的
+前提，故此为实质缺口而非色彩细节。
+
+### The change
+
+Both renderers now recognise
+`sweep-gradient(<startAngleDeg> <cxFrac> <cyFrac>,<argb> <stop>,…)` in the same
+`backgroundImage` prop the linear form travels in, and draw it with the platform's own
+conic primitive. Neither renderer gained a Ronaq concept; both gained a second `if` at
+the point where they already branch on the string's prefix.
+
+**Android** — `parseSweepGradient` resolves the string, `applySweepGradient` sets
+`gradientType = SWEEP_GRADIENT` and the gradient centre. Two things are not obvious:
+
+- **`GradientDrawable` never hands a sweep its stop positions.** Its `SWEEP_GRADIENT`
+  branch builds `SweepGradient(x0, y0, tempColors, tempPositions)` where `tempPositions`
+  is initialised to `null` and only filled when `mUseLevel` is set — `st.mPositions` is
+  read by the linear and nothing else. Checked in the platform sources shipped with the
+  SDK for API 30, 35 and 36; all three are identical. `setColors(colors, offsets)` is
+  therefore inert for a sweep on every API level, and the offsets have to be resolved
+  before the drawable sees them. The stops are sampled into 1024 evenly spaced colors,
+  which is exactly what a `null` position array means to the shader. A hard boundary
+  survives as a blend one sample wide — `360 / 1023 = 0.35°`, which on the design's 228dp
+  disc at 3x (684px across, 2149px around) is 2.1px.
+  GradientDrawable 的扫描分支恒以 null 位置数组构建着色器（API 30/35/36 平台源码一致），
+  故 setColors(colors, offsets) 对扫描渐变不生效；色标须在交给 drawable 前解析为
+  1024 个等距颜色，硬分界退化为 0.35° 的过渡（设计转盘上约 2.1 像素）。
+- **The drawable is reused across views**, so `updateBackgroundImage` now restores
+  `gradientType = LINEAR_GRADIENT` on the linear and the empty paths. Without that, the
+  next linear gradient to land on a recycled view would be drawn as a sweep.
+
+`parseBackgroundImage` keeps its signature and its linear behaviour, and stops throwing:
+a sweep handed to a caller that can only draw a line — a text foreground span, an image
+mask — now yields the same stops laid along `LEFT_RIGHT`, which is the approximation
+those callers would have had to write by hand. An unrecognised prefix yields a
+transparent gradient rather than an exception.
+
+**iOS** — `p_tryToParseWithSweepGradient` runs when the linear parse declines, and
+`p_applySweepGeometry` sets `type = kCAGradientLayerConic`. The locations pass through
+untouched, so the wedges are true hard stops rather than a sampled ramp.
+`kCAGradientLayerConic` has existed since **iOS 12 / macOS 10.14** — §6's claim that
+`CAGradientLayer` has no conic type was wrong, and the drawn `CGGradient` it called for
+is not needed. The pod's iOS deployment target is exactly 12.0, but its macOS target is
+10.13, so the assignment sits behind `@available` and falls back to the linear path
+(`TO_RIGHT`, the same approximation as before) when the type is unavailable.
+
+The whole turn is placed by rotating one ray, which is what the SDK header says the
+property means: «the gradient is centered at `startPoint` and its 0-degrees direction is
+defined by a vector spanned between `startPoint` and `endPoint`». `endPoint` is therefore
+`startPoint + 0.5·(sin θ, −cos θ)`, half a unit away in every case — the header also says
+overlapping points are undefined — and θ = 0 gives straight up, the canonical
+`(0.5, 0.5) → (0.5, 0)` conic recipe, which is the configuration the app's own wheel uses.
+整圈方位由一条射线的旋转决定（SDK 头文件即如此定义 endPoint）；θ=0 即正上方，
+亦即本应用转盘实际使用的配置。
+
+### The angle convention, which is not what `Brush.sweepGradient` documents
+
+`Brush.sweepGradient`'s KDoc says offset `0` sits at three o'clock and `startAngle`
+rotates from there, «as in `androidx.compose.ui.graphics.Brush.sweepGradient`», and gives
+`startAngle = -90f` as the way to put the first boundary at twelve o'clock. **The wire
+does not mean that.** What is actually implemented, end to end, is
+
+> offset `0` is drawn `startAngleDeg − 90` degrees clockwise from **twelve** o'clock
+
+— a half turn away from the KDoc. Three independent facts pin it, and they agree with
+each other:
+
+| where | what it says |
+| --- | --- |
+| `getCSSBackgroundImage` (web) | emits CSS `conic-gradient(from startAngle − 90 …)`, and CSS measures `from` clockwise from twelve o'clock |
+| `RoomScreen.WHEEL_TOP_DEG` | `90f`, commented «so the sweep's offset 0 sits at twelve o'clock» |
+| `prototype/` | `#8E1B4B 0deg 45deg` — the first wedge starts at twelve o'clock |
+
+Under the KDoc's reading, `startAngle = 90f` would put offset `0` at six o'clock and the
+shipped web wheel would be four wedges out of register with the design. It is not. So the
+KDoc is the odd one out, and **these two renderers implement the wire, not the KDoc** —
+that is what keeps all three platforms showing the same wheel.
+KDoc 与线上实际语义相差 180°；Web 渲染层、调用方与设计三者互相印证，故本次以线上语义
+为准，三端因此一致。
+
+Fixing the mismatch is a one-line change in *either* direction — `getCSSConicGradient`'s
+`- 90f` becomes `+ 90f`, or the KDoc is rewritten — but it cannot be done in one place:
+whichever is chosen, `WHEEL_TOP_DEG` moves with it, and that is `:shared`. It is left
+alone here deliberately rather than half-corrected. **Do not "fix" the `- 90f` on its own.**
+
+### What is still missing
+
+- **`SweepGradient.applyTo` still gates the sweep form on `pageData.isWeb`**, so neither
+  renderer receives the string yet and this change is inert until that goes. The gate was
+  correct when it was written — it existed precisely because these two renderers could not
+  survive the string — and its removal is a one-line change in `compose/.../Brush.kt`:
+  emit `BACKGROUND_IMAGE` unconditionally and keep the `backgroundLinearGradient` fallback
+  for OHOS and the mini-program runtime only. That file was outside this change's scope.
+  该网关仍在，故本次改动在其解除前不生效。
+- **OHOS has no sweep.** `core-render-ohos` was not touched and still needs the fallback.
+- **`Paint.toKuiklyLinearGradient`** still resolves a sweep shader to `null`, so a Canvas
+  draw paints the flat paint colour. Unchanged from §6.
+- **Android below API 29 is unaffected by this change either way** — the sampled ramp does
+  not use `setColors(colors, offsets)`, so the sweep behaves identically from API 21 up.
+  The *linear* path's pre-existing API-29 floor is untouched.
+
+### Verification (§7)
+
+**Device verification is outstanding, and this is a skip rather than a pass.** No emulator
+or simulator was reachable from this change; per the client's `CLAUDE.md` an unverified
+claim is a skip. What was established:
+
+- `:core-render-android:compileDebugKotlin` — BUILD SUCCESSFUL.
+- `clang -fsyntax-only -fobjc-arc -Wunguarded-availability` on `UIView+CSS.m` against the
+  iOS simulator SDK at `-target arm64-apple-ios12.0-simulator`: clean. Against the macOS
+  SDK at `-target arm64-apple-macos10.13`: the three pre-existing `NSBezierPath.CGPath`
+  warnings and nothing from the new code, i.e. the `@available` guard is sufficient at the
+  pod's real macOS floor.
+- **The arithmetic was executed, not reasoned about.** A model of `parseSweepGradient` /
+  `sampleTurn` / `rampColorAt`, transcribed statement for statement, was run on the exact
+  wire string the brush emits for the wheel disc. Reading the resulting ramp the way
+  `android.graphics.SweepGradient` reads it — sample `i` at turn `i/1023` clockwise from
+  three o'clock — reproduces the design's own wedge at all 16 compass points sampled
+  (1°, 44°, 46° … 359°), exact hex, no mismatch.
+- The same model for the wheel float's smooth five-colour ramp, evaluated every 5° around
+  the whole turn, is within **1/255** of the design's `conic-gradient` — the 1024-sample
+  quantisation and nothing else. This is the case that would have exposed a wrap-around
+  error: a quarter of that ring crosses offset 1, and a naive rotation that clamped the
+  ends would have flattened it.
+- Rendered side by side in a browser — the design's own CSS, the Android ramp positioned
+  by Android's rule, and the iOS locations positioned by the conic layer's rule — the three
+  discs are the same picture: 26612 pixels compared inside each disc, **0.68%** differing
+  by more than 8/255 for Android (mean error 0.45/255) and **0.24%** for iOS (mean 0.23),
+  every one of them on a wedge boundary. Android's larger residual is the sampled ramp's
+  0.35° blend, exactly as predicted. Frames in the client's `build/wi-fork/`.
+
+What that does **not** establish: that `GradientDrawable` with `SWEEP_GRADIENT` and a
+1024-entry ramp renders as the model says on a real device (Skia may resample a long stop
+list into a smaller lookup table on the GPU path, which would widen the boundary blend);
+that `kCAGradientLayerConic` accepts duplicate `locations` for hard stops; that iOS unit
+coordinates run top-left for a conic layer as they demonstrably do for the axial one; or
+that either platform's rounded-corner clipping composites the new shader correctly. Each
+needs a device.
+以上未证实：真机上的实际绘制、CAGradientLayer 对重复 locations 的处理、锥形图层的单位
+坐标方向，以及圆角裁剪与新着色器的合成 —— 均须真机验证。
+
+### macOS
+
+`kCAGradientLayerConic`'s angle «increases in the direction of rotation of positive x-axis
+towards positive y-axis». On iOS that reads clockwise, because the unit coordinate space
+runs y-down in practice — which is also how the existing linear helper
+`hr_setStartPointAndEndPointWithLayer` reads it («to bottom» runs `y = 0 → 1`). If a macOS
+host presents the layer y-up, the sweep runs counter-clockwise there. Not compensated:
+macOS is not a target of this product, and an untested `#if TARGET_OS_OSX` branch would be
+worse than a recorded caveat.
+
+### Upstream
+
+Worth offering, and both halves are ordinary renderer work rather than a Ronaq concept:
+they complete a capability the kit's own Compose DSL already exposes. The Android half
+carries one finding a maintainer will want independently — `GradientDrawable` silently
+drops sweep positions, which makes `setColors(colors, offsets)` a trap for anyone
+implementing this the obvious way. The natural shape for upstream is this change plus the
+`pageData.isWeb` removal plus OHOS in one series, which is what a maintainer asked for in
+§6 and what a single-renderer slice could not deliver.

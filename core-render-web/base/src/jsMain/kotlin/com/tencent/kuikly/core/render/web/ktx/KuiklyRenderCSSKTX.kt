@@ -30,9 +30,58 @@ import kotlin.math.abs
 fun String.toPercentage(): String = (toFloat() * 100).toString() + "%"
 
 /**
+ * Ronaq: prefix the core layer stamps on a sweep (angular / conic) gradient.
+ * Ronaq：核心层为扫描（锥形）渐变加的前缀。
+ */
+private const val SWEEP_GRADIENT_PREFIX = "sweep-gradient("
+
+/**
+ * Ronaq: convert a sweep gradient into a CSS `conic-gradient`.
+ * Ronaq：将扫描渐变转换为 CSS conic-gradient。
+ *
+ * Wire form: `sweep-gradient(<startAngleDeg> <centreXFraction> <centreYFraction>,<argb> <stop>,…)`.
+ * 线上形式如上。
+ *
+ * Offset 0 is at three o'clock and the sweep runs clockwise, matching
+ * `Brush.sweepGradient` (and `androidx.compose.ui.graphics.Brush.sweepGradient` before
+ * it). CSS starts a `conic-gradient` at twelve o'clock, so the angle carries a fixed
+ * -90 degrees. Repeating a colour at two adjacent offsets gives a hard boundary, which
+ * is what a wheel divided into wedges is made of.
+ * 偏移 0 在三点方向、顺时针，与 Brush.sweepGradient 一致；CSS 的 conic-gradient 自
+ * 十二点起算，故角度固定偏移 -90 度。同一颜色写在相邻两个偏移上即产生硬分界，
+ * 分格转盘正由此构成。
+ */
+private fun getCSSConicGradient(value: String): String {
+    val inner = value.substring(SWEEP_GRADIENT_PREFIX.length, value.length - 1)
+    val parts = inner.split(",")
+    val head = parts[0].split(" ")
+    val startAngle = (head.getOrNull(0)?.toFloatOrNull() ?: 0f) - 90f
+    val centreX = (head.getOrNull(1)?.toFloatOrNull() ?: 0.5f) * 100f
+    val centreY = (head.getOrNull(2)?.toFloatOrNull() ?: 0.5f) * 100f
+    val stops = StringBuilder()
+    for (i in 1 until parts.size) {
+        val colorStopSplit = parts[i].trim().split(" ")
+        if (i != 1) {
+            stops.append(",")
+        }
+        stops.append(colorStopSplit[0].toRgbColor())
+        if (colorStopSplit.size == 2) {
+            // A turn is expressed in degrees rather than a percentage: `turn` units are
+            // not accepted by every engine this build has to run on.
+            // 以度而非百分比表达角度：并非所有目标引擎都接受 turn 单位。
+            stops.append(" ").append(colorStopSplit[1].toFloat() * 360f).append("deg")
+        }
+    }
+    return "conic-gradient(from ${startAngle}deg at $centreX% $centreY%,$stops)"
+}
+
+/**
  * Adapt background value, convert from Kotlin format to web CSS format
  */
 fun getCSSBackgroundImage(value: String): String {
+    if (value.startsWith(SWEEP_GRADIENT_PREFIX)) {
+        return getCSSConicGradient(value)
+    }
     val startIndex = value.indexOf("(")
     val spilt = value.substring(startIndex + 1, value.length - 1).split(",")
     var bgImage = "linear-gradient("

@@ -1390,12 +1390,25 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     CSSGradientDirection _diretion;
     NSMutableArray<UIColor *> *_colors;
     NSMutableArray<NSNumber *> *_locations;
+    /// Ronaq: 是否为扫描（锥形）渐变 / whether this is a sweep (conic) gradient
+    BOOL _isSweep;
+    /// Ronaq: 扫描渐变圆心（单位坐标）/ centre of the sweep, in unit coordinates
+    CGPoint _sweepCenter;
+    /// Ronaq: 偏移 0 自十二点顺时针的角度 / where offset 0 sits, clockwise from twelve
+    CGFloat _sweepStartDeg;
 }
 
 
 - (instancetype)initWithLayer:(id)layer cssGradient:(NSString *)cssGradient {
     if (self = [super initWithLayer:layer]) {
-        [self p_tryToParseWithLinearGradient:cssGradient];
+        // Ronaq: the `backgroundImage` prop carries two forms; a sweep used to fail the
+        // linear prefix test and leave the layer with no colors at all, i.e. no
+        // background drawn.
+        // Ronaq：backgroundImage 属性有两种形式；扫描渐变此前过不了线性前缀判断，
+        // 图层最终没有任何颜色，即完全不绘制背景。
+        if (![self p_tryToParseWithLinearGradient:cssGradient]) {
+            [self p_tryToParseWithSweepGradient:cssGradient];
+        }
     }
     return self;
     
@@ -1422,6 +1435,95 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     return YES;
 }
 
+/**
+ * Ronaq: 解析扫描（锥形）渐变 / parse a sweep (conic) gradient.
+ *
+ * Wire form: `sweep-gradient(<startAngleDeg> <cxFrac> <cyFrac>,<argb> <stop>,…)`, the
+ * same `backgroundImage` prop the linear form travels in. A hard boundary is the same
+ * colour written at two adjacent offsets, which is how a wheel divides into wedges.
+ * 线上形式如上，与线性渐变共用 backgroundImage 属性。同一颜色写在相邻两个偏移上
+ * 即为硬分界，分格转盘由此构成。
+ *
+ * The wire measures `startAngle` from twelve o'clock and carries a further -90, so
+ * offset `0` is drawn `startAngle - 90` degrees clockwise from twelve o'clock — the same
+ * reading the web renderer's `getCSSConicGradient` gives it.
+ * 线上 startAngle 自十二点起算并再偏 -90，故偏移 0 绘制于自十二点顺时针
+ * startAngle - 90 度处 —— 与 Web 渲染层 getCSSConicGradient 的读法一致。
+ */
+- (BOOL)p_tryToParseWithSweepGradient:(NSString *)cssGricent {
+    NSString *sweepGradientPrefix = @"sweep-gradient(";
+    if (![cssGricent hasPrefix:sweepGradientPrefix] || ![cssGricent hasSuffix:@")"]) {
+        return NO;
+    }
+    NSString *body = [cssGricent substringWithRange:NSMakeRange(sweepGradientPrefix.length
+                              , cssGricent.length - sweepGradientPrefix.length - 1)];
+    NSArray<NSString *> *splits = [body componentsSeparatedByString:@","];
+    if (splits.count < 2) {
+        return NO;
+    }
+    NSArray<NSString *> *head = [splits.firstObject componentsSeparatedByString:@" "];
+    CGFloat startAngle = head.count > 0 ? [head[0] doubleValue] : 0;
+    CGFloat centerX = head.count > 1 ? [head[1] doubleValue] : 0.5;
+    CGFloat centerY = head.count > 2 ? [head[2] doubleValue] : 0.5;
+
+    NSMutableArray *colors = [[NSMutableArray alloc] init];
+    NSMutableArray *locations = [[NSMutableArray alloc] init];
+    for (NSUInteger i = 1; i < splits.count; i++) {
+        NSArray<NSString *> *colorAndStop = [splits[i] componentsSeparatedByString:@" "];
+        UIColor *color = [UIView css_color:(NSString *)colorAndStop.firstObject];
+        if (!color) {
+            continue;
+        }
+        [colors addObject:(__bridge id)color.CGColor];
+        [locations addObject:@(colorAndStop.count > 1 ? [colorAndStop.lastObject floatValue] : 0)];
+    }
+    if (colors.count < 2) {
+        return NO;
+    }
+    _colors = colors;
+    _locations = locations;
+    _isSweep = YES;
+    _sweepCenter = CGPointMake(centerX, centerY);
+    _sweepStartDeg = startAngle - 90;
+    // Where a conic layer is unavailable the same stops are laid along a line, which is
+    // the approximation callers wrote by hand before this existed.
+    // 无锥形图层可用时，同一组色标铺成直线，即此前调用方手写的近似。
+    _diretion = CSSGradientDirectionToRight;
+    return YES;
+}
+
+/**
+ * Ronaq: 把图层配置为锥形渐变 / point the layer at a conic gradient.
+ *
+ * `kCAGradientLayerConic` puts `locations[0]` on the ray from `startPoint` through
+ * `endPoint` and sweeps clockwise, so the whole turn is placed by rotating that ray:
+ * straight up is `endPoint = startPoint + (0, -0.5)` in the layer's unit coordinate
+ * space, whose origin is the top-left corner (the linear path's own
+ * `hr_setStartPointAndEndPointWithLayer` reads it the same way — «to bottom» runs from
+ * `y = 0` to `y = 1`).
+ * kCAGradientLayerConic 将 locations[0] 置于 startPoint 指向 endPoint 的射线上并顺时针
+ * 扫描，故整圈方位由该射线的旋转决定；单位坐标系原点在左上角，正上方即
+ * endPoint = startPoint + (0, -0.5)（线性路径的 hr_setStartPointAndEndPointWithLayer
+ * 同样如此读取：「to bottom」自 y=0 到 y=1）。
+ *
+ * Returns NO when the platform has no conic type — iOS 12 and macOS 10.14 introduced it,
+ * and this pod still deploys to macOS 10.13.
+ * 平台无锥形类型时返回 NO —— 该类型自 iOS 12 / macOS 10.14 起提供，
+ * 而本 pod 的 macOS 部署目标仍为 10.13。
+ */
+- (BOOL)p_applySweepGeometry {
+    if (@available(iOS 12.0, macOS 10.14, tvOS 12.0, *)) {
+        self.type = kCAGradientLayerConic;
+    } else {
+        return NO;
+    }
+    CGFloat radians = _sweepStartDeg * M_PI / 180.0;
+    self.startPoint = _sweepCenter;
+    self.endPoint = CGPointMake(_sweepCenter.x + 0.5 * sin(radians),
+                                _sweepCenter.y - 0.5 * cos(radians));
+    return YES;
+}
+
 - (void)setContents:(id)contents {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -1445,7 +1547,11 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     if (!self.locations) {
         self.locations = _locations;
     }
-    [KRConvertUtil hr_setStartPointAndEndPointWithLayer:self direction:_diretion];
+    // Ronaq: a sweep places its own geometry; the linear helper would overwrite it.
+    // Ronaq：扫描渐变自行确定几何；线性辅助方法会覆盖它。
+    if (!_isSweep || ![self p_applySweepGeometry]) {
+        [KRConvertUtil hr_setStartPointAndEndPointWithLayer:self direction:_diretion];
+    }
     [CATransaction commit];
     
 }
