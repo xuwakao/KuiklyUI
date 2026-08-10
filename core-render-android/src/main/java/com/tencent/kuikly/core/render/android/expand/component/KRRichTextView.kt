@@ -713,13 +713,28 @@ class KRRichTextShadow : IKuiklyRenderShadowExport, IKuiklyRenderContextWrapper 
         } else {
             kuiklyRenderContext.spToPxI(textProps.fontSize).toFloat()
         }
+        // Ronaq: prefer the host's own face for this weight; the widened stroke below is
+        // the fallback for when it has none. This is the path a plain `Text` takes —
+        // the Compose DSL sets the `text` prop, not `values` — so it is where the
+        // product's typeface is decided on almost every label.
+        // Ronaq：优先取宿主为该字重提供的真实字面，下面的描边加粗仅为无字面时的兜底。
+        // 普通 Text 走的正是本路径（Compose DSL 设置的是 text 属性而非 values），
+        // 应用中绝大多数标签的字面在此决定。
+        val resolvedTypeface = kuiklyRenderContext?.getTypeFaceLoader()?.resolve(
+            textProps.fontFamily,
+            textProps.fontStyle == Typeface.ITALIC,
+            FontWeightSpan.parseWeight(textProps.fontWeight)
+        )
         if (textProps.fontWeight.isNotEmpty()) {
-            val strokeWidth = FontWeightSpan.getFontWeight(textProps.fontWeight) * fontSize
+            val strokeWidth = if (resolvedTypeface?.matchesWeight == true) {
+                0f
+            } else {
+                FontWeightSpan.getFontWeight(textProps.fontWeight) * fontSize
+            }
             textPaint.style = if (strokeWidth > 0) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
             textPaint.strokeWidth = strokeWidth
         }
-        textPaint.typeface = kuiklyRenderContext?.getTypeFaceLoader()?.getTypeface(textProps.fontFamily,
-            textProps.fontStyle == Typeface.ITALIC)
+        textPaint.typeface = resolvedTypeface?.typeface
         textPaint.textSize = fontSize
         textPaint.color = textProps.color
         textPaint.letterSpacing = kuiklyRenderContext.toPxF(textProps.letterSpacing) / max(textPaint.textSize, 1f)

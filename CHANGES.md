@@ -742,3 +742,201 @@ drops sweep positions, which makes `setColors(colors, offsets)` a trap for anyon
 implementing this the obvious way. The natural shape for upstream is this change plus the
 `pageData.isWeb` removal plus OHOS in one series, which is what a maintainer asked for in
 §6 and what a single-renderer slice could not deliver.
+
+## 8. The Android text renderer draws a real face per weight instead of faking every one
+
+**Files** · `core-render-android/.../expand/component/text/TypefaceUtil.kt`,
+`core-render-android/.../expand/component/text/KRRichTextBuilder.kt`,
+`core-render-android/.../expand/component/KRRichTextView.kt`,
+`core-render-android/.../expand/component/KRCanvasView.kt`
+**Driven by** · `prototype/` — the presentation baseline (parent `CLAUDE.md` §4). The
+design is set in Cairo at 400/600/700/800/900 and gets five distinct faces; §4 above made
+the DSL stop capping the request at 700, and `ARCHITECTURE.md` §2.1 then had the app embed
+those same five files. Android could reach exactly one of them.
+**Date** · 2026-08-10
+
+### What goes wrong here
+
+Android never draws a heavy face. It draws the regular one and widens the paint stroke:
+
+```kotlin
+// KRRichTextBuilder.FontWeightSpan — 900 strokes at 2.5/50 of the text size
+tp.style = Paint.Style.FILL_AND_STROKE
+tp.strokeWidth = strokeWidth * tp.textSize
+```
+
+That was a reasonable thing to do while the only face available was the system one. It
+stopped being reasonable when the product started shipping five real Cairo files: four of
+them (~660 KB of the APK) were unreachable, because nothing in the renderer can name a
+weight to the host.
+
+The chain is short and every link drops the weight:
+
+| layer | what it knows |
+| --- | --- |
+| `KRTextProps` | has both `fontWeight` ("900") and `fontFamily` ("Cairo,sans-serif") |
+| `FontFamilySpan` / `buildSimpleText` / `KRCanvasView` | pass **only the family** to the loader |
+| `TypeFaceLoader` | caches one typeface per `(name, italic)` — no weight in the key |
+| `IKRFontAdapter.getTypeface` | takes a family name; there is no weight parameter |
+
+So the host is asked "give me Cairo" and answers with Cairo-Regular, whatever weight the
+label declared. The synthesised stroke then does the rest, at every weight, forever.
+链上每一环都把字重丢掉：属性层两者都有，span 层只传族名，加载器按 (name, italic) 缓存，
+适配器接口根本没有字重参数。宿主只被问到「给我 Cairo」，于是永远得到 Regular。
+
+### Which of the two proposed shapes to take — and why neither, quite
+
+The gap was recorded with two candidate fixes: a weight argument on `IKRFontAdapter`, or
+`KuiklyTextExtension.applyFontFamily` folding the resolved weight into the family string.
+Taken literally, both are worse than they look.
+
+**Folding the weight into the family string in the Compose DSL is the wrong layer.**
+`fontFamily` is not an Android string; it is a wire prop that four renderers read
+verbatim, and two of them already resolve weight correctly *because* the string is clean:
+
+- web — `RichTextProcessor` assigns it straight to CSS `font-family`. The five
+  `@font-face` rules in `h5App`'s `index.html` are keyed on `font-weight`, so web already
+  picks a real face per weight; a weight-qualified family would at best be inert and at
+  worst invalidate the declaration.
+- iOS — `KRConvertUtil` hands family **and weight** to
+  `hr_fontWithFontFamily:fontSize:fontWeight:`. iOS already has the parameter this change
+  is about, and the shared theme's `Cairo,sans-serif` chain exists precisely to reach that
+  handler (see `ComposeTheme.RonaqFontFamily`'s note). Mangling the family would defeat it.
+
+It would also fix only text written through the Compose DSL, leaving the core Kuikly DSL,
+the canvas and the text field where they are. And it does not avoid an interface change —
+it makes one out of strings, since every Android host adapter would have to learn the
+encoding without a signature to tell it so. «不改接口» 只是把接口改成了未文档化的字符串约定。
+
+**A weight argument on `IKRFontAdapter` is the right idea in the wrong place.** It is what
+iOS did, and upstream has extended this interface exactly once before in exactly that
+shape (`getTypeface(fontFamily, contextParams, result)`, defaulted to the older overload).
+But a Kotlin interface method with a body compiles to `DefaultImpls` here — this module
+sets no `-Xjvm-default` — so it is a compile break for any **Java** adapter, and it makes
+every host implement something before it sees any benefit.
+
+**What this change does instead**: it folds the weight into the family name — the second
+idea — but inside `TypeFaceLoader`, where the encoding never leaves Android, rather than
+in the shared DSL where it would corrupt a prop three other renderers depend on. The
+loader asks the host for `Cairo-Bold` before it asks for `Cairo`, using the host's own
+naming, and no interface changes at all.
+
+The naming is not a Kuikly invention: `Family-Weight` is the PostScript face name that
+`[UIFont fontWithName:]` takes on iOS and that a static `@font-face` file carries on web,
+so a host that ships one file per weight has already named them this way. Ronaq's adapter
+had those names in its map before this change, with a comment saying so — it needed no
+edit to be served. And asking the adapter for a name it may not own is already a supported
+query: that is exactly how `Cairo,sans-serif` falls through to the platform today.
+
+### The change
+
+`TypeFaceLoader.resolve(family, italic, weight)` returns a `ResolvedTypeface` — the face,
+plus whether it really carries the requested weight. The three sites that fake weight
+(`FontWeightSpan` via `KRRichTextBuilder`, `KRRichTextView.buildSimpleText`,
+`KRCanvasView.flushTextCommand`) now stroke only when it does not.
+
+The resolution walks the family chain exactly as before, and per name:
+
+1. ask the host for `"$name-$faceName"` (`Bold` for 700, `Black` for 900, `BoldItalic`,
+   …; null for an unstated or non-hundred weight, which skips the step entirely);
+2. accept it **only if it is a different face from what the same host returns for the bare
+   name**;
+3. otherwise fall through to the pre-existing bare-name and platform-family lookups.
+
+Step 2 is the guard that keeps this safe for adapters nobody has seen. An adapter that
+answers every name with one typeface has not selected by weight, and its text still needs
+the stroke; without the check such a host would silently lose every bold on screen. It
+also, usefully, makes weight 400 self-correcting: Ronaq's adapter maps both `Cairo` and
+`Cairo-Regular` onto one cached instance, so the probe is rejected and nothing changes —
+which is right, since 400 strokes at zero anyway.
+第 2 步是给「素未谋面的适配器」留的保险：对任何名字都返回同一 typeface 的宿主并未按字重
+挑选，其文本仍须描边加粗；缺此判断，这类宿主界面上的粗体会无声变细。
+
+Deliberately **not** done: `Typeface.create(family, weight, italic)` (API 28+), which
+would let the *platform* pick a weighted face out of a system family. It is tempting and
+it is a bigger change than it looks — it would move the metrics of every existing app's
+text on the system font, on one API level and up, with no host opt-in. Only a face the
+host names is preferred here, so the invariant is exact:
+
+> **Nothing changes for a host whose adapter returns null for names it does not own —
+> which is the contract the loader has always required.**
+
+Two incidental notes, both inside the rewritten function:
+
+- The adapter result is now read from a local. It used to be read from a variable reused
+  across loop iterations, so an adapter that never invoked the callback — or a null
+  adapter — could leak the previous name's answer into the next name's test. Reachable
+  only in the italic + no-adapter corner, but it is not worth preserving.
+- The cache bound moved 10 → 32, because the key now carries a weight: one family at five
+  weights is five entries, and two families would have thrashed the old bound. A
+  `Typeface` is a thin handle onto a shared, usually mmapped native font.
+
+`IKRFontAdapter` is **unchanged**. So is every file under `compose/`.
+
+### Verification (§8)
+
+**Device verification is outstanding, and this is a skip, not a pass.** A parallel task
+owns the emulator and the simulator this wave; per the client's `CLAUDE.md` an unverified
+claim is a skip. What was established:
+
+- `:core-render-android:compileDebugKotlin` — BUILD SUCCESSFUL, no new warnings.
+- `:shared:compileKotlinJs` — BUILD SUCCESSFUL from `--rerun-tasks`. `:shared:jsTest` —
+  BUILD SUCCESSFUL, 31 tests, 0 failures (`GiftRules` 12, `Search` 8, `PhoneCountry` 7,
+  `Localization` 4). Neither could have been affected: `core-render-android` appears in
+  the JS build only as a *configured* project and compiles no JS task (185 tasks in the
+  log, one mention, and it is `Configure project`).
+- **The resolution was executed, not reasoned about.** `createTypeface`,
+  `postScriptFaceName`, `hostTypeface`, `parseWeight`, `getFontWeight` and the three call
+  sites were transcribed statement for statement and run against models of three real
+  adapters — Ronaq's (its exact asset map and its file-keyed instance cache), KuiklyUI's
+  own demo adapter, and a deliberately lenient one. Typeface identity is modelled as
+  object identity, which is what `Typeface` gives Kotlin's `===` and `!=` since it does
+  not override `equals`. 33 checks, 0 failures. The material ones:
+
+  | case | before | after |
+  | --- | --- | --- |
+  | Ronaq host, `Cairo,sans-serif` at 600 | Cairo-Regular + 0.30px stroke | **Cairo-SemiBold, no stroke** |
+  | …at 700 | Cairo-Regular + 0.45px | **Cairo-Bold, no stroke** |
+  | …at 800 | Cairo-Regular + 0.60px | **Cairo-ExtraBold, no stroke** |
+  | …at 900 | Cairo-Regular + 0.75px | **Cairo-Black, no stroke** |
+  | …at 400 / 500 (no such file) | Cairo-Regular + 0 / 0.15px | unchanged |
+  | demo adapter, any weight | DEFAULT + stroke | unchanged, all four weights |
+  | no adapter at all | DEFAULT + stroke | unchanged |
+  | lenient adapter (answers every name) | House-Regular + stroke | unchanged — the guard holds |
+  | `Satisfy,Cairo` at 400 and 700 | one family | still one family, not Satisfy + Cairo-Bold |
+  | 50 resolves of one weight | — | 2 adapter calls; 6 weights → 6 cache entries |
+
+  (strokes at 15px, the design's body size.) Both text paths were run: the plain `Text`
+  one — `TextConst.VALUE` → `buildSimpleText`, which is what almost every label in this
+  app takes — and the `AnnotatedString` span one.
+
+What that does **not** establish, and each of these needs a device:
+
+- that `Typeface.createFromAsset` on the four heavy Cairo files yields faces whose glyphs
+  and metrics are what the design draws — the model asserts which *file* is selected, not
+  what Skia does with it;
+- that removing `FILL_AND_STROKE` does not shift baselines or line boxes anywhere that
+  was silently relying on the stroke's extra width, which is a layout change on every
+  screen at once and the one thing most likely to surprise;
+- that Arabic shaping is intact in the heavy faces (Cairo is an Arabic-first family, but
+  four of its faces have never been rendered by this app);
+- that the extra adapter call per new `(family, italic, weight)` triple is invisible
+  against the room screen's frame budget — it is once per triple and then cached, but
+  「once per triple」 is a claim about the cache, not a measurement.
+以上均须真机验证：四个重字重字面的实际字形与度量、去掉描边后基线与行盒是否位移、
+重字重下的阿拉伯文整形，以及新增适配器调用对帧预算的影响。
+
+### Upstream
+
+Worth offering, and it is narrow: no interface changes, no new concept, four files in one
+renderer, and a stated invariant that a non-participating host is byte-identical. The
+argument a maintainer will want to weigh is step 2, the different-face guard — it is the
+price of inferring weight support instead of declaring it, and a maintainer who would
+rather declare it can replace the guard with a defaulted `IKRFontAdapter` overload without
+touching anything else in this change. The `Typeface.create(family, weight, italic)`
+question is left open on purpose and belongs in its own change with its own metrics
+evidence.
+
+The parallel gap on iOS is already closed upstream (`hr_fontWithFontFamily:fontSize:
+fontWeight:`), which is the strongest argument that Android's omission is an oversight
+rather than a decision.

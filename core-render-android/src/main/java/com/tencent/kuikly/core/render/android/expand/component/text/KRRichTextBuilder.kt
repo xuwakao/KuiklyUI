@@ -182,15 +182,29 @@ class KRRichTextBuilder(private val kuiklyContext: IKuiklyRenderContext?) {
                 kuiklyContext.spToPxI(spanProps.fontSize)
             }))
         }
-        val fontWeightSpan = FontWeightSpan(spanProps.fontWeight, index)
+        // Ronaq: the family is resolved BEFORE the weight span is built, because whether
+        // the host has a real face at this weight is what decides if the weight still
+        // has to be faked with a widened stroke. The spans are still appended in their
+        // original order.
+        // Ronaq：先解析字体族再构造字重 span —— 宿主是否为该字重提供真实字面，
+        // 决定了还需不需要用加粗描边伪造字重。span 的追加顺序保持不变。
+        val familySpan = if (spanProps.fontFamily.isNotEmpty()) {
+            FontFamilySpan(
+                spanProps.fontFamily,
+                kuiklyContext?.getTypeFaceLoader(),
+                FontWeightSpan.parseWeight(spanProps.fontWeight)
+            )
+        } else {
+            null
+        }
+        val fontWeightSpan =
+            FontWeightSpan(spanProps.fontWeight, index, familySpan?.matchesWeight != true)
         textSpans.add(fontWeightSpan)
         textSpans.add(StyleSpan(spanProps.fontStyle))
         if (spanProps.fontVariant.isNotEmpty()) {
             textSpans.add(FontVariantSpan(spanProps.fontVariant))
         }
-        if (spanProps.fontFamily.isNotEmpty()) {
-            textSpans.add(FontFamilySpan(spanProps.fontFamily, kuiklyContext?.getTypeFaceLoader()))
-        }
+        familySpan?.also { textSpans.add(it) }
 
         // 修饰相关
         textSpans.add(ForegroundColorSpan(spanProps.color))
@@ -335,10 +349,19 @@ data class SpanTextRange(val index: Int, val start: Int, val end: Int) {
  * 字重span
  * @param fontWeight 字重
  * @param index 标识是第几个span
+ * @param synthesizeWeight Ronaq: whether the weight still has to be imitated by
+ *        widening the paint stroke. False when the typeface already IS the requested
+ *        weight, in which case stroking it would draw a real 800 face at roughly 1000.
+ *        Ronaq：是否仍需以加粗描边模拟字重。当字面本身即为所请求的字重时为 false ——
+ *        否则会把真正的 800 字面又描粗到近似 1000。
  */
-class FontWeightSpan(fontWeight: String, val index: Int = -1) : CharacterStyle() {
+class FontWeightSpan(
+    fontWeight: String,
+    val index: Int = -1,
+    synthesizeWeight: Boolean = true
+) : CharacterStyle() {
 
-    private val strokeWidth = getFontWeight(fontWeight)
+    private val strokeWidth = if (synthesizeWeight) getFontWeight(fontWeight) else 0f
 
     override fun updateDrawState(tp: TextPaint) {
         if (strokeWidth != 0f) {
@@ -348,6 +371,32 @@ class FontWeightSpan(fontWeight: String, val index: Int = -1) : CharacterStyle()
     }
 
     companion object {
+
+        /**
+         * Ronaq: no numeric weight was stated, so no face can be asked for by weight.
+         * Ronaq：未给出数值字重，因而无法按字重索取字面。
+         */
+        const val FONT_WEIGHT_UNSPECIFIED = 0
+
+        /**
+         * Ronaq: the numeric weight a `fontWeight` prop carries, or
+         * [FONT_WEIGHT_UNSPECIFIED] when it is absent or is not one of the nine CSS
+         * weights. Anything off the hundreds is refused rather than snapped: the DSL
+         * that produces this prop already snaps, and guessing here would let a face
+         * be picked for a weight nothing declared.
+         * Ronaq：fontWeight 属性所携带的数值字重；属性缺失或不是九档 CSS 字重之一时返回
+         * FONT_WEIGHT_UNSPECIFIED。非整百值一律拒绝而不就近取整 ——
+         * 产出该属性的 DSL 已做过取整，此处再猜会为无人声明的字重挑出字面。
+         */
+        fun parseWeight(fontWeight: String): Int {
+            val weight = fontWeight.toIntOrNull() ?: return FONT_WEIGHT_UNSPECIFIED
+            return if (weight in 100..900 && weight % 100 == 0) {
+                weight
+            } else {
+                FONT_WEIGHT_UNSPECIFIED
+            }
+        }
+
         private const val FONT_WEIGHT_NORMAL = "400"
         private const val FONT_WEIGHT_MEDIUM = "500"
         private const val FONT_WEIGHT_MEDIUM_BOLD = "600"
@@ -410,13 +459,35 @@ class LetterSpacingSpan(private val letterSpacing: Float) : MetricAffectingSpan(
 
 /**
  * 字体span
+ *
+ * @param fontWeight Ronaq: the weight to prefer a real face for. Default keeps the
+ *        pre-existing lookup, which asks only for the family name.
+ *        Ronaq：优先索取真实字面的字重；默认值维持原有的「只按族名查找」。
  */
-class FontFamilySpan(fontFamily: String, typeFaceLoader: TypeFaceLoader?) : TypefaceSpan(KRCssConst.EMPTY_STRING) {
+class FontFamilySpan(
+    fontFamily: String,
+    typeFaceLoader: TypeFaceLoader?,
+    fontWeight: Int = FontWeightSpan.FONT_WEIGHT_UNSPECIFIED
+) : TypefaceSpan(KRCssConst.EMPTY_STRING) {
 
     private var tfe: Typeface? = null
 
+    /**
+     * Ronaq: true when [tfe] is the host's own face for the requested weight, so the
+     * caller must not widen the stroke on top of it.
+     * Ronaq：当 tfe 即宿主为该字重提供的真实字面时为 true，调用方不应再叠加描边加粗。
+     */
+    val matchesWeight: Boolean
+
     init {
-        tfe = typeFaceLoader?.getTypeface(fontFamily, false)
+        // Italic is passed as false here as it always has been: [StyleSpan] carries the
+        // slant and this span overwrites the typeface after it. Left untouched — it is a
+        // separate defect from the weight one.
+        // italic 一如既往传 false：倾斜由 StyleSpan 承担，而本 span 在其后覆盖 typeface。
+        // 此处不动 —— 那与字重是两个独立缺陷。
+        val resolved = typeFaceLoader?.resolve(fontFamily, false, fontWeight)
+        tfe = resolved?.typeface
+        matchesWeight = resolved?.matchesWeight == true
     }
 
     override fun updateDrawState(ds: TextPaint) {

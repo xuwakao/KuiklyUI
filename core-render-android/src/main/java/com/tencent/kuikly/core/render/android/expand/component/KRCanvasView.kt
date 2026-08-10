@@ -344,12 +344,25 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
         }
         val x = json.optDouble("x")
         val y = json.optDouble("y")
+        // Ronaq: same rule as the text views — a real face for the requested weight is
+        // preferred, and the stroke is widened only when the host has none.
+        // Ronaq：与文本视图同一规则 —— 优先取该字重的真实字面，无字面时才加粗描边。
+        val italic = currentDrawStyle.fontStyle == KRTextProps.FONT_STYLE_ITALIC
+        val resolvedTypeface = kuiklyRenderContext?.getTypeFaceLoader()?.resolve(
+            currentDrawStyle.fontFamily,
+            italic,
+            FontWeightSpan.parseWeight(currentDrawStyle.fontWeight)
+        )
         val drawStyle = DrawStyle(kuiklyRenderContext).apply {
             lineCap = currentDrawStyle.lineCap
             if (currentDrawStyle.drawStyle == Paint.Style.FILL) {
                 fillColor = currentDrawStyle.fillColor
                 fillGradient = currentDrawStyle.fillGradient
-                lineWidth = FontWeightSpan.getFontWeight(currentDrawStyle.fontWeight) * currentDrawStyle.textSize
+                lineWidth = if (resolvedTypeface?.matchesWeight == true) {
+                    0f
+                } else {
+                    FontWeightSpan.getFontWeight(currentDrawStyle.fontWeight) * currentDrawStyle.textSize
+                }
                 if (lineWidth > 0) {
                     strokeColor = currentDrawStyle.fillColor
                     strokeGradient = currentDrawStyle.fillGradient
@@ -365,8 +378,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
             }
             textAlign = currentDrawStyle.textAlign
             textSize = currentDrawStyle.textSize
-            val italic = currentDrawStyle.fontStyle == KRTextProps.FONT_STYLE_ITALIC
-            typeface = kuiklyRenderContext?.getTypeFaceLoader()?.getTypeface(currentDrawStyle.fontFamily, italic)
+            typeface = resolvedTypeface?.typeface
         }
         val op = TextOp(
             text,
