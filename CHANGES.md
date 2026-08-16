@@ -940,3 +940,70 @@ evidence.
 The parallel gap on iOS is already closed upstream (`hr_fontWithFontFamily:fontSize:
 fontWeight:`), which is the strongest argument that Android's omission is an oversight
 rather than a decision.
+
+
+## 9. Test tags survive semantics merging
+
+**Files** · `compose/src/commonMain/kotlin/com/tencent/kuikly/compose/extension/KuiklySemantisHandler.kt`
+**Driven by** · `mobile/docs/design/test-tags.md`, and through it the parent `CLAUDE.md`
+requirement that the client be drivable by automated tests on Android, iOS and Web. The
+framework already routes `Modifier.testTag` to `viewIdResourceName`, `accessibilityIdentifier`
+and `data-testid`; this makes it arrive for the nodes automation needs most.
+**Date** · 2026-08-16
+
+### What goes wrong here
+
+`onSemanticsChange` read every property, test tags included, from the MERGED semantics
+tree:
+
+```kotlin
+val allNodes = semanticsOwner.getAllSemanticsNodes(mergingEnabled = true)
+```
+
+Merging is right for accessibility — a screen reader should hear one control rather than
+each of its parts — and wrong for a test tag, which names one exact node the author
+marked. A node carrying only a `testTag` is folded into whichever ancestor merges its
+descendants, and the tag is gone before it can be applied.
+
+The nodes this loses are the ones automation needs most: containers. Measured on the room
+screen with the gift sheet open, 79 tagged nodes exist in the unmerged tree and 70 in the
+merged one. The nine lost were the sheet body, the chat list, the composer field and the
+marquee — every one a container whose children arrived perfectly well. A suite could
+therefore address a gift tile but not the sheet holding it, and a chat row but not the
+feed, which is exactly backwards: the container is what tells a test which screen it is
+looking at.
+
+A second, smaller loss sits behind the same line. `node.layoutNode as? KNode<*>` silently
+skips a semantics node whose layout node has no view — composables built on `Layout`
+produce `KNode(VirtualNodeView(), isVirtual = true)`, and some produce a plain
+`LayoutNode`.
+
+### What this fork does instead
+
+Read the two trees for their two purposes. Accessibility text, role and state description
+keep the merged tree. Test tags get their own pass over the unmerged tree, and resolve to
+the nearest rendering node rather than requiring the semantics node to be one — descending
+rather than ascending, so a tag stays inside the subtree its author marked instead of
+landing on a parent that may hold several marked children.
+
+Cost is one extra traversal per semantics change.
+
+### Evidence
+
+Web, Kuikly H5 renderer, room 66120 with the gift sheet open, counting
+`document.querySelectorAll('[data-testid]')`:
+
+| tag | before | after |
+| --- | --- | --- |
+| `room.chatFeed` | absent | present |
+| `room.chatInput` | absent | present |
+| `room.marquee` | absent | present |
+| `room.chatRow#<id>` | 0 rows | 5 rows |
+| `gift.root` | absent | present |
+| room total | 44 | 52 |
+
+### Upstreamability
+
+High, and worth doing. Nothing here is Ronaq-specific: any Kuikly Compose app that reads
+`testTag` from an automated suite loses the same container tags, and the fix is a
+behaviour correction rather than a new feature.
