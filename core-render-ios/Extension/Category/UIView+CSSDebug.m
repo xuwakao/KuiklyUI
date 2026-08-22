@@ -39,21 +39,108 @@
 #endif
 }
 
+/// A marked view that has children. Either mark counts.
 - (BOOL)kr_isAccessibilityContainer {
-    return self.css_debugName.length > 0 && self.subviews.count > 0;
+    return (self.css_debugName.length > 0 || self.css_testTag.length > 0) && self.subviews.count > 0;
+}
+
+/// Every marked view currently alive, held weakly.
+static NSHashTable<UIView *> *kr_markedViews(void) {
+    static NSHashTable *views = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ views = [NSHashTable weakObjectsHashTable]; });
+    return views;
+}
+
+/// Whether one of this view's DIRECT children is already reachable by accessibility.
+///
+/// Direct children only: a Kuikly view that wraps a NATIVE control wraps it directly, and
+/// that is the case this has to catch — a marked wrapper around a text field must stay a
+/// container, because an element is opaque and hiding the field costs it keyboard focus.
+- (BOOL)kr_hasAccessibleChild {
+    for (UIView *sub in self.subviews) {
+        if (sub.isAccessibilityElement || sub.css_testTag.length > 0) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+/// Settle isAccessibilityElement across every marked view, once, after the tree is built.
+///
+/// A marked view has to be REACHABLE, and UIKit offers exactly two ways to be: be an
+/// element, or contain one. A view that is neither — not an element itself, holding
+/// nothing accessible — is absent from the accessibility tree whatever identifier it
+/// carries. Marking only view-tree leaves left every marked container in that state.
+/// Measured on the room screen: fully rendered, and its root exposed ONE descendant, the
+/// single marked node that happened to be a leaf. The composer, the send button and the
+/// feed were all marked, all on screen, and none of them reachable.
+///
+/// Done as ONE pass rather than per view as the tree is assembled, and both halves of
+/// that matter:
+///
+///   - Per-insert work was tried twice and failed twice. Searching each attached subtree
+///     hung the main thread outright (the watchdog killed the app mid-test); carrying a
+///     "contains marked content" flag up link by link was cheap but order-dependent, and
+///     a re-layout that re-parented an already-flagged wrapper spread the flag to views
+///     that did not contain anything, hiding them instead.
+///   - Subtrees are assembled detached and attached whole, so at the moment a view is
+///     marked it may have no ancestors at all. Any decision taken then is provisional.
+///
+/// Deferred to the end of the run loop, so it sees the finished tree and runs once no
+/// matter how many views changed. The pass is two sweeps and no recursion: provisional
+/// state first, then every marked ancestor demoted — an element containing another marked
+/// view would hide it. Marked nodes end up forming their own tree, innermost as elements
+/// and everything above as containers, and both kinds are reachable.
+///
+/// Trade-off, deliberately taken: a marked view wrapping only self-drawn content reads to
+/// VoiceOver as one element rather than as its inner text. That is what merged semantics
+/// does on the other hosts, and the alternative measured here is a screen no automated
+/// test can address at all.
+static void kr_scheduleAccessibilityPass(void) {
+    static BOOL scheduled = NO;
+    if (scheduled) {
+        return;
+    }
+    scheduled = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        scheduled = NO;
+        NSArray<UIView *> *marked = kr_markedViews().allObjects;
+        for (UIView *view in marked) {
+            if (view.css_testTag.length == 0) {
+                continue;
+            }
+            if ([view kr_hasAccessibleChild]) {
+                view.isAccessibilityElement = NO;
+            } else {
+                view.isAccessibilityElement = YES;
+                if (view.accessibilityTraits == UIAccessibilityTraitNone) {
+                    view.accessibilityTraits = UIAccessibilityTraitButton;
+                }
+            }
+        }
+        for (UIView *view in marked) {
+            if (view.css_testTag.length == 0) {
+                continue;
+            }
+            for (UIView *parent = view.superview; parent != nil; parent = parent.superview) {
+                if (parent.css_testTag.length > 0 || parent.css_debugName.length > 0) {
+                    parent.isAccessibilityElement = NO;
+                }
+            }
+        }
+    });
 }
 
 - (void)kr_syncAccessibilityElement {
-    if ([self kr_isAccessibilityContainer]) {
-        self.isAccessibilityElement = NO;
+    if (self.css_testTag.length == 0) {
+        if ([self kr_isAccessibilityContainer]) {
+            self.isAccessibilityElement = NO;
+        }
         return;
     }
-    if (self.css_testTag.length > 0 && self.subviews.count == 0) {
-        self.isAccessibilityElement = YES;
-        if (self.accessibilityTraits == UIAccessibilityTraitNone) {
-            self.accessibilityTraits = UIAccessibilityTraitButton;
-        }
-    }
+    [kr_markedViews() addObject:self];
+    kr_scheduleAccessibilityPass();
 }
 
 - (void)kr_updateAccessibilityIdentifier {

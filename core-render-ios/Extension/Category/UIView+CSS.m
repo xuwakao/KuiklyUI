@@ -465,6 +465,11 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     if (self.css_accessibility != css_accessibility) {
         objc_setAssociatedObject(self, @selector(css_accessibility), css_accessibility, OBJC_ASSOCIATION_RETAIN);
         self.accessibilityLabel = css_accessibility;
+        // A marked view's element-ness belongs to the deferred pass — see UIView+CSSDebug.
+        if (self.css_testTag.length > 0) {
+            [self kr_syncAccessibilityElement];
+            return;
+        }
         self.isAccessibilityElement = css_accessibility.length > 0;
         // When debugName is set and view has children, keep it as a container
         // so that XCUITest can traverse the subtree
@@ -482,6 +487,11 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     if (self.css_accessibilityRole != css_accessibilityRole) {
         objc_setAssociatedObject(self, @selector(css_accessibilityRole), css_accessibilityRole, OBJC_ASSOCIATION_RETAIN);
         self.accessibilityTraits = [KRConvertUtil kr_accessibilityTraits:css_accessibilityRole];
+        // A marked view's element-ness belongs to the deferred pass — see UIView+CSSDebug.
+        if (self.css_testTag.length > 0) {
+            [self kr_syncAccessibilityElement];
+            return;
+        }
         self.isAccessibilityElement = self.accessibilityTraits != UIAccessibilityTraitNone;
         // When debugName is set and view has children, keep it as a container
         if (self.css_debugName.length > 0 && self.subviews.count > 0) {
@@ -1217,6 +1227,9 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     } else {
         [self insertSubview:subView atIndex:index];
     }
+    // Attaching a subtree changes who contains what, and the answer is only knowable once
+    // the whole tree is built — so this schedules the pass rather than deciding here.
+    [subView kr_syncAccessibilityElement];
 }
 
 - (void)hrv_removeFromSuperview {
@@ -1270,7 +1283,17 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
                 // 如果有点击功能，确保组件是可访问的
                 if (isClickable || isLongClickable) {
                     self.accessibilityTraits = traits;
-                    if (![self kr_isAccessibilityContainer]) {
+                    // A MARKED view's element-ness belongs to the deferred accessibility
+                    // pass, not to this attribute. Promoting here re-ran on every
+                    // recomposition, and recomposition detaches children first — so a
+                    // marked container momentarily looks like a leaf, gets promoted, and
+                    // swallows its whole subtree (the room screen went down to two
+                    // reachable identifiers exactly this way, every time the keyboard
+                    // opened). Scheduling the pass instead settles it against the
+                    // finished tree.
+                    if (self.css_testTag.length > 0) {
+                        [self kr_syncAccessibilityElement];
+                    } else if (![self kr_isAccessibilityContainer]) {
                         self.isAccessibilityElement = YES;
                     }
                 } else if ([self kr_isAccessibilityContainer]) {

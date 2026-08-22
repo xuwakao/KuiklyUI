@@ -1007,3 +1007,65 @@ Web, Kuikly H5 renderer, room 66120 with the gift sheet open, counting
 High, and worth doing. Nothing here is Ronaq-specific: any Kuikly Compose app that reads
 `testTag` from an automated suite loses the same container tags, and the fix is a
 behaviour correction rather than a new feature.
+
+---
+
+## iOS renderer: marked views must be reachable in the accessibility tree
+
+Files: `core-render-ios/Extension/Category/UIView+CSSDebug.{h,m}`,
+`core-render-ios/Extension/Category/UIView+CSS.m`
+Driver: mobile repository test-tag rule (testability ships with the feature); PRD clauses
+are those of the screens under automated test, R-4 among them.
+
+### The defect
+
+XCUITest can reach a view only if it IS an accessibility element or CONTAINS one. The
+renderer promoted a marked view to an element only when `subviews.count == 0` — a check
+made at the moment the tag was applied, which for a container is before any child exists.
+A marked container whose self-drawn children carried no accessibility of their own was
+therefore neither an element nor a holder of one, and vanished from the tree entirely.
+
+Measured on the room screen (fully rendered, simulator, iOS 18.6): the screen exposed
+exactly two identifiers — its root and the one marked node that happened to be a leaf.
+The composer, send button and feed were all marked, on screen, and unreachable. Every
+other screen looked fine only because its marked nodes happened to be leaves or to wrap
+native controls.
+
+Three further writers made any per-view fix unstable: `setCss_accessibility`,
+`setCss_accessibilityRole` and the clickable branch of the style application each set
+`isAccessibilityElement` directly, and recomposition re-runs them against a view whose
+children have been detached — so a settled container was re-promoted and swallowed its
+subtree again (reproduced every time the keyboard opened).
+
+### What this fork does instead
+
+One deferred pass over every marked view, scheduled on the main queue whenever a tag is
+applied or a subtree attached, so it always sees the finished tree:
+
+1. a marked view with no accessible direct child becomes an element (a wrapper around a
+   native control stays a container — an element is opaque, and hiding a text field costs
+   it keyboard focus, measured as "neither element nor any descendant has keyboard focus"
+   on sign-in);
+2. every marked ancestor of a marked view is demoted to a container.
+
+The three direct writers defer to that pass for any view carrying a test tag. Marked
+nodes thus form their own tree — innermost as elements, everything above as containers —
+and both kinds are reachable.
+
+Two rejected attempts are recorded because their failure modes will tempt again: a
+recursive subtree scan on every insertion hung the main thread until the watchdog killed
+the app; a sticky "contains marked content" flag carried upward was order-dependent and
+spread through re-parented wrappers, hiding views that contained nothing.
+
+### Evidence
+
+Room screen, simulator, before → after: 2 reachable identifiers → all 10
+(`room.root`, `chatFeed`, `chatInput`, `sendBtn`, `chatRow#…`, four buttons), stable
+across keyboard open and recomposition. Cross-host proof: `scripts/room-across-hosts.sh`
+web+iOS+Android PASS, the iOS leg driven entirely through these identifiers.
+
+### Upstreamability
+
+High. The reachability rule is UIKit's, not Ronaq's; any Kuikly app driving XCUITest by
+testTag hits the same wall. The deferred-pass shape is the part worth upstreaming intact —
+the per-view variants are the two documented dead ends.
