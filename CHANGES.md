@@ -1046,7 +1046,15 @@ applied or a subtree attached, so it always sees the finished tree:
    native control stays a container — an element is opaque, and hiding a text field costs
    it keyboard focus, measured as "neither element nor any descendant has keyboard focus"
    on sign-in);
-2. every marked ancestor of a marked view is demoted to a container.
+2. every marked ancestor of a marked view is demoted to a container;
+3. (added 2026-08-23) a view promoted to an element takes the drawn text of the subtree
+   it swallows as its accessibilityLabel — UILabels collected in document order, an
+   author-set `accessibility` prop never overridden. An element is opaque, so without
+   this the swallowed text reads (and automates) as a mute button: measured on the room
+   feed, every row exposed an identifier and no words — UIKit's own label synthesis is
+   too shallow for nested text — leaving rows unreadable to VoiceOver and unassertable
+   to XCUITest alike. Recomputed on every pass, so a reused list cell heals on the pass
+   its re-applied tag schedules.
 
 The three direct writers defer to that pass for any view carrying a test tag. Marked
 nodes thus form their own tree — innermost as elements, everything above as containers —
@@ -1062,7 +1070,9 @@ spread through re-parented wrappers, hiding views that contained nothing.
 Room screen, simulator, before → after: 2 reachable identifiers → all 10
 (`room.root`, `chatFeed`, `chatInput`, `sendBtn`, `chatRow#…`, four buttons), stable
 across keyboard open and recomposition. Cross-host proof: `scripts/room-across-hosts.sh`
-web+iOS+Android PASS, the iOS leg driven entirely through these identifiers.
+web+iOS+Android PASS, the iOS leg driven entirely through these identifiers. Label
+merging: the live signal run (ronaq-mobile `scripts/wired-signals-ios.sh`) asserts the
+room feed's SENTENCES on iOS through exactly this read.
 
 ### Upstreamability
 

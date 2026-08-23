@@ -66,6 +66,35 @@ static NSHashTable<UIView *> *kr_markedViews(void) {
     return NO;
 }
 
+/// The drawn text under a view, in document order.
+///
+/// Read from the UILabel layer (Kuikly's text views are KRLabel subclasses that draw
+/// through TextKit but still hold attributedText), NOT from accessibilityLabel: an
+/// element promoted by the pass below hides its subtree from the accessibility runtime,
+/// and UIKit's own label synthesis proved too shallow to reach nested text — measured on
+/// the room feed, where every row exposed an identifier and no words.
+static void kr_appendSubtreeText(UIView *view, NSMutableArray<NSString *> *into) {
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label = (UILabel *)view;
+        NSString *text = label.attributedText.string ?: label.text;
+        if (text.length > 0) {
+            [into addObject:text];
+        }
+        return;
+    }
+    for (UIView *sub in view.subviews) {
+        kr_appendSubtreeText(sub, into);
+    }
+}
+
+static NSString *kr_mergedSubtreeText(UIView *view) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (UIView *sub in view.subviews) {
+        kr_appendSubtreeText(sub, parts);
+    }
+    return [parts componentsJoinedByString:@" "];
+}
+
 /// Settle isAccessibilityElement across every marked view, once, after the tree is built.
 ///
 /// A marked view has to be REACHABLE, and UIKit offers exactly two ways to be: be an
@@ -116,6 +145,18 @@ static void kr_scheduleAccessibilityPass(void) {
                 view.isAccessibilityElement = YES;
                 if (view.accessibilityTraits == UIAccessibilityTraitNone) {
                     view.accessibilityTraits = UIAccessibilityTraitButton;
+                }
+                // Merged semantics need a merged LABEL: an element is opaque, so the
+                // text it swallowed must surface as its own label or it reads (and
+                // automates) as a mute button. Recomputed every pass — feed appends and
+                // list-cell reuse re-apply tags, which reschedules the pass, so a
+                // recycled row's label heals on the next pass rather than going stale.
+                // An author-set label (css_accessibility) is never overridden.
+                if (view.css_accessibility.length == 0) {
+                    NSString *merged = kr_mergedSubtreeText(view);
+                    if (merged.length > 0) {
+                        view.accessibilityLabel = merged;
+                    }
                 }
             }
         }
