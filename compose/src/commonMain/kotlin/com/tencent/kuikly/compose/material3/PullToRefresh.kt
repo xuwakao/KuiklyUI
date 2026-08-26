@@ -29,8 +29,10 @@ import com.tencent.kuikly.compose.foundation.layout.Box
 import com.tencent.kuikly.compose.foundation.layout.fillMaxWidth
 import com.tencent.kuikly.compose.foundation.layout.height
 import com.tencent.kuikly.compose.foundation.layout.padding
+import com.tencent.kuikly.compose.foundation.gestures.ScrollableState
 import com.tencent.kuikly.compose.foundation.lazy.LazyListScope
-import com.tencent.kuikly.compose.foundation.lazy.LazyListState
+import com.tencent.kuikly.compose.foundation.lazy.grid.GridItemSpan
+import com.tencent.kuikly.compose.foundation.lazy.grid.LazyGridScope
 import com.tencent.kuikly.compose.scroller.isAtTop
 import com.tencent.kuikly.compose.scroller.kuiklyInfo
 import com.tencent.kuikly.compose.ui.Alignment
@@ -180,7 +182,7 @@ class PullToRefreshState(
 fun LazyListScope.pullToRefreshItem(
     state: PullToRefreshState,
     onRefresh: () -> Unit,
-    scrollState: LazyListState,
+    scrollState: ScrollableState,
     modifier: Modifier = Modifier,
     topInset: Dp = 0.dp,
     refreshThreshold: Dp = 80.dp,
@@ -209,14 +211,71 @@ fun LazyListScope.pullToRefreshItem(
 }
 
 /**
+ * Pull-to-refresh for a [LazyVerticalGrid] / [LazyHorizontalGrid], as the first item.
+ *
+ * The header spans the full row, because a refresh indicator occupying one column of a
+ * two-column grid is not a refresh indicator.
+ *
+ * ```
+ * LazyVerticalGrid(columns = GridCells.Fixed(2), state = gridState) {
+ *     pullToRefreshItem(
+ *         state = pullToRefreshState,
+ *         onRefresh = { /* refresh logic */ },
+ *         scrollState = gridState
+ *     )
+ *     items(data) { item -> /* Business content */ }
+ * }
+ * ```
+ *
+ * @param state Pull-to-refresh state
+ * @param onRefresh Refresh callback
+ * @param scrollState LazyGridState for monitoring scroll state
+ * @param modifier Modifier
+ * @param topInset Extra top inset for overlay header (e.g. collapsing HeaderBar).
+ *   Pass the header's maximum height, not its animated height.
+ * @param refreshThreshold Threshold to trigger refresh
+ * @param content Custom refresh indicator content
+ */
+fun LazyGridScope.pullToRefreshItem(
+    state: PullToRefreshState,
+    onRefresh: () -> Unit,
+    scrollState: ScrollableState,
+    modifier: Modifier = Modifier,
+    topInset: Dp = 0.dp,
+    refreshThreshold: Dp = 80.dp,
+    content: @Composable (
+        pullProgress: Float,
+        isRefreshing: Boolean,
+        refreshThreshold: Dp
+    ) -> Unit = { progress, refreshing, threshold ->
+        DefaultRefreshIndicator(progress, refreshing, threshold)
+    }
+) {
+    // Mark that the current grid uses PullToRefresh
+    scrollState.kuiklyInfo.hasPullToRefresh = true
+
+    item(key = "pull_to_refresh", span = { GridItemSpan(maxLineSpan) }) {
+        PullToRefreshItem(
+            state = state,
+            onRefresh = onRefresh,
+            scrollState = scrollState,
+            modifier = modifier,
+            topInset = topInset,
+            refreshThreshold = refreshThreshold,
+            content = content
+        )
+    }
+}
+
+/**
  * Internal pull-to-refresh component implementation.
- * Use [LazyListScope.pullToRefreshItem] instead for easier usage.
+ * Use [LazyListScope.pullToRefreshItem] or [LazyGridScope.pullToRefreshItem] instead.
  */
 @Composable
 internal fun PullToRefreshItem(
     state: PullToRefreshState,
     onRefresh: () -> Unit,
-    scrollState: LazyListState,
+    scrollState: ScrollableState,
     modifier: Modifier = Modifier,
     topInset: Dp = 0.dp,
     refreshThreshold: Dp = 80.dp,

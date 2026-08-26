@@ -1079,3 +1079,57 @@ room feed's SENTENCES on iOS through exactly this read.
 High. The reachability rule is UIKit's, not Ronaq's; any Kuikly app driving XCUITest by
 testTag hits the same wall. The deferred-pass shape is the part worth upstreaming intact —
 the per-view variants are the two documented dead ends.
+
+---
+
+## 10. Pull-to-refresh works on a grid, not only on a list
+
+**Files** · `compose/.../material3/PullToRefresh.kt`
+**Driven by** · Home PRD H-1.5 (下拉刷新, P0) and the 2026-08 design revision, which
+removed the refresh BUTTON in favour of the gesture
+**Date** · 2026-08-26
+
+### What upstream offers
+
+One entry point, `LazyListScope.pullToRefreshItem(state, onRefresh, scrollState:
+LazyListState, …)`, which places the header as the list's first item.
+
+### Why that is not enough
+
+Ronaq's home feed is a `LazyVerticalGrid` — H-1.5 is a two-column waterfall, and H-7.3
+post cards span both columns. There is no list to hang the header on, so a P0 gesture
+had no way to exist on the one screen the PRD names.
+
+### What this fork changes
+
+Nothing about the mechanism, which already worked for grids everywhere it mattered.
+`ScrollableState.kuiklyInfo` and `ScrollableState.isAtTop()` both handle `LazyGridState`
+— `isAtTop()` even applies the `hasPullToRefresh` index offset for grids and staggered
+grids. Only the entry point was list-shaped.
+
+1. `PullToRefreshItem`'s `scrollState` parameter widens from `LazyListState` to
+   `ScrollableState`. Every line inside it was already calling `ScrollableState`
+   extensions; nothing else in the body changes, and list behaviour is bit-for-bit what
+   it was.
+2. `LazyListScope.pullToRefreshItem`'s parameter widens the same way.
+3. A new `LazyGridScope.pullToRefreshItem` places the header with
+   `span = { GridItemSpan(maxLineSpan) }` — a refresh indicator occupying one column of
+   a two-column grid is not a refresh indicator.
+
+Staggered grids, pagers and plain scroll states are reachable through the same
+signature now; only the grid one has an entry point, because that is the one this app
+needs and an unused overload is an untested one.
+
+### Verified
+
+On hardware, not by compiling: `scripts/retest-pull-refresh-android.mjs` performs a slow
+900 ms downward swipe on the feed and asserts that `room/getHotRoomList` is requested
+again afterwards — a header that animates without refetching is the failure that check
+exists for. The web renderer's list does not over-scroll, so the header draws there and
+its caption never advances; that is the H5 scroll container, not this change, and web is
+not a host this gesture ships on.
+
+### Upstreaming
+
+Worth offering as-is. It removes a restriction rather than adding a behaviour, and the
+grid support it exposes is upstream's own.
