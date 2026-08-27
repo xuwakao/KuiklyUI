@@ -1133,3 +1133,82 @@ not a host this gesture ships on.
 
 Worth offering as-is. It removes a restriction rather than adding a behaviour, and the
 grid support it exposes is upstream's own.
+
+---
+
+## 11. An untagged ancestor must not swallow the tagged views beneath it
+
+File: `core-render-ios/Extension/Category/UIView+CSSDebug.m`
+Driver: mobile repository test-tag rule (testability ships with the feature); the
+per-element design-alignment sweep across all six themes on all three hosts.
+
+### The defect
+
+An accessibility element is opaque: nothing beneath it is reachable. The pass that
+promotes a marked view to an element already knew that, and demoted a marked view's
+ancestors so they could not hide it — but only the ancestors that were themselves marked:
+
+```objc
+for (UIView *parent = view.superview; parent != nil; parent = parent.superview) {
+    if (parent.css_testTag.length > 0 || parent.css_debugName.length > 0) {
+        parent.isAccessibilityElement = NO;
+    }
+}
+```
+
+UIKit promotes a view of its own accord once it looks interactive, and Kuikly's clickable
+wrapper looks exactly like that. Such a wrapper carries no test tag and no debug name, so
+the loop walked straight past it and left it promoted — with every tagged descendant
+sealed inside.
+
+### The measurement
+
+On a real iPhone (00008150-000651A6010A401C), on the Me tab, `app.debugDescription`
+returned ONE element for the whole page:
+
+```
+Button, 0x1473ea300, {{16.0, -51.0}, {370.0, 80.0}}, label: 'R ronaq-rtc Lv.1
+ID 900000002 · 🌍 Lv.1 0 / 500 · Lv.2 1 Fans 1 Following 0 Visitors ✦ Wallet 45,410
+coins Recharge 🎁 Gift Wall 🎙 My Room Not created yet ♛ VIP Center ⚜ Noble Center
+Open 30 days 💞 CP Space 🎯 Task Center ⭐ My Level Lv.1 🎒 Backpack 🎖 Badges
+📨 Invite Friends ✿ Dress Up Store ⚑ My Family ⚙ Settings'
+```
+
+Twelve identifiers live inside that label and not one of them could be queried. The web
+host publishes all twelve, so the divergence is this renderer's, not the shared UI's.
+
+### The change
+
+Demote EVERY ancestor of a tagged view, marked or not:
+
+```objc
+for (UIView *parent = view.superview; parent != nil; parent = parent.superview) {
+    parent.isAccessibilityElement = NO;
+}
+```
+
+A view that contains a tagged view is a container by definition; the semantics belong to
+the children, which carry their own labels and traits.
+
+### Verification
+
+`scripts/retest-theme-ios.py` on the same iPhone, all six themes:
+
+| | surfaces matching their token |
+| --- | --- |
+| before | 9 (gulf only — the sweep could not reach Settings again to switch theme) |
+| after | **84** (14 surfaces × 6 themes) |
+
+The one remaining skip is `home.myRoomBtn`, which this account does not have: the app
+draws `home.createRoomBtn` in its place, which is a data state and not a defect.
+
+### VoiceOver
+
+This is a gain, not a trade. The swallowed children carry their own labels and traits;
+before the change a VoiceOver user met one element reading forty words in a single
+breath, with no way to reach anything inside it.
+
+### Upstreaming
+
+Worth offering as-is. It is general accessibility capability with no Ronaq concept in it,
+and it makes the existing pass do what its own comments already say it intends.

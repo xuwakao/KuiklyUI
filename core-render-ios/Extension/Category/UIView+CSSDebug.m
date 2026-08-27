@@ -160,14 +160,27 @@ static void kr_scheduleAccessibilityPass(void) {
                 }
             }
         }
+        // Demote EVERY ancestor of a tagged view, not only the tagged ones.
+        //
+        // An accessibility element is opaque: nothing beneath it is reachable. UIKit
+        // promotes a view of its own accord once it looks interactive, and Kuikly's
+        // clickable wrapper looks exactly like that — so an UNTAGGED wrapper became a
+        // Button and swallowed every tagged descendant under it. Measured on a real
+        // iPhone: one Button carried the label
+        // 'R ronaq-rtc Lv.1 ID 900000002 … ⚑ My Family ⚙ Settings' — the whole Me page
+        // as a single element — and not one of the twelve identifiers inside it could be
+        // queried. Only tagged ancestors were demoted here, and that wrapper carries no
+        // tag, so the pass walked straight past it.
+        //
+        // A view that contains a tagged view is a container by definition; the semantics
+        // belong to the children, which carry their own labels and traits. VoiceOver
+        // loses nothing by this — it gains the children it could not reach either.
         for (UIView *view in marked) {
             if (view.css_testTag.length == 0) {
                 continue;
             }
             for (UIView *parent = view.superview; parent != nil; parent = parent.superview) {
-                if (parent.css_testTag.length > 0 || parent.css_debugName.length > 0) {
-                    parent.isAccessibilityElement = NO;
-                }
+                parent.isAccessibilityElement = NO;
             }
         }
     });
