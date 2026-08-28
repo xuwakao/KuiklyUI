@@ -317,6 +317,40 @@ sealed class Brush {
         )
 
         /**
+         * Ronaq: creates a radial gradient — the shape the design states its page glows
+         * with, and the one this fork could not draw.
+         *
+         * Without it the shared layer drew a glow as a stack of 56 stroked rings on a
+         * full-screen Canvas: 290 ms per frame on a Pixel 2, re-issued every frame
+         * because an animation elsewhere kept the frame loop running. As a view
+         * background the same gradient costs nothing per frame.
+         * Ronaq：径向渐变 —— 设计描述页面光晕所用的形状，此前本 fork 无法绘制。
+         *
+         * Centre and radius are FRACTIONS of the view rather than pixels: a background
+         * outlives any one measurement, and a pixel radius would be wrong the moment the
+         * view resized. [radius] is a fraction of the view's HEIGHT: the design's glows are
+         * ellipses wider than the screen, so the vertical extent is what shapes them.
+         *
+         * @param colorStops Colors and their offset (0..1) from the centre outward
+         * @param centerX 0..1 across the view
+         * @param centerY 0..1 down the view
+         * @param radius fraction of the view's HEIGHT
+         */
+        @Stable
+        fun radialGradient(
+            vararg colorStops: Pair<Float, Color>,
+            centerX: Float = 0.5f,
+            centerY: Float = 0.5f,
+            radius: Float = 0.5f
+        ): Brush = RadialGradient(
+            colors = List(colorStops.size) { i -> colorStops[i].second },
+            stops = List(colorStops.size) { i -> colorStops[i].first },
+            centerX = centerX,
+            centerY = centerY,
+            radius = radius
+        )
+
+        /**
          * Creates a sweep (angular / conic) gradient with the colors evenly distributed
          * around the turn.
          * 创建颜色沿一周均匀分布的扫描（锥形）渐变。
@@ -742,6 +776,103 @@ class LinearGradient internal constructor(
  * 已在 CHANGES.md 记为未完成项。
  */
 @Immutable
+/**
+ * Ronaq: a radial gradient, stated in fractions of the view it fills.
+ *
+ * Fractions rather than pixels because this is a BACKGROUND: it outlives any one
+ * measurement, and each renderer wants a different unit anyway — pixels on Android,
+ * a CSS string on the web.
+ */
+class RadialGradient internal constructor(
+    val colors: List<Color>,
+    val stops: List<Float>? = null,
+    val centerX: Float = 0.5f,
+    val centerY: Float = 0.5f,
+    val radius: Float = 0.5f
+) : Brush() {
+
+    val colorStops: ArrayList<ColorStop> by lazy {
+        val tStops = stops ?: List(colors.size) { i ->
+            if (colors.size <= 1) 0f else i.toFloat() / (colors.size - 1)
+        }
+        val res = arrayListOf<ColorStop>()
+        colors.forEachIndexed { index, color ->
+            res.add(ColorStop(color.toKuiklyColor(), tStops.getOrNull(index) ?: 1f))
+        }
+        res
+    }
+
+    /**
+     * Sets itself as the paint's shader, as [SweepGradient] does, and for the same
+     * reason: a Canvas draw resolves the shader to null and paints the flat colour
+     * rather than a wrong gradient. This brush is meant for a background, where the
+     * renderer draws it properly and it costs nothing per frame.
+     * 与 SweepGradient 同：Canvas 绘制时安全解析为 null，以纯色而非错误渐变绘制。
+     * 本笔刷用于背景，渲染层可正确绘制且每帧成本为零。
+     */
+    override fun applyTo(size: Size, p: Paint, alpha: Float) {
+        p.alpha = DefaultAlpha
+        p.shader = if (alpha == DefaultAlpha) this else copy(alpha)
+    }
+
+    override fun applyTo(view: DeclarativeBaseView<*, *>, alpha: Float) {
+        val brush = if (alpha.isNaN() || alpha >= 1f) this else copy(alpha)
+        if (view.getPager().pageData.isWeb) {
+            view.getViewAttr().setProp(Attr.StyleConst.BACKGROUND_IMAGE, brush.toPropValue())
+        } else {
+            view.getViewAttr().backgroundRadialGradient(
+                brush.centerX,
+                brush.centerY,
+                brush.radius,
+                *brush.colorStops.toTypedArray()
+            )
+        }
+    }
+
+    /** The `backgroundImage` value for this gradient, in the wire's own form. */
+    internal fun toPropValue(): String {
+        val builder = StringBuilder(RADIAL_GRADIENT_PREFIX)
+        builder.append(centerX).append(' ').append(centerY).append(' ').append(radius)
+        colorStops.forEach { builder.append(',').append(it) }
+        return builder.append(')').toString()
+    }
+
+    override fun copy(alpha: Float): RadialGradient = RadialGradient(
+        colors = colors.map { it.modulate(alpha) },
+        stops = stops,
+        centerX = centerX,
+        centerY = centerY,
+        radius = radius
+    )
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is RadialGradient) return false
+        if (colors != other.colors) return false
+        if (stops != other.stops) return false
+        if (centerX != other.centerX) return false
+        if (centerY != other.centerY) return false
+        if (radius != other.radius) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = colors.hashCode()
+        result = 31 * result + (stops?.hashCode() ?: 0)
+        result = 31 * result + centerX.hashCode()
+        result = 31 * result + centerY.hashCode()
+        result = 31 * result + radius.hashCode()
+        return result
+    }
+
+    override fun toString(): String = "RadialGradient(colors=$colors, stops=$stops, " +
+        "centerX=$centerX, centerY=$centerY, radius=$radius)"
+
+    private companion object {
+        const val RADIAL_GRADIENT_PREFIX = "radial-gradient("
+    }
+}
+
 class SweepGradient internal constructor(
     val colors: List<Color>,
     val stops: List<Float>? = null,

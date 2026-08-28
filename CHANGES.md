@@ -1212,3 +1212,42 @@ breath, with no way to reach anything inside it.
 
 Worth offering as-is. It is general accessibility capability with no Ronaq concept in it,
 and it makes the existing pass do what its own comments already say it intends.
+
+## 12. Radial gradients (`Brush.radialGradient`, `backgroundRadialGradient`)
+
+**What.** A radial gradient a view can carry as its BACKGROUND, on all three renderers:
+`Brush.radialGradient(...)` in the Compose layer, `Attr.backgroundRadialGradient(...)` in
+core, and a `radial-gradient(<cx> <cy> <r>,<argb> <stop>,…)` wire form parsed by the
+Android, iOS and web renderers. Centre and radius are FRACTIONS of the view; the radius
+is a fraction of its HEIGHT.
+
+**Why.** The design states page glows as CSS radial gradients — gulf's `--roomGrad`
+opens `radial-gradient(130% 68% at 50% -6%,rgba(245,193,92,.14) 0%,…)`. The fork had
+linear, horizontal, vertical and sweep brushes and no radial, so the shared layer drew
+the glow as a stack of 56 stroked annuli on a full-screen `Canvas`.
+
+Measured on a Pixel 2 (Android 8.1), login screen, eight seconds idle:
+
+| | frames | janky | 50th |
+| --- | --- | --- | --- |
+| 56 annuli + the dot pattern | 44 | 100% | 350 ms |
+| dot pattern only | 51 | 100% | 300 ms |
+| neither | 610 | 0.33% | 9 ms |
+| **radial background + dot pattern** | **438** | 100% | **40 ms** |
+
+The glow alone cost ~290 ms per frame, and it was re-issued on EVERY frame because the
+brand mark runs an infinite animation that keeps the frame loop alive. As a background
+the renderer draws it once. The remaining 40 ms is the dot pattern, which is a tiled
+background (`background-size: 22px`) and needs tiling support to move the same way.
+
+**Radius is the HEIGHT, not the shorter side.** The design's glows are ellipses wider
+than the screen in every skin, so the vertical extent is what shapes them; a circle of
+the width would be a different shape.
+
+**PRD basis.** No clause requires a gradient primitive. It serves the appearance
+baseline (`prototype/`) and the 60 fps budget in `ARCHITECTURE.md §3` — this screen was
+running at about 2.5.
+
+**Files.** `compose/.../ui/graphics/Brush.kt`, `compose/.../ui/text/style/TextForegroundStyle.kt`,
+`core/.../base/Attr.kt`, `core-render-android/.../css/drawable/KRCSSBackgroundDrawable.kt`,
+`core-render-web/.../ktx/KuiklyRenderCSSKTX.kt`, `core-render-ios/.../UIView+CSS.m`.

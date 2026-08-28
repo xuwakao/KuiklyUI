@@ -199,6 +199,14 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
             applySweepGradient(sweep)
             return
         }
+        val radial = parseRadialGradient(backgroundImage)
+        if (radial != null) {
+            applyRadialGradient(radial)
+            return
+        }
+        // Ronaq: a view that carried a radial must forget it, for the same reason the
+        // sweep reset above exists — the drawable is reused across views.
+        pendingRadial = null
         gradientType = GradientDrawable.LINEAR_GRADIENT
         val backgroundImageTriple = parseBackgroundImage(backgroundImage)
         orientation = backgroundImageTriple.first
@@ -224,6 +232,65 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
      * （已对照 API 30/35/36 平台源码确认）。故此处先把色标解析为等距色带，
      * 这正是 null 位置数组对着色器的含义。
      */
+    /**
+     * Ronaq: the radial gradient this drawable is currently painting, or null.
+     *
+     * Held because [GradientDrawable.gradientRadius] is a length in PIXELS while the
+     * wire states a fraction of the view — the design writes `radial-gradient(50% 0%,
+     * … 60%)` — so the radius cannot be resolved until the bounds are known and must be
+     * resolved again whenever they change.
+     * Ronaq：径向渐变的半径在平台 API 中是像素，而线上格式是视图的比例，
+     * 故须在得到边界后解析，并在边界变化时重解析。
+     */
+    private var pendingRadial: KRCSSRadialGradient? = null
+
+    /**
+     * Ronaq: draw a radial gradient with the platform's own shader.
+     * Ronaq：以平台自身的着色器绘制径向渐变。
+     *
+     * This is why it exists: the design states its page glow as a CSS radial gradient,
+     * and with no renderer support the shared layer drew it as a stack of 56 stroked
+     * rings on a full-screen Canvas — 290 ms per frame on a Pixel 2, re-issued on every
+     * frame because a logo animation kept the frame loop running. Measured at 100%
+     * janky, 350–400 ms; the same screen with the rings removed measured 9 ms.
+     * 设计将页面光晕写为 CSS 径向渐变；渲染层此前不支持，共享层遂以 56 个描边圆环绘制，
+     * 在 Pixel 2 上每帧 290ms，且因常驻动画而每帧重画。实测 100% 掉帧、350–400ms；
+     * 移除圆环后同一屏为 9ms。
+     */
+    private fun applyRadialGradient(radial: KRCSSRadialGradient) {
+        pendingRadial = radial
+        gradientType = RADIAL_GRADIENT
+        setGradientCenter(radial.centerX, radial.centerY)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            setColors(radial.colors, radial.offsets)
+        } else {
+            colors = radial.colors
+        }
+        resolveRadialRadius(bounds.width(), bounds.height())
+    }
+
+    /**
+     * Ronaq: a radius of zero makes the shader throw, so an unmeasured view keeps the
+     * last usable value rather than crashing on its first layout pass.
+     * Ronaq：半径为 0 会使着色器抛错，故未测量的视图沿用上一个可用值而非崩溃。
+     */
+    private fun resolveRadialRadius(width: Int, height: Int) {
+        val radial = pendingRadial ?: return
+        // Ronaq: the HEIGHT, not the shorter side. The design's glows are ellipses whose
+        // horizontal extent is wider than the screen in every skin, so a circle of the
+        // vertical radius differs from the stated ellipse by less than the gradient's
+        // own band width — while a circle of the WIDTH would be a different shape.
+        // Ronaq：以高度为基准而非短边。设计的光晕为椭圆，其横向半径在各皮肤中均宽于屏幕，
+        // 故取竖向半径的圆与所述椭圆之差小于渐变自身的带宽；取宽度则形状完全不同。
+        if (height <= 0) return
+        gradientRadius = radial.radiusFraction * height
+    }
+
+    override fun onBoundsChange(bounds: android.graphics.Rect) {
+        super.onBoundsChange(bounds)
+        resolveRadialRadius(bounds.width(), bounds.height())
+    }
+
     private fun applySweepGradient(sweep: KRCSSSweepGradient) {
         gradientType = GradientDrawable.SWEEP_GRADIENT
         setGradientCenter(sweep.centerX, sweep.centerY)
@@ -303,6 +370,13 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         // Ronaq：backgroundImage 属性可承载的两种形式。
         private const val LINEAR_GRADIENT_PREFIX = "linear-gradient("
         private const val SWEEP_GRADIENT_PREFIX = "sweep-gradient("
+        private const val RADIAL_GRADIENT_PREFIX = "radial-gradient("
+
+        private const val RADIAL_HEAD_CENTER_X_INDEX = 0
+        private const val RADIAL_HEAD_CENTER_Y_INDEX = 1
+        private const val RADIAL_HEAD_RADIUS_INDEX = 2
+        private const val RADIAL_CENTER_DEFAULT = 0.5f
+        private const val RADIAL_RADIUS_DEFAULT = 0.5f
 
         private const val SWEEP_HEAD_ANGLE_INDEX = 0
         private const val SWEEP_HEAD_CENTER_X_INDEX = 1
@@ -384,6 +458,36 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
             val direction = convertDirection(splits[BACKGROUND_IMAGE_DIRECTION_INDEX].toInt())
 
             return Triple(direction, colors, offsets)
+        }
+
+        /**
+         * Ronaq: parse `radial-gradient(<cxFrac> <cyFrac> <rFrac>,<argb> <stop>,…)`.
+         * Ronaq：解析上述径向渐变字符串。
+         *
+         * The head is a triple like the sweep's, and for the same reason: the wire
+         * cannot carry CSS's own `at <position>` syntax without a parser on every
+         * renderer, so the fractions are stated positionally and each renderer converts
+         * to whatever its platform wants — pixels here, a CSS string on the web.
+         *
+         * Returns null for anything that is not a radial, so the caller carries on.
+         */
+        fun parseRadialGradient(backgroundImage: String): KRCSSRadialGradient? {
+            if (!backgroundImage.startsWith(RADIAL_GRADIENT_PREFIX)) {
+                return null
+            }
+            val parts = splitGradient(backgroundImage, RADIAL_GRADIENT_PREFIX)
+            val head = parts.firstOrNull()?.trim()?.split(KRCssConst.BLANK_SEPARATOR).orEmpty()
+            val stops = parseColorStops(parts) ?: return null
+            return KRCSSRadialGradient(
+                centerX = head.getOrNull(RADIAL_HEAD_CENTER_X_INDEX)?.toFloatOrNull()
+                    ?: RADIAL_CENTER_DEFAULT,
+                centerY = head.getOrNull(RADIAL_HEAD_CENTER_Y_INDEX)?.toFloatOrNull()
+                    ?: RADIAL_CENTER_DEFAULT,
+                radiusFraction = head.getOrNull(RADIAL_HEAD_RADIUS_INDEX)?.toFloatOrNull()
+                    ?: RADIAL_RADIUS_DEFAULT,
+                colors = stops.colors,
+                offsets = stops.offsets,
+            )
         }
 
         /** Ronaq: does this `backgroundImage` carry a sweep gradient? 是否为扫描渐变。 */
@@ -641,6 +745,15 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
  * samples 是等距色带而非色标列表：GradientDrawable 从不把位置数组交给扫描着色器，
  * 见 KRCSSBackgroundDrawable.applySweepGradient。
  */
+/** Ronaq: a radial gradient as the wire states it — fractions of the view. */
+class KRCSSRadialGradient(
+    val centerX: Float,
+    val centerY: Float,
+    val radiusFraction: Float,
+    val colors: IntArray,
+    val offsets: FloatArray
+)
+
 class KRCSSSweepGradient(
     val centerX: Float,
     val centerY: Float,

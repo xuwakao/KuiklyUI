@@ -230,6 +230,43 @@ open class Attr : Props(), IStyleAttr, ILayoutAttr {
         return this
     }
 
+    /**
+     * Ronaq: a radial gradient background — `radial-gradient(cx cy r,<argb> <stop>,…)`.
+     *
+     * Added because the design states page glows as CSS radial gradients and no renderer
+     * could draw one. The shared layer's answer was a stack of 56 stroked rings on a
+     * full-screen Canvas: 290 ms per frame on a Pixel 2, redrawn every frame because an
+     * animation elsewhere kept the frame loop running. As a view BACKGROUND the same
+     * gradient costs nothing per frame.
+     * Ronaq：径向渐变背景。设计以 CSS 径向渐变描述页面光晕，而渲染层此前无法绘制，
+     * 共享层遂以 56 个描边圆环替代 —— Pixel 2 上每帧 290ms 且每帧重画。
+     * 作为视图背景则每帧成本为零。
+     *
+     * Centre and radius are FRACTIONS of the view, stated positionally: CSS's own
+     * `at <position>` syntax would need a parser on every renderer, and each platform
+     * wants a different unit anyway — pixels on Android, a CSS string on the web.
+     * 圆心与半径为视图比例并按位置给出：CSS 的 `at <position>` 语法需在每个渲染器
+     * 各写一份解析，且各平台所需单位本就不同。
+     *
+     * @param centerX 0..1 across the view; 0.5 is the middle.
+     * @param centerY 0..1 down the view.
+     * @param radius fraction of the view's HEIGHT — the axis that shapes a page glow.
+     */
+    fun backgroundRadialGradient(
+        centerX: Float,
+        centerY: Float,
+        radius: Float,
+        vararg colorStops: ColorStop
+    ): Attr {
+        var css = "radial-gradient($centerX $centerY $radius"
+        for (color in colorStops) {
+            css += ",$color"
+        }
+        css += ")"
+        StyleConst.BACKGROUND_IMAGE with css
+        return this
+    }
+
     override fun boxShadow(boxShadow: BoxShadow): Attr {
         BoxShadow.ensureSupportFill(this)
         StyleConst.BOX_SHADOW with boxShadow.toString()

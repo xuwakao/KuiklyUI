@@ -21,6 +21,7 @@ import com.tencent.kuikly.compose.ui.graphics.Brush
 import com.tencent.kuikly.compose.ui.graphics.Color
 import com.tencent.kuikly.compose.ui.graphics.LinearGradient
 import com.tencent.kuikly.compose.ui.graphics.SolidColor
+import com.tencent.kuikly.compose.ui.graphics.RadialGradient
 import com.tencent.kuikly.compose.ui.graphics.SweepGradient
 import com.tencent.kuikly.compose.ui.graphics.lerp as lerpColor
 import com.tencent.kuikly.compose.ui.graphics.isSpecified
@@ -91,6 +92,10 @@ internal interface TextForegroundStyle {
                 // 在转为前景 span 时只解析线性形式，扫描值到那里无法绘制；
                 // 故此处解析为 Unspecified，文本保留其声明颜色。
                 is SweepGradient -> Unspecified
+                // Ronaq: and a radial one, for the same reason — it fills a view, not
+                // glyphs, and the foreground-span path parses only the linear form.
+                // Ronaq：径向同理，用于填充视图而非字形。
+                is RadialGradient -> Unspecified
 //                is ShaderBrush -> BrushStyle(brush, alpha)
             }
         }

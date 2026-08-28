@@ -1417,6 +1417,12 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     BOOL _isSweep;
     /// Ronaq: 扫描渐变圆心（单位坐标）/ centre of the sweep, in unit coordinates
     CGPoint _sweepCenter;
+    /// Ronaq: 是否为径向渐变 / whether this is a radial gradient
+    BOOL _isRadial;
+    /// Ronaq: 径向渐变圆心（单位坐标）/ centre of the radial, in unit coordinates
+    CGPoint _radialCenter;
+    /// Ronaq: 径向半径，取视图高度的比例 / radius, as a fraction of the view's HEIGHT
+    CGFloat _radialRadius;
     /// Ronaq: 偏移 0 自十二点顺时针的角度 / where offset 0 sits, clockwise from twelve
     CGFloat _sweepStartDeg;
 }
@@ -1430,11 +1436,88 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
         // Ronaq：backgroundImage 属性有两种形式；扫描渐变此前过不了线性前缀判断，
         // 图层最终没有任何颜色，即完全不绘制背景。
         if (![self p_tryToParseWithLinearGradient:cssGradient]) {
-            [self p_tryToParseWithSweepGradient:cssGradient];
+            if (![self p_tryToParseWithSweepGradient:cssGradient]) {
+                [self p_tryToParseWithRadialGradient:cssGradient];
+            }
         }
     }
     return self;
     
+}
+
+/**
+ * Ronaq: 解析径向渐变 / parse a radial gradient.
+ *
+ * 线上形式 / wire form:
+ *   `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>,<argb> <stop>,…)`
+ *
+ * 半径为视图高度的比例：设计的页面光晕是比屏幕更宽的椭圆，决定其形状的是竖向半径。
+ * The radius is a fraction of the HEIGHT: the design's page glows are ellipses wider
+ * than the screen, so the vertical extent is what shapes them.
+ */
+- (BOOL)p_tryToParseWithRadialGradient:(NSString *)cssGricent {
+    NSString *radialGradientPrefix = @"radial-gradient(";
+    if (![cssGricent hasPrefix:radialGradientPrefix] || ![cssGricent hasSuffix:@")"]) {
+        return NO;
+    }
+    NSString *inner = [cssGricent substringWithRange:NSMakeRange(radialGradientPrefix.length,
+                          cssGricent.length - radialGradientPrefix.length - 1)];
+    NSArray<NSString *> *splits = [inner componentsSeparatedByString:@","];
+    if (splits.count < 2) {
+        return NO;
+    }
+    NSArray<NSString *> *head = [splits.firstObject componentsSeparatedByString:@" "];
+    CGFloat centerX = head.count > 0 ? [head[0] floatValue] : 0.5;
+    CGFloat centerY = head.count > 1 ? [head[1] floatValue] : 0.5;
+    CGFloat radius = head.count > 2 ? [head[2] floatValue] : 0.5;
+
+    _colors = [NSMutableArray array];
+    _locations = [NSMutableArray array];
+    for (NSUInteger i = 1; i < splits.count; i++) {
+        NSArray<NSString *> *pair =
+            [[splits[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]
+                componentsSeparatedByString:@" "];
+        if (pair.count == 0 || !pair.firstObject.length) {
+            continue;
+        }
+        UIColor *color = [UIView css_color:(NSString *)pair.firstObject];
+        if (!color) {
+            continue;
+        }
+        [_colors addObject:(__bridge id)color.CGColor];
+        [_locations addObject:@(pair.count > 1 ? [pair[1] floatValue] : 0)];
+    }
+    if (_colors.count < 2) {
+        // A gradient needs two ends; one colour is a solid fill and the linear path
+        // already draws those.
+        return NO;
+    }
+    _isRadial = YES;
+    _radialCenter = CGPointMake(centerX, centerY);
+    _radialRadius = radius;
+    return YES;
+}
+
+/**
+ * Ronaq: 以 CAGradientLayer 自身的径向类型绘制 / draw with the layer's own radial type.
+ *
+ * `kCAGradientLayerRadial` 以 startPoint 为圆心、endPoint 指定椭圆的两个半轴（单位坐标）。
+ * 线上半径是高度的比例，故横向半轴需按宽高比换算，才是同一个圆而非被拉扁的椭圆。
+ * The radial type takes the centre as `startPoint` and the two semi-axes as `endPoint`,
+ * both in unit coordinates. The wire's radius is a fraction of the HEIGHT, so the
+ * horizontal semi-axis is scaled by the aspect ratio — otherwise the same number would
+ * describe a squashed ellipse rather than the circle the other renderers draw.
+ */
+- (BOOL)p_applyRadialGeometry {
+    if (self.bounds.size.width <= 0 || self.bounds.size.height <= 0) {
+        return NO;
+    }
+    self.type = kCAGradientLayerRadial;
+    CGFloat vertical = _radialRadius;
+    CGFloat horizontal = _radialRadius * (self.bounds.size.height / self.bounds.size.width);
+    self.startPoint = _radialCenter;
+    self.endPoint = CGPointMake(_radialCenter.x + horizontal, _radialCenter.y + vertical);
+    return YES;
 }
 
 - (BOOL)p_tryToParseWithLinearGradient:(NSString *)cssGricent {
@@ -1572,7 +1655,16 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     }
     // Ronaq: a sweep places its own geometry; the linear helper would overwrite it.
     // Ronaq：扫描渐变自行确定几何；线性辅助方法会覆盖它。
-    if (!_isSweep || ![self p_applySweepGeometry]) {
+    // Ronaq: a sweep and a radial each place their own geometry; the linear helper
+    // would overwrite it.
+    // Ronaq：扫描与径向各自确定几何；线性辅助方法会覆盖它。
+    BOOL placed = NO;
+    if (_isSweep) {
+        placed = [self p_applySweepGeometry];
+    } else if (_isRadial) {
+        placed = [self p_applyRadialGeometry];
+    }
+    if (!placed) {
         [KRConvertUtil hr_setStartPointAndEndPointWithLayer:self direction:_diretion];
     }
     [CATransaction commit];

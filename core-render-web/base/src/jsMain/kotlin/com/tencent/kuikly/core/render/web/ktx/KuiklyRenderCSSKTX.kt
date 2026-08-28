@@ -36,6 +36,12 @@ fun String.toPercentage(): String = (toFloat() * 100).toString() + "%"
 private const val SWEEP_GRADIENT_PREFIX = "sweep-gradient("
 
 /**
+ * Ronaq: prefix the core layer stamps on a radial gradient.
+ * Ronaq：核心层为径向渐变加的前缀。
+ */
+private const val RADIAL_GRADIENT_PREFIX = "radial-gradient("
+
+/**
  * Ronaq: convert a sweep gradient into a CSS `conic-gradient`.
  * Ronaq：将扫描渐变转换为 CSS conic-gradient。
  *
@@ -76,11 +82,52 @@ private fun getCSSConicGradient(value: String): String {
 }
 
 /**
+ * Ronaq: convert a radial gradient into CSS.
+ * Ronaq：将径向渐变转换为 CSS。
+ *
+ * Wire form: `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>,<argb> <stop>,…)`
+ * 线上形式如上。
+ *
+ * The radius is a fraction of the element's HEIGHT, which is what shapes a page glow —
+ * the design's own glows are ellipses wider than the screen, so the vertical extent is
+ * the one that matters. CSS says that directly with a single length and `at`, so unlike
+ * the conic case nothing needs converting but the units.
+ * 半径为元素高度的比例 —— 决定页面光晕形状的是竖向半径；设计的光晕本就宽于屏幕。
+ * CSS 可直接以单一长度加 at 表达，故除单位外无需换算。
+ */
+private fun getCSSRadialGradient(value: String): String {
+    val inner = value.substring(RADIAL_GRADIENT_PREFIX.length, value.length - 1)
+    val parts = inner.split(",")
+    val head = parts[0].split(" ")
+    val centreX = (head.getOrNull(0)?.toFloatOrNull() ?: 0.5f) * 100f
+    val centreY = (head.getOrNull(1)?.toFloatOrNull() ?: 0.5f) * 100f
+    val radius = (head.getOrNull(2)?.toFloatOrNull() ?: 0.5f) * 100f
+    val stops = StringBuilder()
+    for (i in 1 until parts.size) {
+        val colorStopSplit = parts[i].trim().split(" ")
+        if (i != 1) {
+            stops.append(",")
+        }
+        stops.append(colorStopSplit[0].toRgbColor())
+        if (colorStopSplit.size == 2) {
+            stops.append(" ").append(colorStopSplit[1].toFloat() * 100f).append("%")
+        }
+    }
+    // `<radius>% of the height` is what the wire means, and CSS reads a single
+    // percentage length against the element's height for the vertical axis of an
+    // ellipse — so the pair states the same circle the other renderers draw.
+    return "radial-gradient($radius% $radius% at $centreX% $centreY%,$stops)"
+}
+
+/**
  * Adapt background value, convert from Kotlin format to web CSS format
  */
 fun getCSSBackgroundImage(value: String): String {
     if (value.startsWith(SWEEP_GRADIENT_PREFIX)) {
         return getCSSConicGradient(value)
+    }
+    if (value.startsWith(RADIAL_GRADIENT_PREFIX)) {
+        return getCSSRadialGradient(value)
     }
     val startIndex = value.indexOf("(")
     val spilt = value.substring(startIndex + 1, value.length - 1).split(",")
