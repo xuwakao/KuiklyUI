@@ -387,7 +387,26 @@ class SolidColor(val value: Color) : Brush() {
     }
 
     override fun applyTo(view: DeclarativeBaseView<*, *>, alpha: Float) {
-        view.getViewAttr().backgroundColor(value.modulate(alpha).toKuiklyColor())
+        // Ronaq: clear any gradient the view still carries before painting a flat colour.
+        //
+        // A gradient brush and a solid one land on TWO different view properties —
+        // `backgroundImage` and `backgroundColor` — and a view is REUSED across items of
+        // a lazy list. So a node recomposed from a gradient background to a solid one set
+        // the new colour and left the old gradient sitting on top of it: the flat fill
+        // was painted and then covered. Seen on the task centre, where a list of pills
+        // switches between an accent gradient and a flat "does nothing" fill; the rows
+        // recycled from gradient pills kept the gradient while their ink went grey, so a
+        // dead control wore a live control's colours.
+        //
+        // Only cleared where a gradient actually was. Writing the empty value
+        // unconditionally would put `backgroundImage` in the prop map of every flat
+        // surface in the app, and `Props.setPropsToRenderView` reads that key's PRESENCE
+        // to decide whether iOS needs a shadow wrapper view.
+        val attr = view.getViewAttr()
+        if (attr.getProp(Attr.StyleConst.BACKGROUND_IMAGE) != null) {
+            attr.setProp(Attr.StyleConst.BACKGROUND_IMAGE, "")
+        }
+        attr.backgroundColor(value.modulate(alpha).toKuiklyColor())
     }
 
     override fun copy(alpha: Float): Brush {

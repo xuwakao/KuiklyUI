@@ -282,18 +282,33 @@ internal fun measureLazyGrid(
         )
 
         // 计算sticky headers (pinnedItems)
+        //
+        // A pinned item is measured here only when nothing else in this pass composes it.
+        // The beyond-bounds lines above/below the viewport (extraLinesBefore/After) already
+        // measure and place every item on them, so the pinned-item pass must start where
+        // that window ends, not where the VISIBLE range ends. With the visible bound, a
+        // pinned item sitting inside the beyond-bounds window was measured twice — once by
+        // its line, once here — and placing the same node twice aborts the layout pass
+        // ("Place was called on a node which was placed already"), after which the grid
+        // stops consuming scroll entirely. The list measure already draws this boundary
+        // (createItemsBeforeList: `if (index < start)` with start behind the
+        // beyond-bounds window); this is the grid catching up.
+        val firstComposedItemIndex =
+            extraLinesBefore.firstOrNull()?.items?.firstOrNull()?.index ?: firstItemIndex
         val extraItemsBefore = calculateExtraItems(
             pinnedItems = pinnedItems,
             measuredItemProvider = measuredItemProvider,
             measuredLineProvider = measuredLineProvider,
-            filter = { it in 0 until firstItemIndex }
+            filter = { it in 0 until firstComposedItemIndex }
         )
 
+        val lastComposedItemIndex =
+            extraLinesAfter.lastOrNull()?.items?.lastOrNull()?.index ?: lastItemIndex
         val extraItemsAfter = calculateExtraItems(
             pinnedItems = pinnedItems,
             measuredItemProvider = measuredItemProvider,
             measuredLineProvider = measuredLineProvider,
-            filter = { it in (lastItemIndex + 1) until itemsCount }
+            filter = { it in (lastComposedItemIndex + 1) until itemsCount }
         )
 
         // even if we compose lines to fill before content padding we should ignore lines fully

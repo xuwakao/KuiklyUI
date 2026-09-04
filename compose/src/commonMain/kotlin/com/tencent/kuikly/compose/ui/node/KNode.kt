@@ -84,14 +84,31 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
     /**
      * Gets cached position for sticky header
      * Uses StickyHeaderCacheManager bound to KuiklyScrollInfo to manage cache
+     *
+     * A sticky header stays composed after the scroll passes it, and the lazy measure then
+     * places it immediately above the first visible line rather than where the item belongs
+     * — an offset that moves with every scrolled pixel. The hover view that does the pinning
+     * compares the scroll offset against this frame, so it needs the header's OWN place, not
+     * that moving one; the cache is what holds it still.
+     *
+     * It must not outlive that place. While the header has not yet reached the top of the
+     * scroller, the measured position IS where the item sits, and anything inserted above it
+     * moves it — a banner delivered after the first paint, a row that loads late. Caching the
+     * first position for the life of the list froze the header at the pre-insert offset, and
+     * it then drew over the items that had moved down past it and pinned at the wrong scroll
+     * offset. So the recorded position is refreshed whenever the measure is authoritative.
+     *
+     * @param positionIsItsOwn the measured position is the header's real one, not the
+     *   synthetic offset reported for a header that has been scrolled past.
      */
-    private fun getCachedStickyPosition(currentPos: Offset): Offset {
+    private fun getCachedStickyPosition(currentPos: Offset, positionIsItsOwn: Boolean): Offset {
         val currentItemKey = (foldedParent as? KNode<*>)?.lazyItemKey ?: return currentPos
 
         // Get bound cache manager
         val cacheManager = getCacheManager()
 
-        return cacheManager?.getCachedStickyPosition(currentItemKey, currentPos) ?: currentPos
+        return cacheManager?.getCachedStickyPosition(currentItemKey, currentPos, positionIsItsOwn)
+            ?: currentPos
     }
 
     /**
@@ -275,12 +292,23 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         val parentCoordinator = parentNode?.kuiklyCoordinates ?: parentNode?.innerCoordinator
         var pos = parentCoordinator?.viewPositionOf(curCoordinator) ?: Offset.Zero
 
+        // Whether the position just measured is the one this node actually OCCUPIES, as
+        // opposed to the synthetic offset a lazy layout reports for a header it has already
+        // scrolled past. True while the node's leading edge is at or below the scroller's
+        // own — see [getCachedStickyPosition], which is the only reader.
+        var positionIsItsOwn = true
+
         // Child nodes on scrollview, parent is virtual node
         if (ksScrollSubView && needFixScrollOffset) {
             val scrollerView = (parent as KNode<*>).view
             ((scrollerView.renderProperties as? RenderProperties)?.kuiklyScrollInfo)?.apply {
                 val deltaOffset = composeOffset + snapAnchorOffsetCorrection
-                pos = if (orientation == Orientation.Vertical) {
+                val vertical = orientation == Orientation.Vertical
+                // Read BEFORE the scroll offset is folded in: `pos` is still relative to the
+                // scroller's visible box here, so a non-negative main axis means the node has
+                // not reached the top edge yet.
+                positionIsItsOwn = (if (vertical) pos.y else pos.x) >= 0f
+                pos = if (vertical) {
                     Offset(pos.x, pos.y + deltaOffset)
                 } else {
                     Offset(pos.x + deltaOffset, pos.y)
@@ -293,7 +321,7 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         // Check if it's a sticky header and handle position caching
         val isStickyHeader = isStickyHeaderNode()
         if (isStickyHeader) {
-            pos = getCachedStickyPosition(pos)
+            pos = getCachedStickyPosition(pos, positionIsItsOwn)
         }
 
         var newFrame = Frame(

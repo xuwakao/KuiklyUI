@@ -1251,3 +1251,661 @@ running at about 2.5.
 **Files.** `compose/.../ui/graphics/Brush.kt`, `compose/.../ui/text/style/TextForegroundStyle.kt`,
 `core/.../base/Attr.kt`, `core-render-android/.../css/drawable/KRCSSBackgroundDrawable.kt`,
 `core-render-web/.../ktx/KuiklyRenderCSSKTX.kt`, `core-render-ios/.../UIView+CSS.m`.
+
+---
+
+## 13. Sticky headers work on a grid, not only on a list
+
+**Files** · `compose/.../foundation/lazy/grid/LazyGridDsl.kt`
+**Driven by** · Home PRD H-1.4 (category strip) and the prototype, where the strip is
+`position:sticky; top:0` on the feed
+**Date** · 2026-09-02
+
+### What upstream offers
+
+`LazyListScope.stickyHeader(key, contentType, content)` — the item's content is wrapped in
+a `HoverView`, which is the platform's own hover view: the native scroller repositions it
+on every scroll, so the pinning costs no recomposition. `LazyListMeasure` then keeps the
+header composed after it scrolls past, through `StickyItemsPlacement.applyStickyItems`.
+
+`LazyGridScope` has neither. Upstream says so in `stickyHeaderWithMarginTop`'s own KDoc:
+"More investigations needed to make sure sticky headers API is suitable for various more
+generic usecases, e.g. in grids."
+
+### Why that is not enough
+
+Ronaq's home feed is a `LazyVerticalGrid` — H-1.5 is a two-column waterfall and H-7.3 post
+cards span both columns, so the list cannot be swapped in (the same reason recorded in §10).
+H-1.4's category strip has to pin to the top of that feed. With no grid entry point the
+client had built the strip as a floating sibling of the grid, positioned from the reported
+offset of a same-height spacer item inside it. That is a hand-rolled offset that reads a
+layout pass behind the scroll it follows, it pins to a computed number rather than to the
+top of anything, and it costs a second node and a `derivedStateOf` on `layoutInfo` per frame.
+
+### What this fork changes
+
+One public extension, no change to the sealed `LazyGridScope` and no change to the measure:
+
+```kotlin
+fun LazyGridScope.stickyHeader(
+    key: Any? = null,
+    contentType: Any? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable LazyGridItemScope.() -> Unit
+)
+```
+
+It emits an ordinary `item` with `span = { GridItemSpan(maxLineSpan) }` — a header occupying
+one column of a two-column grid is not a header, and a hover view can only pin a whole line —
+and it does the two things a sticky header is:
+
+1. wraps the content in `StickHeader`, the same `HoverView` the list's `stickyHeader` uses;
+2. pins the item through `LocalPinnableContainer`, so it stays composed once it scrolls out
+   of the window. Without this the hover view would be disposed with its item and the header
+   would simply vanish mid-scroll — the grid's own `LazyGridMeasure` already carries the
+   other half of this (`calculateExtraItems`, whose comment reads "只处理固定项目
+   (pinnedItems) — 这些通常是 fullSpan 的 stickyHeader"), so this only supplies the pin the
+   comment was already expecting;
+3. lifts the header to `zIndex(1000f)`, which is what `stickyHeaderWithMarginTop` already
+   does with its own. A pinned header is by definition over content that is still moving,
+   and a renderer that paints by sibling order paints the later items on top of it. Android
+   never showed this — `KRHoverView.adjustHoverViewLayerIfNeed` re-fronts hover views on
+   every scroll — but the web renderer paints by `z-index`, and without this the room cards
+   drew straight through the pinned strip (measured; the first web run of
+   `retest-sticky-strip-web.mjs` caught it as a frame where the card's avatar row covered
+   two chips). The caller's own `modifier` is applied after, so it can still override.
+
+The `modifier` parameter is applied to the pinning node itself rather than to the content
+inside it, so layout stated there survives the pin. That is what lets a header reach back
+past the grid's own horizontal `contentPadding` and sit flush with the screen edge, which
+H-1.4's full-bleed strip needs and which nothing inside the hover view can do.
+
+Nothing else moves. `LazyListScope.stickyHeader` is untouched, the grid measure is untouched,
+and a grid that never calls this is byte-for-byte the grid it was.
+
+### Verified
+
+On hardware and in a browser, not by compiling — `scripts/retest-sticky-strip-android.py`
+and `scripts/retest-sticky-strip-web.mjs` in the client repository.
+
+Android, Pixel 2 (HT7BP1A01905, Android 8.1, 1080x1920 @ 420dpi), read from
+`dumpsys activity top -a` because `uiautomator dump` cannot read a Kuikly window (the
+Choreographer callback means it never reports idle, and a failed dump then serves the
+previous screen from the dump file):
+
+```
+KRRecyclerView{0,0-1080,1544}                  the feed's scroller
+  KRRecyclerContentView{0,0-1080,1619}
+    KRView{42,69-1038,179}                     top bar — inset by the feed's 16dp padding
+    KRHoverView{0,734-1080,878}                the strip — ONE of them, full width
+      KRRecyclerView{0,5-1080,139}             the chip row: 2dp in, 51dp tall
+```
+
+The strip is a hover view, it is a child of the feed's own content view rather than a
+sibling of the feed, there is exactly one of it in the window, its box is the design's
+(54.9dp against 55dp; band 1.9dp in, 51.0dp tall), and it is 1080px wide where its sibling
+items are 996px — the full-bleed reach-back, measured.
+
+**The pin itself could not be exercised on that phone**, and this is recorded rather than
+waved through: the deployment serves one room, so the feed's content is 1619px against a
+1544px viewport — 75px of travel, while the strip sits 734px into the content. It can never
+reach the top there. The strip did travel exactly 75px for 75px of scroll, and the check
+reports the pin as SKIPPED with those numbers.
+
+The pin was measured on the web build instead, where the viewport is something a check may
+size (420x340). The composition that has to survive being scrolled past is `commonMain` —
+this same item, the same pinned-item bookkeeping in `LazyGridMeasure` — so the half the
+phone cannot reach is exercised there:
+
+| scrolled | strip top | top bar top | card top |
+| --- | --- | --- | --- |
+| 0 | 288 | 26 | 346 |
+| 40 | **9** | -14 | 306 |
+| 480 | **9** | -454 | -134 |
+| 960 | **9** | -934 | -614 |
+
+The strip rides up with the content, stops at the feed's top edge and stays there to the
+pixel across 920px of further scrolling, with one copy of it at every offset, while the top
+bar and the room card keep travelling underneath.
+
+### Upstreaming
+
+Worth offering as-is, and it is the smaller half of the question upstream left open in
+`stickyHeaderWithMarginTop`'s KDoc. It adds an entry point over machinery upstream already
+has on both sides — the hover view for the pinning, `LazyLayoutPinnableItem` and the grid
+measure's `pinnedItems` path for the composition — and changes no existing behaviour.
+
+---
+
+## 14. The web hover view pins where the header actually sits, and stops fighting the renderer
+
+**Files** · `core-render-web/.../expand/components/KRHoverView.kt`
+**Driven by** · Home PRD H-1.4 (the category strip is `position:sticky; top:0`), reached
+through §13
+**Date** · 2026-09-02
+
+### What it did
+
+`KRHoverView` caches the view's resting offset once, in `onAddToParent`:
+
+```kotlin
+val totalTop = getTotalTop(grandParent)
+top = ele.style.top.pxToFloat()
+grandParent?.addEventListener("scroll", {
+    if (grandParent.scrollTop > top - hoverViewMarginTop) { /* fixed */ }
+    else { ele.style.position = "absolute"; ele.style.top = top.toPxF() }
+})
+```
+
+Two things are wrong with that, and §13's sticky grid header met both.
+
+**A node has no frame when it is added to its parent.** `ele.style.top` is empty at that
+moment, so `top` is `0` and `totalTop` is `0`. `scrollTop > 0` is true at the FIRST scrolled
+pixel, so the header pinned immediately rather than when the scroll reached it. Measured on
+the web build: the strip's own offset was 279px into the feed, and it jumped to the top
+after 40px of scrolling — 185 → 9 in a single wheel notch, while the room card beside it
+moved the 40px it should have.
+
+**The resting branch writes `style.top` on every scroll event.** That races the renderer,
+which caches the frame it last applied and skips an update it believes is already there.
+With the banner carousel above it, the strip ended up parked one banner's height above its
+place — visibly overlapping the check-in card — at rest, with no scrolling involved and
+nothing to correct it.
+
+### The change
+
+Read the offset only once a real frame exists and only ever WRITE on a state change:
+
+- `top` is refreshed from the renderer's FRAME prop, so it never reads the pinned
+  `style.top` back as the content position.
+- `totalTop` is taken whenever the view transitions into the pinned state rather than at
+  insertion, by which time layout has happened; re-reading it also follows a scroller moved
+  by a viewport or ancestor relayout between pins.
+- `position`/`top` are written only when crossing into or out of the pinned state. While
+  resting, the renderer keeps ownership of the frame.
+- the stored scroll callback is detached on removal/destruction, so a discarded header is
+  not retained by its former scroller and re-adding a view cannot stack listeners. A
+  reattachment also marks the pin state unknown, forcing the element to synchronize with
+  the new scroller even when both old and new containers happen to compute the same state.
+
+### Verified
+
+`scripts/retest-sticky-strip-web.mjs` in the client repository, 420x300 viewport, reading
+element boxes rather than a screenshot:
+
+| scrolled | strip top | room card top |
+| --- | --- | --- |
+| 0 | 185 | 243 |
+| 40 | 145 | 203 |
+| 80 | 105 | 163 |
+| … | 65, 25 | 123, 83 |
+| 200 | **9** | 43 |
+| 288 | **9** | -45 |
+
+The strip now travels one pixel per scrolled pixel until it reaches the feed's top edge,
+then holds there to the pixel while the cards keep going under it. Before the change the
+same run pinned after the first notch and reported the strip at 9px for every offset.
+
+Neither of these two RENDERER defects exists on Android: `KRHoverView` there re-reads its
+`cssFrame` from the FRAME prop and re-fronts hover views on every scroll, so it has no stale
+offset and no write race.
+
+**That is not the same as "Android was never affected", which is what this section said until
+2026-09-02 and which is wrong.** The sentence covered the two defects in this file and was
+read as covering the sticky header. A third defect, in `compose`'s own `KNode`, froze the
+header's position on every platform — §15 — and this claim of immunity is most of the reason
+it went a day without being looked for on a phone. Android's renderer is fine; the header
+above it was not.
+
+### Upstreaming
+
+Worth offering as-is. It is a defect fix in upstream's own component with no Ronaq concept
+in it, and it makes the component do what its own comments already say it intends.
+
+---
+
+## 15. A sticky header's position stops being frozen at the first layout
+
+**Files** · `compose/.../ui/node/StickyHeaderCacheManager.kt`,
+`compose/.../ui/node/KNode.kt`, `core-render-web/.../expand/components/KRHoverView.kt`
+**Driven by** · Home PRD H-1.4 (the category strip pins to the top of the feed) and H-1.2
+(the operational banner, which is the item that lands above it), reached through §13
+**Date** · 2026-09-02
+
+### What it did
+
+`KNode.updateKuiklyViewFrame` routes every hover view's frame through
+`StickyHeaderCacheManager`:
+
+```kotlin
+fun getCachedStickyPosition(itemKey: Any, currentPos: Offset): Offset {
+    val cachedData = stickyHeaderCacheMap[itemKey]
+    return if (cachedData == null) {
+        stickyHeaderCacheMap[itemKey] = StickyHeaderCache(currentPos)   // first layout
+        currentPos
+    } else {
+        cachedData.position                                             // every layout after
+    }
+}
+```
+
+The position a sticky header is measured at **the first time it is laid out** is the position
+the renderer is given **for the life of the list**. Nothing invalidates it.
+
+The cache is there for a real reason. A sticky header stays composed after the scroll passes
+it, and `LazyGridMeasure` / `LazyListMeasure` then place it immediately above the first
+visible line rather than where the item belongs — an offset that moves with every scrolled
+pixel. The hover view decides when to pin by comparing the scroll offset against this frame,
+so it needs the header's own place, not that moving one. Holding it still is right. Holding
+it still forever is not.
+
+Ronaq's home feed inserts an item ABOVE the strip after the first paint: H-1.2's banner comes
+from `banner/list`, on a slower wire than the feed, and `HomeScreen` emits the banner area
+only once a banner is delivered. When it lands, the check-in card and the strip both move down
+— and the strip does not. Measured on the web build, 420x340, with the framework's own numbers
+printed from `updateKuiklyViewFrame`:
+
+```
+KUIKLY-PROBE hover pos=Offset(0, 176) cached=Offset(0, 176)     before the banner
+KUIKLY-PROBE hover pos=Offset(0, 301) cached=Offset(0, 176)     after it
+```
+
+| | banner | check-in card | strip | |
+| --- | --- | --- | --- | --- |
+| before | — | 82..164 | 176..231 | correct: one 12dp gap under the card |
+| after | 80..193 | **207..289** | **176..231** | the strip is ON the card, at rest |
+
+Two things follow from one cause, and both are what the owner reported:
+
+- the strip **draws over the check-in card** with no scrolling involved;
+- it **pins a banner's height too early** — the hover view compares the scroll against 176,
+  so at 200px of scroll it is already fixed to the top of the feed while the check-in card is
+  still on screen at 7..89, under it.
+
+This is `commonMain`. **Android and iOS run it.** §14's Verified section said "Android was
+never affected", meaning the two web renderer defects recorded there; that sentence has been
+corrected, because as written it claimed an immunity this defect does not grant.
+
+### The change
+
+**`StickyHeaderCacheManager` records, rather than freezes.** `getCachedStickyPosition` takes
+`positionIsItsOwn` and replaces the recorded position whenever the measure is authoritative:
+
+```kotlin
+return if (cachedData == null || positionIsItsOwn) {
+    stickyHeaderCacheMap[itemKey] = StickyHeaderCache(currentPos)
+    currentPos
+} else {
+    cachedData.position
+}
+```
+
+**`KNode` decides which it is, from the position it already has.** The header's offset is
+measured relative to the scroller's visible box before the scroll offset is folded into it, so
+a non-negative main axis means the header has not reached the top edge — it is still an
+ordinary item, and the measure is reporting where it sits. Above that edge the measure may be
+reporting the synthetic offset, so the recorded position stands. The rule needs no new state
+and no knowledge of the measure's internals.
+
+**The web hover view survives a frame arriving while it is pinned**, which it did not have to
+before, because the frame never changed. `Element.setFrame` writes `position:absolute` and the
+resting `top` unconditionally, so a relayout under a pinned header dropped it back into the
+content mid-scroll. `KRHoverView` now takes its resting offset from the FRAME prop itself —
+the renderer's own value, and available exactly when a frame exists, unlike `onAddToParent` —
+tracks the pinned state in a field rather than reading it back off the element, and re-decides
+after every frame. It still writes only on a state change, for the reason §14 records.
+
+`totalTop` — where the scroller itself sits on the page, which is where a pinned view has to
+be placed — is taken at every transition into PIN. §14 moved it off `onAddToParent`, because
+nothing in the ancestor chain has a frame at insertion; reading it from the FRAME prop instead
+would walk back into the same hole, since a node's own frame says nothing about whether its
+scroller has one yet. A pin is the first moment the answer is certainly available, and
+re-reading on later pins follows any viewport or ancestor relayout in between.
+
+Android and iOS need no renderer change: both re-run `updateFrameToHoverIfNeed` after applying
+a frame and after every scroll, which already re-asserts the pin.
+
+### Verified
+
+`scripts/retest-sticky-strip-web.mjs` in the client repository, rewritten for this. It now
+judges the strip against the box of the item in FRONT of it rather than only against the top
+of the feed, and runs a second leg in which the banner is delivered late — at the transport,
+in the server's own shape, on a page that has already drawn.
+
+Against the same bundle with the cache reverted to upstream and everything else in place:
+
+```
+CHECK FAIL late banner: the strip sits where its item sits until the feed scrolls past it
+                        — off by 176 vs 301 at 0px; 136 vs 261 at 40px; 96 vs 221 at 80px
+CHECK FAIL late banner: it never draws over the check-in card above it
+                        — strip 176..231 over check-in 207..289 at 0px
+```
+
+and with the change:
+
+```
+CHECK ok   late banner: the strip sits where its item sits until the feed scrolls past it
+                        — 25 offsets, 8 in the flow and 17 pinned
+CHECK ok   late banner: it never draws over the check-in card above it
+CHECK ok   late banner: it travels one pixel per scrolled pixel before it pins — worst drift 0px
+CHECK ok   late banner: it pins at the top of the feed — pinned at 0px from the feed's top edge
+CHECK ok   late banner: and stays there, to the pixel — 17 offsets across 640px of further scroll
+RESULT: PASS
+```
+
+The strip now reads 301..356 under a check-in card at 207..289, travels one pixel per scrolled
+pixel to the top, and pins there. The leg without the banner is unchanged, across 4000px of
+scrolling down and back up, including the list's own offset re-anchor.
+
+**Android and iOS are NOT verified on hardware.** The reasoning above says they take the fix
+from `commonMain` and need no renderer change, and `:shared:compileDebugKotlinAndroid` passes,
+but neither phone was free during this work and §14's own history is the argument against
+accepting a renderer read as a measurement. `scripts/retest-sticky-strip-android.py` carries
+the same two assertions and is ready to run; it also no longer has to skip the pin, because
+`scripts/seed-cloudcone-rooms.py` gives the deployment a feed deep enough to reach it — the
+absence of which is why §13 could not exercise the pin on the phone.
+
+### Upstreaming
+
+Worth offering as-is, together with §13. It is a defect in upstream's own cache with no Ronaq
+concept in it: the cache's purpose is to survive the measure's synthetic offset for a pinned
+header, and this makes it stop applying to layouts that are not that.
+
+---
+
+## 16. A flat background replaces a gradient instead of hiding behind it
+
+**Files** · `compose/.../ui/graphics/Brush.kt`, `compose/.../foundation/Background.kt`
+**Driven by** · the task centre's claim pill; a control that cannot act must not wear an
+accent fill (the honest-failure rule in the client's `CLAUDE.md`)
+**Date** · 2026-09-04
+
+### What upstream does
+
+A background reaches this renderer as one of two DIFFERENT view properties:
+
+```kotlin
+// SolidColor.applyTo(view, alpha)
+view.getViewAttr().backgroundColor(value.modulate(alpha).toKuiklyColor())   // -> backgroundColor
+
+// LinearGradient.applyTo(view, alpha)
+view.getViewAttr().backgroundLinearGradient(direction, *stops)              // -> backgroundImage
+```
+
+`BackgroundNode.draw` calls whichever the current brush is, on the view the node is
+attached to.
+
+### What goes wrong
+
+Neither call clears the other's property, and a view is REUSED — across items of a lazy
+list, and whenever a node is recycled. A node that drew a gradient and then draws a flat
+colour sets `backgroundColor` and leaves `backgroundImage` in place, so the gradient is
+still painted over the new flat fill. The flat colour is applied and invisible.
+
+Measured on the Pixel (HT7BP1A01905) 2026-09-03, task centre, seventeen rows: every
+pill's ink was correct — the accent-ink pills where a tap acts, grey `--sub` ink where it
+cannot — while the last two rows in the list, whose views were recycled from accent-pill
+rows, kept the accent GRADIENT under their grey ink. Two dead controls wearing a live
+control's fill, stable across repeated scrolling in both directions.
+
+It is not a task-centre problem. Any two-state surface in a scrolling list where one state
+is a gradient and the other is flat has it, on all three platforms, because both `applyTo`
+implementations are in `commonMain`.
+
+### The change
+
+`SolidColor.applyTo(view, alpha)` and `BackgroundNode.draw`'s brush-less branch clear
+`Attr.StyleConst.BACKGROUND_IMAGE` before setting the colour — and only where the view
+actually carries one:
+
+```kotlin
+val attr = view.getViewAttr()
+if (attr.getProp(Attr.StyleConst.BACKGROUND_IMAGE) != null) {
+    attr.setProp(Attr.StyleConst.BACKGROUND_IMAGE, "")
+}
+attr.backgroundColor(value.modulate(alpha).toKuiklyColor())
+```
+
+The renderers already understand the empty value as "no gradient" —
+`KRCSSBackgroundDrawable.updateBackgroundImage` resets the gradient type and stops for it,
+which is where §12's own reuse fix lives — so no renderer change is needed and the fix is
+one written once for all three.
+
+**Conditional on purpose.** Writing the empty value unconditionally would put
+`backgroundImage` into the prop map of every flat surface in the app, and
+`Props.setPropsToRenderView` reads that key's PRESENCE — not its value — to decide whether
+iOS needs a `WRAPPER_BOX_SHADOW_VIEW`. Clearing only where a gradient was keeps the key out
+of maps that never had it, so no view gains a wrapper it did not have before.
+
+### Verification
+
+`scripts/cloudcone-tasks-android.mjs` on the Pixel, and the screenshot beside it: all
+seventeen pills flat-grey where they cannot act, accent where they can, unchanged after
+scrolling the list end to end twice. The shared suite passes on all three targets.
+
+**iOS and Web are NOT verified on hardware.** Both take the fix from `commonMain` with no
+renderer change, and `:shared:iosSimulatorArm64Test` and `:shared:jsTest` pass, but neither
+host was driven through a two-state list during this work.
+
+### Upstreaming
+
+Worth offering as-is. It is a defect in upstream's own view-property handling with no Ronaq
+concept in it: two brush kinds write two properties and neither retracts the other.
+
+## 17. The web input takes a programmatic value, and reports its editing state back
+
+**Files** · `core-render-web/base/.../expand/components/KRTextFieldView.kt`,
+`core-render-web/base/.../expand/components/KRTextAreaView.kt`
+**Driven by** · O-2 (Edit Profile's seeded drafts must be visible where they are edited);
+the client's testability rule — a field automation cannot read is a field automation
+cannot verify
+**Date** · 2026-09-03
+
+### What goes wrong here
+
+A `BasicTextField`'s value reached the web DOM only when a person typed it. Every
+programmatic value — the seeded Edit Profile name, a search query written by a tag tap, a
+composer cleared after Send — left the DOM input untouched, and the client grew a family
+of workarounds: a ghost `Text` drawn OVER the input until the first keystroke (which then
+DOUBLED the text on Android, where the value does arrive — the OPPO screenshot that opened
+this work), and rebuild-the-node `key(...)` wrappers timed to each programmatic change.
+
+The chain has one missing link, and it is not where the first report guessed. The compose
+side DOES push every programmatic change: `CoreTextField.set(value)` primes the `"text"`
+prop cache and calls `setTextInputState` — a *method* — on the render view. Android
+(`KRTextFieldView.setTextInputState`, line 673) and iOS (`css_setTextInputState`)
+implement that method. The web views' `call()` knew `setText`, `focus`, `blur` and the
+two cursor methods, and dropped everything else into `super.call`. The primed prop cache
+then also swallowed any business-side `setProp("text", …)` written to repair it, which is
+why no app-layer fix was possible (recorded in the client's `SearchScreen.kt`, now
+updated).
+
+### The change
+
+Both web views implement the same three pieces, mirroring the Android renderer:
+
+- **`setTextInputState` (method)** — parse the `TextInputState` payload, truncate to the
+  element's `maxlength` the way typed input would have been (programmatic assignment
+  bypasses the DOM's own enforcement; Android truncates through its filters), apply the
+  text, clamp and apply the selection (`try/catch`: number/email inputs refuse
+  `setSelectionRange`), and — never focus. Then report the resulting state through the
+  `textInputStateChange` callback, exactly as Android does after a programmatic set (its
+  TextWatcher is suppressed during the set, so `textDidChange` does not fire there
+  either).
+- **`getTextInputState` (method)** — answer with the payload shape of Android's
+  `createTextInputStateParamMap`: text, clamped selection, composition `-1`/`-1` (the DOM
+  does not expose a composing range here), no `length` (nullable upstream; Android also
+  omits it unless a limit type is set).
+- **`textInputStateChange` (event)** — on every DOM `input` event, report text AND real
+  selection. This is not optional polish; without it the method alone REVERSES typed
+  text: `CoreTextField`'s only web-fired event was `textDidChange`, which carries no
+  selection, so its handler reports `TextRange.Zero` upward, the next `set(value)` sees
+  an editing state that differs from what it last synced, resyncs — and the caret lands
+  at 0 before the next keystroke. Measured on the sign-in screen: `2813073485` typed at
+  40 ms/char arrived as `5847303182`. With the event in place the Kotlin side hears the
+  same editing state the DOM holds, `hasSameEditingState` suppresses the echo, and the
+  same drive types cleanly at 0 ms/char.
+- The DOM listener is installed once and later prop applications replace only its
+  callback. Kuikly may re-apply an event prop after recomposition; adding a listener on
+  every application would deliver each later keystroke more than once.
+
+### Verification (§17)
+
+Web bundle against the live cloudcone-1 deployment (`web-live.sh --upstream
+https://testapi.nicepm.top`), Chrome via CDP, account 2813073485:
+
+- **Edit Profile** — the seeded name `1101A` renders INSIDE the DOM input
+  (`edit.nameField` input.value == "1101A"), zero duplicate text nodes in the edit
+  screen; before this change that input rendered blank and the client drew the ghost
+  overlay instead. Screenshot in the session's scratchpad
+  (`web-edit-profile-after-fix.png`).
+- **Search** — tapping trending chip «PK Arena» fills `search.field`'s input with
+  `PK Arena`; this is the exact repro the client's DEFECT comment recorded as impossible.
+- **DM composer** — with the client's rebuild-per-send `key(...)` removed, Send empties
+  the field programmatically (three consecutive runs, message delivered each time), and
+  17 characters typed at 20 ms/char into a freshly opened thread arrive in order with the
+  renderer logging ZERO programmatic writes during typing (prototype-patched
+  `value`/`setSelectionRange`/`focus`).
+- **Typing regression** — the password field takes `12345678a` at 0 ms/char intact
+  (instrumented: no `SETVALUE`/`SETSEL` entries during typing).
+
+### Known limitation
+
+`CoreTextField.set(value)` composes its pushed state from the app's `value`, which on JS
+can lag one scheduler hop behind the native events already reported (a `StateFlow` echo
+is a queued task; recomposition is a frame callback). In that window a push can carry a
+stale text with a newer selection, and the renderer cannot tell it from a legitimate
+mid-echo transform — Android has the identical logic and the identical theoretical
+window. It was observed ONCE, on the first-ever keystroke after a thread's first open on
+a congested main queue (first char rotated to the end), and did not reproduce across
+three instrumented re-runs of the same flow plus the stress typing above. Recorded
+rather than papered over: a renderer-side heuristic that drops "suspicious" pushes would
+also drop legitimate programmatic clears, which are the point of this change.
+
+`selectionChange` (Android's caret-move event) is still not raised on web; the compose
+side only uses it to keep its selection mirror fresh, and every case this change was
+driven by works without it. Composition (IME) ranges are reported as "none", matching
+what Android's param map reports.
+
+### Upstreaming
+
+Worth offering as-is. It is renderer parity, not a Ronaq concept: the Kotlin core's
+`AutoHeightTextAreaView` / `InputView` / `TextAreaView` all expose
+`setTextInputState` / `getTextInputState` / `textInputStateChange`, two of the three
+shipped renderers implement them, and the web renderer silently implements none — every
+Kuikly Compose app with a prefilled or programmatically cleared text field is blank or
+stale on web today. The reversed-typing coupling between the method and the event is the
+finding a maintainer will want: implementing the method without the event makes web
+WORSE, which may be why neither was attempted.
+
+---
+
+## 18. A pinned grid item stops being placed twice, which was killing the grid's scroll
+
+**Files** · `compose/.../foundation/lazy/grid/LazyGridMeasure.kt`;
+repro page `demo/.../compose/LazyGridPullToRefreshDemo.kt`
+**Driven by** · Home PRD H-1.5 (pull-to-refresh, infinite feed) and H-1.4 (the sticky
+strip), reached through §10 and §13 — the owner's report: the home feed scrolls past its
+last card into endless blank, and after that a pull at the top scrolls instead of
+refreshing
+**Date** · 2026-09-03
+
+### What upstream does
+
+`measureLazyGrid` composes three groups of off-viewport items:
+
+- `extraLinesBefore` / `extraLinesAfter` — whole lines within `beyondBoundsLineCount` of
+  the visible range (`LazyVerticalGrid` defaults this to 3);
+- `extraItemsBefore` / `extraItemsAfter` — pinned items outside the VISIBLE range:
+  `calculateExtraItems(filter = { it in 0 until firstItemIndex })`, where
+  `firstItemIndex` is the first visible item.
+
+Both bounds are real, and they overlap: a pinned item whose line sits inside the
+beyond-bounds window — behind the viewport, within 3 lines of it — passes both filters
+and is measured twice, as its line and as a pinned extra. Both wrappers are positioned,
+`placeChildren` places the same `LayoutNode` twice, and the layout pass aborts:
+
+```
+java.lang.IllegalStateException: Place was called on a node which was placed already
+    at LazyGridMeasuredItem.place(LazyGridMeasuredItem.kt:213)
+    at LazyGridMeasureKt.measureLazyGrid_B7IOLXc$lambda$8(LazyGridMeasure.kt:383)
+```
+
+A full-span sticky header pinned through `LocalPinnableContainer` (§13) walks into this
+window the moment it pins and one more line scrolls by — but any pinned item does, §13 or
+not; focus pinning reaches the same code.
+
+### What that did to the feed
+
+The render host catches the exception (one line in the log, no dialog), and the grid is
+poisoned: from that pass on it consumes NOTHING — measured on the Pixel (HT7BP1A01905),
+framework probe in the scroll sync, on Ronaq's Home:
+
+```
+KUIKLY-GRIDMEASURE first=4 last=11 ... extraBefore=[3] positioned=[3,2,1,3,4,...] DUP=[3]
+KUIKLY-SCROLL off=1499 d=2 consumed=0 real=null content=9000
+...
+KUIKLY-SCROLL off=17766 d=1 consumed=0 real=null content=24748
+```
+
+Both of the owner's symptoms fall out of `consumed=0`:
+
+- **the endless blank**: the exact content size is only ever computed when the LAST item
+  is reported visible; a grid that no longer scrolls never reports it, so the native
+  scroller keeps its 3000dp estimate and keeps EXPANDING it as the offset approaches the
+  edge. Measured: offset 17766px into a 24748px content view whose real content is
+  ~2800px — the strip pinned at the top of five screens of nothing;
+- **the dead pull-to-refresh**: the pull header arms on `isAtTop()`, which reads the
+  COMPOSE side's first visible item — frozen mid-list. At the visual top the native
+  offset reads 0 and the compose side still says "item 4", so the gesture is taken as a
+  plain scroll. On the way back up from the blank the app also died outright once
+  (process restart to the login gate), which is consistent with a poisoned layout being
+  re-entered under fling pressure.
+
+### The change
+
+The pinned-item pass starts where the composed window ends, not where the visible range
+ends — the bound the LIST measure has always used (`createItemsBeforeList`:
+`if (index < start)`, `start` behind the beyond-bounds window):
+
+```kotlin
+val firstComposedItemIndex =
+    extraLinesBefore.firstOrNull()?.items?.firstOrNull()?.index ?: firstItemIndex
+... filter = { it in 0 until firstComposedItemIndex }
+val lastComposedItemIndex =
+    extraLinesAfter.lastOrNull()?.items?.lastOrNull()?.index ?: lastItemIndex
+... filter = { it in (lastComposedItemIndex + 1) until itemsCount }
+```
+
+While the pinned item is inside the window, its beyond-bounds line keeps it composed and
+placed at its natural offset; once it leaves the window, the pinned pass takes over
+exactly as before. Nothing else moves, and a grid with no pinned items measures
+byte-for-byte what it did.
+
+### Verified
+
+`demo/.../LazyGridPullToRefreshDemo.kt` — a `LazyVerticalGrid` in the home feed's exact
+shape (PTR item, full-span rows, a LATE-arriving full-span row, grid `stickyHeader`,
+28 finite cards) — on the Pixel (HT7BP1A01905, Android 8.1, 1080x1920 @ 420dpi):
+
+- before: first fling past the strip throws the double-place, then `consumed=0` on every
+  event, content grew 9000 → 12937px and kept the scroll alive over blank;
+- after: zero exceptions across 8 hard flings; every scrolled pixel consumed
+  (`d=28 consumed=28 toBtm=28` at the end); the exact size is computed the moment the
+  last card shows (`real=8450 content=8450`) and the native scroll STOPS at
+  `8450 - 1920 = 6530px`; the strip still pins (hover frame at the offset, to the px)
+  including far beyond the prefetch window; pull-to-refresh arms at the top after the
+  full traversal (IDLE → PULLING → REFRESHING), and §15's late-banner reposition is
+  unchanged (strip resting frame moves down by the banner's height when it lands).
+
+On Ronaq's Home (the fixed build, no probes): the feed stops at its last seeded card,
+the pull at the top draws the header and refetches (`getHotRoomList` count rises), and
+the §13/§15 sticky checks still hold. The client repository's
+`retest-pull-refresh-android.mjs` carries the traversal leg as a permanent check.
+
+### Upstreaming
+
+Worth offering as-is, ideally with §13. The overlap is upstream's own: their grid gained
+beyond-bounds lines AND kept androidx's pinned-item pass, without the boundary androidx's
+list keeps between the two. Their own `calculateExtraItems` comment says the pinned items
+are "usually fullSpan stickyHeaders", so the collision is on their roadmap's happy path.

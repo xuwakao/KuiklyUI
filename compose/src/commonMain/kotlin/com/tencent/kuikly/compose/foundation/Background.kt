@@ -45,6 +45,7 @@ import com.tencent.kuikly.compose.ui.platform.InspectorInfo
 import com.tencent.kuikly.compose.ui.platform.debugInspectorInfo
 import com.tencent.kuikly.compose.ui.text.style.modulate
 import com.tencent.kuikly.compose.ui.unit.toSize
+import com.tencent.kuikly.core.base.Attr
 import com.tencent.kuikly.core.base.DeclarativeBaseView
 import com.tencent.kuikly.core.exception.throwRuntimeError
 
@@ -213,6 +214,12 @@ private class BackgroundNode(
             if (brush != null) {
                 brush!!.applyTo(view, alpha)
             } else {
+                // Ronaq: the same gradient reset SolidColor.applyTo does, for the
+                // `background(color, shape)` overload, which reaches the view without a
+                // brush. A reused view that carried a gradient would otherwise keep it.
+                if (getProp(Attr.StyleConst.BACKGROUND_IMAGE) != null) {
+                    setProp(Attr.StyleConst.BACKGROUND_IMAGE, "")
+                }
                 backgroundColor(color.modulate(alpha).toKuiklyColor())
             }
         }

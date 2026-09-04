@@ -38,14 +38,20 @@ class StickyHeaderCacheManager {
 
     /**
      * Get cached position for sticky header
-     * Cache position when sticky header first appears, reuse cached position subsequently
-     * Supports multiple sticky headers, distinguished by lazyItemKey
+     *
+     * The recorded position stands in while the lazy measure is reporting the moving offset
+     * it gives a header that has been scrolled past — see the caller for why that offset
+     * cannot be handed to the hover view. It is REPLACED, not merely filled, whenever the
+     * measure reports the header's own position, so that anything inserted above the header
+     * after the list first drew — a banner delivered late, a row that loads — moves it.
+     * Supports multiple sticky headers, distinguished by lazyItemKey.
+     *
+     * @param positionIsItsOwn [currentPos] is where the header actually sits.
      */
-    fun getCachedStickyPosition(itemKey: Any, currentPos: Offset): Offset {
+    fun getCachedStickyPosition(itemKey: Any, currentPos: Offset, positionIsItsOwn: Boolean): Offset {
         val cachedData = stickyHeaderCacheMap[itemKey]
 
-        return if (cachedData == null) {
-            // Cache current position when first appears and is in sticky state
+        return if (cachedData == null || positionIsItsOwn) {
             stickyHeaderCacheMap[itemKey] = StickyHeaderCache(currentPos)
             currentPos
         } else {

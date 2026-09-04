@@ -21,9 +21,13 @@ import com.tencent.kuikly.compose.foundation.layout.PaddingValues
 import com.tencent.kuikly.compose.foundation.layout.calculateEndPadding
 import com.tencent.kuikly.compose.foundation.layout.calculateStartPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import com.tencent.kuikly.compose.ui.Modifier
+import com.tencent.kuikly.compose.ui.layout.LocalPinnableContainer
+import com.tencent.kuikly.compose.ui.zIndex
+import com.tencent.kuikly.compose.views.StickHeader
 import com.tencent.kuikly.compose.ui.unit.Constraints
 import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.compose.ui.unit.Dp
@@ -574,3 +578,54 @@ inline fun <T> LazyGridScope.itemsIndexed(
 ) {
     itemContent(it, items[it])
 }
+
+/**
+ * Adds a sticky header to the grid: an item that scrolls with the content and then stays
+ * pinned at the top of the viewport once it reaches it, until the next sticky header takes
+ * its place.
+ *
+ * This is [com.tencent.kuikly.compose.foundation.lazy.LazyListScope.stickyHeader] for a grid,
+ * and it is built out of the same two pieces:
+ *
+ *  - the content is wrapped in a hover view, which is what actually pins it — the platform
+ *    scroller re-positions that view on every scroll, so the pinning costs no recomposition;
+ *  - the item is pinned in the lazy layout, so it stays composed after it scrolls past the
+ *    top. Without this the hover view would be disposed along with the item and the header
+ *    would simply disappear; `LazyGridMeasure`'s `pinnedItems` path already exists for
+ *    exactly this shape of item and measures it as a full-span line.
+ *
+ * The header always spans the whole line. A header occupying one column of a two-column grid
+ * is not a header, and the hover view can only pin a full line.
+ *
+ * It is also lifted above the items, the way `stickyHeaderWithMarginTop` lifts its own: a
+ * pinned header is by definition over content that is still moving, and a renderer that
+ * paints by sibling order paints the later items on top of it. Android re-fronts hover views
+ * on every scroll and never showed this; the web renderer paints by `z-index` and drew the
+ * room cards straight through the pinned strip until this was added.
+ *
+ * @param key a stable and unique key representing the item, as in [item].
+ * @param contentType the type of the content of this item, as in [item].
+ * @param modifier applied to the pinning node itself, not to the content inside it. Layout
+ *   applied here therefore survives the pinning — which is what a header needs when it has to
+ *   reach past the grid's own horizontal `contentPadding` to sit flush with the screen edge.
+ * @param content the content of the header.
+ */
+fun LazyGridScope.stickyHeader(
+    key: Any? = null,
+    contentType: Any? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable LazyGridItemScope.() -> Unit
+) {
+    item(key = key, span = { GridItemSpan(maxLineSpan) }, contentType = contentType) {
+        val pinnableContainer = LocalPinnableContainer.current
+        DisposableEffect(pinnableContainer) {
+            val handle = pinnableContainer?.pin()
+            onDispose { handle?.release() }
+        }
+        StickHeader(modifier = Modifier.zIndex(STICKY_HEADER_Z).then(modifier),
+                    content = { content() })
+    }
+}
+
+/** Above every ordinary item, and the value `stickyHeaderWithMarginTop` already uses. */
+private const val STICKY_HEADER_Z = 1000f

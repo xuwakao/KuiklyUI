@@ -5,6 +5,7 @@ import com.tencent.kuikly.core.render.web.ktx.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.web.ktx.kuiklyDocument
 import com.tencent.kuikly.core.render.web.ktx.setPlaceholderColor
 import com.tencent.kuikly.core.render.web.ktx.setSelectionColor
+import com.tencent.kuikly.core.render.web.ktx.toJSONObjectSafely
 import com.tencent.kuikly.core.render.web.ktx.toNumberFloat
 import com.tencent.kuikly.core.render.web.ktx.toPxF
 import com.tencent.kuikly.core.render.web.ktx.toRgbColor
@@ -20,6 +21,14 @@ import org.w3c.dom.events.KeyboardEvent
 class KRTextAreaView : IKuiklyRenderViewExport {
     // Text change event callback
     private var textDidChangedEventCallback: KuiklyRenderCallback? = null
+
+    // Full text-input-state change callback (text plus selection), the event the
+    // Kotlin side prefers over textDidChange when both are registered
+    private var textInputStateChangeEventCallback: KuiklyRenderCallback? = null
+
+    // Callback props may be re-applied after recomposition. Keep one DOM listener and
+    // swap only the callback field, or each re-application multiplies input delivery.
+    private var textInputStateListenerInstalled = false
 
     // Focus event callback
     private var focusedEventCallback: KuiklyRenderCallback? = null
@@ -71,6 +80,25 @@ class KRTextAreaView : IKuiklyRenderViewExport {
                 ele.addEventListener("input", {
                     notifyTextValueChanged(ele.value)
                 })
+                true
+            }
+
+            TEXT_INPUT_STATE_CHANGE -> {
+                // Full editing-state event, reporting the REAL selection alongside the
+                // text. Compose's CoreTextField needs it: its textDidChange fallback
+                // carries no selection, so once setTextInputState exists (see call()),
+                // a keystroke's echo would sync a zero selection back to this textarea
+                // and pin the caret to the start — every typed string arrived reversed.
+                // With this event the Kotlin side sees the same editing state the DOM
+                // holds and skips the resync, exactly as it does against the Android
+                // renderer, whose TextWatcher raises the same event.
+                textInputStateChangeEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
+                if (!textInputStateListenerInstalled) {
+                    textInputStateListenerInstalled = true
+                    ele.addEventListener("input", {
+                        textInputStateChangeEventCallback?.invoke(currentTextInputStateMap())
+                    })
+                }
                 true
             }
 
@@ -294,8 +322,79 @@ class KRTextAreaView : IKuiklyRenderViewExport {
                 ele.setSelectionRange(index, index)
             }
 
+            SET_TEXT_INPUT_STATE -> setTextInputState(params)
+
+            GET_TEXT_INPUT_STATE -> getTextInputState(callback)
+
             else -> super.call(method, params, callback)
         }
+    }
+
+    /**
+     * Atomically apply text and selection pushed from the Kotlin side.
+     *
+     * This is the only road a programmatic value takes to an existing textarea:
+     * Compose's CoreTextField delivers every non-typed value change through this
+     * method, after priming the "text" prop cache (so a business-side
+     * setProp("text", ...) of the same value is deduplicated and cannot repair a
+     * miss). Android and iOS implement it; without this handler the web textarea
+     * reflected typed input only, and a prefilled or programmatically cleared
+     * field kept stale text. Mirrors the Android renderer's setTextInputState:
+     * apply the text, clamp and apply the selection, then notify the text-change
+     * callback so the Kotlin side's bookkeeping follows the value it just pushed.
+     */
+    private fun setTextInputState(params: String?) {
+        val state = params.toJSONObjectSafely()
+        var text = state.optString(KEY_TEXT)
+        // A programmatic assignment bypasses the DOM's own maxlength enforcement,
+        // so apply the truncation typed input would have received (the Android
+        // renderer truncates programmatic text the same way).
+        if (ele.maxLength > 0 && text.length > ele.maxLength) {
+            text = text.substring(0, ele.maxLength)
+        }
+        ele.value = text
+        val length = ele.value.length
+        val selectionStart = state.optInt(KEY_SELECTION_START, length).coerceIn(0, length)
+        val selectionEnd = state.optInt(KEY_SELECTION_END, selectionStart).coerceIn(0, length)
+        // The mini-program element may not support selection; the text is applied
+        // either way. Unlike setCursorIndex this never focuses: a programmatic
+        // value must not steal focus.
+        try {
+            ele.setSelectionRange(selectionStart, selectionEnd)
+        } catch (_: Throwable) {
+        }
+        // A programmatic change raises textInputStateChange, not textDidChange —
+        // the Android renderer suppresses its TextWatcher during the set and then
+        // invokes exactly this callback, and the Kotlin side's echo suppression
+        // relies on hearing the full editing state back.
+        textInputStateChangeEventCallback?.invoke(currentTextInputStateMap())
+    }
+
+    /**
+     * Report the textarea's current text and selection to the Kotlin side. The DOM
+     * does not expose the composing range here, so it reports "none".
+     */
+    private fun getTextInputState(callback: KuiklyRenderCallback?) {
+        callback?.invoke(currentTextInputStateMap())
+    }
+
+    /**
+     * The textarea's current editing state, in the payload shape the Android
+     * renderer's createTextInputStateParamMap answers with.
+     */
+    private fun currentTextInputStateMap(): Map<String, Any> {
+        val text = ele.value
+        val selectionStart = (try { ele.selectionStart } catch (_: Throwable) { null } ?: text.length)
+            .coerceIn(0, text.length)
+        val selectionEnd = (try { ele.selectionEnd } catch (_: Throwable) { null } ?: selectionStart)
+            .coerceIn(0, text.length)
+        return mapOf(
+            KEY_TEXT to text,
+            KEY_SELECTION_START to selectionStart,
+            KEY_SELECTION_END to selectionEnd,
+            KEY_COMPOSITION_START to NO_COMPOSITION,
+            KEY_COMPOSITION_END to NO_COMPOSITION,
+        )
     }
 
     /**
@@ -415,9 +514,20 @@ class KRTextAreaView : IKuiklyRenderViewExport {
         private const val BLUR = "blur"
         private const val GET_CURSOR_INDEX = "getCursorIndex"
         private const val SET_CURSOR_INDEX = "setCursorIndex"
+        private const val SET_TEXT_INPUT_STATE = "setTextInputState"
+        private const val GET_TEXT_INPUT_STATE = "getTextInputState"
+
+        // Text input state payload keys, aligned with core's TextInputState
+        private const val KEY_TEXT = "text"
+        private const val KEY_SELECTION_START = "selectionStart"
+        private const val KEY_SELECTION_END = "selectionEnd"
+        private const val KEY_COMPOSITION_START = "compositionStart"
+        private const val KEY_COMPOSITION_END = "compositionEnd"
+        private const val NO_COMPOSITION = -1
 
         // Events
         private const val TEXT_DID_CHANGE = "textDidChange"
+        private const val TEXT_INPUT_STATE_CHANGE = "textInputStateChange"
         private const val INPUT_FOCUS = "inputFocus"
         private const val INPUT_BLUR = "inputBlur"
         private const val INPUT_RETURN = "inputReturn"
