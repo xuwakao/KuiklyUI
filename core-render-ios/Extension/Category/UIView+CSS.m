@@ -1221,12 +1221,43 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 #pragma mark - KuiklyRenderViewLifyCycleProtocol
 
 - (void)hrv_insertSubview:(UIView *)subView atIndex:(NSInteger)index {
-    UIView *view = subView.kr_commonWrapperView;
-    if (view) {
-        [self insertSubview:view atIndex:index];
-    } else {
-        [self insertSubview:subView atIndex:index];
+    UIView *view = subView.kr_commonWrapperView ?: subView;
+    // The sibling that must end up immediately ABOVE the inserted view, captured
+    // before the insert renumbers everything at and after `index`.
+    NSArray<UIView *> *siblingsBefore = self.subviews;
+    UIView *anchor =
+        (index >= 0 && index < (NSInteger)siblingsBefore.count) ? siblingsBefore[index] : nil;
+    [self insertSubview:view atIndex:index];
+    // UIKit resolves the numeric index of insertSubview:atIndex: against the layer's
+    // sublayer list, so a container whose layer carries a non-view sublayer ahead of
+    // its view layers — exactly what css `backgroundImage` creates by inserting its
+    // gradient layer at sublayer index 0 — makes every index-addressed child land one
+    // slot early, BELOW the sibling it was meant to cover. Measured on iPhone 17 /
+    // iOS 26.2: with such a container, insertSubview:atIndex:subviews.count placed
+    // the child at count-1 every time, while a clean container placed it at count
+    // (see CHANGES.md, "iOS: a gradient background must not push later siblings
+    // under earlier ones"). Verify the landing spot and re-anchor against the
+    // sibling VIEW when it is off: view-relative insertion is resolved through the
+    // sibling's own layer and is immune to stray sublayers. The indexed insert is
+    // still issued first so container subclasses that hook insertSubview:atIndex:
+    // (mask, scroll content, the root view) keep seeing the insertion.
+#if !TARGET_OS_OSX
+    // (The macOS compat shim already inserts relative to the sibling view —
+    // addSubview:positioned:relativeTo: — so only UIKit needs the correction.)
+    if (anchor != nil && anchor != view) {
+        NSArray<UIView *> *siblingsAfter = self.subviews;
+        NSUInteger viewAt = [siblingsAfter indexOfObject:view];
+        NSUInteger anchorAt = [siblingsAfter indexOfObject:anchor];
+        if (viewAt != NSNotFound && anchorAt != NSNotFound && viewAt + 1 != anchorAt) {
+            [self insertSubview:view belowSubview:anchor];
+        }
+    } else if (anchor == nil && self.subviews.lastObject != view) {
+        // An append that did not land last: same defect, no sibling to anchor on.
+        [self bringSubviewToFront:view];
     }
+#else
+    (void)anchor;
+#endif
     // Attaching a subtree changes who contains what, and the answer is only knowable once
     // the whole tree is built — so this schedules the pass rather than deciding here.
     [subView kr_syncAccessibilityElement];

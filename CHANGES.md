@@ -1909,3 +1909,100 @@ Worth offering as-is, ideally with §13. The overlap is upstream's own: their gr
 beyond-bounds lines AND kept androidx's pinned-item pass, without the boundary androidx's
 list keeps between the two. Their own `calculateExtraItems` comment says the pinned items
 are "usually fullSpan stickyHeaders", so the collision is on their roadmap's happy path.
+## 21. iOS: a gradient background must not push later siblings under earlier ones
+
+**Files** · `core-render-ios/Extension/Category/UIView+CSS.m` (`hrv_insertSubview:atIndex:`)
+**Driven by** · the real-iPhone render sweep on Ronaq's room screen (R-3/R-5): with any
+bottom sheet open, the chat-filter pills, the collapsed bar's six controls and the gold
+gift entry painted OVER the sheet and its scrim, and the gift circle physically
+overlapped the PK sheet's Confirm — a tap-interception hazard
+**Date** · 2026-09-04
+
+### The defect
+
+On iOS only, every child inserted into the room's root container after first build — the
+float column, then each bottom sheet — landed one position lower than addressed, directly
+below the container's last standing child. The room's main column (header, seats, feed,
+composer bar) therefore ended up natively LAST, above every sheet composed after it, so
+the sheet's scrim dimmed the float column and nothing else, and the bar's circles drew
+over the sheet card. Android and Web rendered the same composition correctly.
+
+### The measurement
+
+A temporary bridge trace plus a periodic native-tree dump on the device (iPhone 17,
+iOS 26.2) pinned each step. The Kotlin side addressed every insert correctly:
+
+```
+INSERT p=430 c=618 idx=2 count=2 subs=[motif,column]      ← float column, append
+didAddSubview           nowAt=1 of 3 subs=[motif,float,column]
+INSERT p=430 c=627 idx=3 count=3 subs=[motif,float,column] ← tools sheet, append
+didAddSubview           nowAt=2 of 4 subs=[motif,float,sheet,column]
+```
+
+`insertSubview:atIndex:` itself, verified at the UIKit boundary with the argument and the
+array on both sides, placed the child one slot early. The isolating probe took Kuikly out
+of the picture entirely:
+
+```
+UIKITPROBE dirty want=2 got=1 | clean want=2 got=2      (every sample, 13/13 snapshots)
+```
+
+`dirty` is a bare `UIView` whose layer carries one stray non-view sublayer at sublayer
+index 0 — exactly what this renderer's css `backgroundImage` creates by calling
+`[self.layer insertSublayer:gradientLayer atIndex:0]` — and `clean` is the same three
+views without it. UIKit resolves the numeric subview index against the layer's sublayer
+list, so one leading non-view sublayer shifts every index-addressed insertion down by
+one. The room's root Box carries the theme's linear-gradient background, which is why
+the room was the screen that showed it; a container with a plain colour is immune, which
+is why nothing else did. The gradient layer's own `zPosition = -1` kept the background
+itself painting underneath, hiding the corruption until a sheet had to stack.
+
+Ruled out on the way, each with a measurement: compose placement `zIndex` (all children
+z=0), `bringToFront` (no core callers), the a11y promotion pass (toggles
+`isAccessibilityElement` only), view reuse (pointers stable, no REMOVE lines), and any
+reordering API — a swizzle trap on all six subview-mutation entry points caught nothing
+but UIKit's own text-field and scroll-indicator hoists.
+
+### The change
+
+`hrv_insertSubview:atIndex:` — the single choke point every Kuikly container insert goes
+through — now captures the sibling that should end up immediately above the new view,
+issues the indexed insert as before (container subclasses hook
+`insertSubview:atIndex:` — mask, scroll content, the root view — and must keep seeing
+it), then verifies the landing spot and re-anchors with
+`insertSubview:belowSubview:` when it is off. View-relative insertion is resolved
+through the sibling's own layer and is immune to stray sublayers. On a container UIKit
+places correctly the verification is two array reads and no correction. macOS is
+excluded: its compat shim already inserts with `addSubview:positioned:relativeTo:`.
+
+`KRWrapperView.moveToSuperview:` still performs one direct index-addressed insert when a
+scroll view is wrapped; a gradient-background parent of a scroller would reproduce the
+shift there. Not changed here — no such composition exists in this app — recorded so the
+next stacking defect near a scroller checks it first.
+
+### Verified
+
+On the device (00008150-000651A6010A401C), same build, three probes per 2-second
+snapshot over a full room session:
+
+```
+MARKER raw want=3 got=2 | hrv want=3 got=3     (raw UIKit still shifted; choke point correct)
+room.root children: [motif, column, float]                    — composition order
+room.root children: [motif, column, float, sheet]             — sheet open, sheet LAST
+```
+
+Screenshots: with the tools sheet open the card covers the bar and the gift entry, the
+scrim dims the seat grid and header; after dismissal the bar, pills and float column
+render exactly as before. The full sweep items 03/05/06/07 (room metrics, PK sheet and
+board, rocket panel, mic layout) re-run green — the sheet CTAs take their taps, and the
+collapsed bar's first-frame position check still passes.
+
+### Upstreaming
+
+Worth offering as-is. The trap is UIKit-general — any Kuikly iOS app that sets
+`backgroundImage` (every gradient) on a container and later inserts a child by index
+ships this misordering — and the fix is behavior-preserving where UIKit already places
+correctly.
+
+---
+
