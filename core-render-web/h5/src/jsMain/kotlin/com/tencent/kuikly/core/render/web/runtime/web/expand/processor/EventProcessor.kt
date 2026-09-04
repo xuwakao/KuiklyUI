@@ -19,6 +19,7 @@ import kotlin.js.Date
 import kotlin.math.abs
 import com.tencent.kuikly.core.render.web.processor.state
 import com.tencent.kuikly.core.render.web.runtime.web.expand.components.list.isTouchEventOrNull
+import com.tencent.kuikly.core.render.web.runtime.web.expand.components.list.isEditableTarget
 
 
 /**
@@ -412,10 +413,15 @@ class TouchEventHandlers {
                 }
             })
 
-            // Prevent text selection
+            // Prevent text selection — but never INSIDE an editable control.
+            // `selectstart` bubbles, so this listener also saw selections begun in an
+            // <input>/<textarea> under this element and made Ctrl/Cmd+A and mouse text
+            // selection inert there (see the same guard in H5ListView).
             if (KuiklyProcessor.preventDefaultSelect) {
                 element.addEventListener("selectstart", {
-                    it.preventDefault();
+                    if (!isEditableTarget(it.target)) {
+                        it.preventDefault()
+                    }
                 })
             }
             // Prevent image drag

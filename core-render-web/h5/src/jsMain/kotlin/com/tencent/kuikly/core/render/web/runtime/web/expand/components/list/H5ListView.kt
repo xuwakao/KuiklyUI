@@ -19,6 +19,8 @@ import com.tencent.kuikly.core.render.web.utils.Log
 import org.w3c.dom.AUTO
 import org.w3c.dom.HTMLDivElement
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLInputElement
+import org.w3c.dom.HTMLTextAreaElement
 import org.w3c.dom.SMOOTH
 import org.w3c.dom.ScrollBehavior
 import org.w3c.dom.ScrollToOptions
@@ -487,8 +489,17 @@ class H5ListView : IListElement {
         }
         scrollEventBound = true
 
-        // If it is a pointing device with limited precision, listen for touch events.
-        if (kuiklyWindow.matchMedia(KRListConst.POINTER_COARSE_QUERY).matches) {
+        // Touch listeners are bound unconditionally, not behind `(pointer: coarse)`.
+        // The browser delivers TouchEvents whenever a touch actually happens — a finger
+        // on a touch-screen laptop whose PRIMARY pointer is a fine mouse, or a driver's
+        // synthesized touch on a plain desktop — and gating the listeners on the primary
+        // pointer's coarseness conflates "primary input" with "possible input". Behind
+        // the gate, a real pull-to-refresh drag NATIVELY panned the scroller but never
+        // reached this element's touch handling, so the pull transform below never ran
+        // and the refresh never started, while the same drag on a coarse-pointer phone
+        // refreshed normally. On a device that never produces touch events the listeners
+        // simply never fire; the mouse path below keeps its own precise-pointer gate.
+        run {
             // Start dragging
             ele.addEventListener(KREventConst.TOUCH_START, {
                 isClickEvent = true
@@ -576,10 +587,19 @@ class H5ListView : IListElement {
                 handleTouchStart(event, true)
             }, json(KRAttrConst.PASSIVE to true))
 
-            // Prevent text selection
+            // Prevent text selection — but never INSIDE an editable control.
+            // `selectstart` bubbles, so this listener also saw every selection begun in
+            // an <input>/<textarea> hosted under the list, and preventing those made
+            // Ctrl/Cmd+A (and mouse text selection) inert in every such field: the
+            // caret stayed collapsed while typing kept working, which reads as a broken
+            // keyboard rather than as this listener. The suppression exists to stop
+            // accidental TEXT selection while a mouse drag pans the list; a selection
+            // that starts inside an editable control is never that.
             if (KuiklyProcessor.preventDefaultSelect) {
                 ele.addEventListener(KREventConst.SELECT_START, {
-                    it.preventDefault()
+                    if (!isEditableTarget(it.target)) {
+                        it.preventDefault()
+                    }
                 })
             }
             // Prevent image drag
@@ -873,6 +893,23 @@ class H5ListView : IListElement {
         private fun buildTransition() =
             "$TRANSFORM_PROPERTY ${KRListConst.BOUND_BACK_DURATION}${KRStyleConst.MS_SUFFIX} ${KRStyleConst.EASE_IN}"
     }
+}
+
+/**
+ * Whether a DOM event target is an editable control — a text input, a textarea, or a
+ * `contenteditable` host. Selection suppression (`selectstart` + `preventDefault`)
+ * must never apply to these: it silently disables select-all and mouse text selection
+ * in every field hosted under the suppressing element.
+ */
+internal fun isEditableTarget(target: dynamic): Boolean {
+    if (target == null) {
+        return false
+    }
+    val t = target.unsafeCast<Any>()
+    if (t is HTMLInputElement || t is HTMLTextAreaElement) {
+        return true
+    }
+    return (t as? HTMLElement)?.isContentEditable == true
 }
 
 enum class KRNestedScrollMode(val value: String) {

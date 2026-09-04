@@ -1782,10 +1782,92 @@ three instrumented re-runs of the same flow plus the stress typing above. Record
 rather than papered over: a renderer-side heuristic that drops "suspicious" pushes would
 also drop legitimate programmatic clears, which are the point of this change.
 
+**Superseded 2026-09-03: the rotation reproduced, was traced, and is closed — see the
+addendum below.** It was not (only) the scheduler hop; two renderer-side defects in this
+same file made the window reachable on every cold mount.
+
 `selectionChange` (Android's caret-move event) is still not raised on web; the compose
 side only uses it to keep its selection mirror fresh, and every case this change was
 driven by works without it. Composition (IME) ranges are reported as "none", matching
 what Android's param map reports.
+
+### Addendum (2026-09-03) — the cold field's first keystroke, reproduced and closed
+
+The render sweep reproduced the rotation on a FRESHLY MOUNTED sign-in field, 2 of 3
+cold runs: `0123456789` typed at 40 ms/char arrived as `1234567890` — the first
+character displaced to the end. Warm fields typed 3/3 clean. This burned a real sign-in
+attempt (the password went up scrambled), which is what promoted it from "recorded
+limitation" to defect.
+
+Instrumenting every programmatic write to the DOM input (value setter,
+`setSelectionRange`, with stacks) caught the mechanism in the act on the cold run:
+
+```
+[2795ms] input event      value="0" sel=1,1     ← keystroke 1, DOM correct
+[2813ms] setTextInputState value="0" sel=0,0    ← programmatic push, caret pinned to 0
+[2838ms] input event      value="10" sel=1,1    ← keystroke 2 inserts at the start
+```
+
+One push, text right, selection zero, one frame after the first keystroke; every later
+keystroke then inserts before the displaced character. The zero selection is the
+compose fallback's fabrication (`textDidChange` carries no selection, so its handler
+reports `TextRange.Zero` for text its sync mirror has not seen), echoed back through
+`set(value)` before the full-state event settles the mirror — the §17 coupling, biting
+through a gap this file left open. Two renderer defects made that gap reachable:
+
+- **`textDidChange` gained one DOM listener per prop application.** Kuikly re-applies
+  an event prop whenever its handler lambda recomposes, and only the
+  `textInputStateChange` listener had an install-once guard. Measured live: by the 8th
+  keystroke the field had 1 state-change listener and 8 did-change listeners, so each
+  keystroke reached the Kotlin side once with its selection and N times without it.
+  CoreTextField suppresses exactly ONE `textDidChange` per `textInputStateChange`
+  (`pendingTextInputStateText` is one-shot); every duplicate walked the
+  selection-fabricating fallback.
+- **Nothing ordered the two events.** Android's single TextWatcher invokes
+  `textInputStateChange` first, then `textDidChange`, from one installation point. Here
+  they were independent DOM listeners whose order was whatever prop application
+  happened to produce, and each delivery is a separate queued task
+  (`KuiklyRenderCoreContextScheduler` is `setTimeout`), so on a cold, congested first
+  frame the text-only report could act on the compose side before the full-state one.
+
+The fix is in two parts, `KRTextFieldView` and `KRTextAreaView` both:
+
+- **One watcher, Android's order.** ONE `input` listener per view, installed once,
+  invoking `textInputStateChange` then `textDidChange`; and every other
+  listener-adding event prop (`inputFocus`, `inputBlur`, `inputReturn`,
+  `keyboardHeightChange`, `textLengthBeyondLimit`) got the same install-once guard,
+  replacing only its callback on re-application — an accumulated `inputReturn`
+  listener means one Enter submits N times.
+- **An edit-generation handshake**, so a push that predates edits can be recognized
+  instead of guessed at. The renderer counts user edits (+1 per DOM `input` event,
+  never for programmatic writes) and stamps every reported state with the count;
+  `CoreTextField` echoes the last generation it saw on every push
+  (`TextInputState.generation`, optional and never encoded when null — the payload is
+  byte-identical for Android/iOS, which neither stamp nor read it). A push whose
+  echoed generation is older than the renderer's current one was built without
+  knowledge of the newest keystrokes; the renderer refuses it and answers with the
+  CURRENT state so the Kotlin mirror converges — a deliberate programmatic write that
+  lost such a race is re-pushed by the next sync with a fresh generation. This closes
+  the remaining cold window the listener fix alone leaves open: the initial mount
+  push is delivered through a queued task, and under cold-start congestion it can
+  execute after a fast first keystroke, which would wipe it.
+
+Verified on the live web build: 5/5 cold-mount runs (fresh Chrome profile and page
+load per run) on `password.accountField` type `0123456789` in order, with zero
+programmatic writes observed during typing; a warm field types in order throughout.
+
+**What this does NOT close** — the Known limitation above survives, narrowed. A
+`set(value)` whose TEXT comes from an app `value` that lags behind events compose has
+ALREADY consumed carries the CURRENT generation, so the handshake cannot fault it.
+Concretely, on the client's Edit Profile screen (select-all → delete → immediate
+retype against a ViewModel-seeded value), roughly one warm run in three still catches
+the app's lagging value being pushed back over the first retyped character — the
+sweep's own pre-fix evidence shows the byte-identical final string, so this window is
+older than these fixes and is not widened by them. It is upstream's controlled-input
+semantics meeting an async value round-trip; a fix belongs in how `BasicTextField`'s
+String overload composes stale text with newer selection, and is recorded rather than
+heuristically patched, for §17's original reason: any renderer-side guess that drops
+"suspicious" same-generation pushes also drops legitimate programmatic clears.
 
 ### Upstreaming
 
@@ -1909,6 +1991,116 @@ Worth offering as-is, ideally with §13. The overlap is upstream's own: their gr
 beyond-bounds lines AND kept androidx's pinned-item pass, without the boundary androidx's
 list keeps between the two. Their own `calculateExtraItems` comment says the pinned items
 are "usually fullSpan stickyHeaders", so the collision is on their roadmap's happy path.
+
+## 19. The web list hears touch on every device, so pull-to-refresh works where touch arrives
+
+**Files** · `core-render-web/h5/.../components/list/H5ListView.kt`
+**Driven by** · Home PRD H-1.5 (pull-to-refresh on the home feed), the browser leg of
+§10, and the client's testability rule — a gesture automation cannot deliver is a
+gesture automation cannot verify
+**Date** · 2026-09-03
+
+### What it did
+
+`setScrollEvent` bound its touch listeners only when `matchMedia("(pointer: coarse)")`
+matched — that is, only when the device's PRIMARY pointer is imprecise. On a
+coarse-pointer phone browser everything worked. Everywhere else that touch events can
+still occur — a touch-screen laptop whose primary pointer is a fine mouse, a desktop
+Chrome driven by synthesized touch (CDP `Input.dispatchTouchEvent`, which is how every
+committed web gesture check drives the page) — the browser scrolled the list natively
+and this element heard nothing.
+
+For plain scrolling that is invisible: the native pan moves the scroller, `scroll`
+events still fire, offsets still report. Pull-to-refresh is the one gesture that CANNOT
+ride the native path: at `scrollTop = 0` there is nothing to scroll, the pull exists
+only as this element's own transform on its content (`handleMoveCommon`), and that code
+never ran. Measured against the live build in the web-live window (a fine-pointer
+desktop Chrome): a 240px touch pull at the top produced ZERO displacement, no caption
+change, no refetch — while the identical synthetic-touch pipeline panned the same
+scroller 400 → 215px mid-list. The scroller's own state was correct throughout
+(`hasPullToRefresh: true`, nested scroll and paging off): §10's grid wiring reaches web
+intact, and the gesture died purely at this gate.
+
+### The change
+
+Bind the touch listeners unconditionally. The gate conflated "primary input" with
+"possible input": the browser only ever dispatches `TouchEvent`s when a touch actually
+happens, so on a device that never produces one the listeners are inert, and on every
+device that does — coarse, hybrid, or driven — the pull works. The mouse path keeps its
+own `(pointer: fine)` gate; hybrid devices (both queries true) already ran both sets of
+listeners before this change, so the coexistence is not new.
+
+### Verified
+
+Client repository `scripts/retest-pull-refresh.mjs` against the live deployment
+(`web-live.sh --upstream`), attached to the shared fine-pointer Chrome window: the
+touch pull now displaces the feed, the caption speaks, `room/getHotRoomList` is asked
+again, the feed returns to rest, and the hang-leg (a refresh whose answer never comes)
+still releases. Android is untouched by this file; on the Pixel (HT7BP1A01905), the
+freshly built APK's pull at the feed's top re-asks `room/getHotRoomList` (logcat, 200)
+and the feed settles back — verified by direct gesture because the committed
+`retest-pull-refresh-android.mjs` is currently blocked before its first assertion by
+`uiautomator dump: could not get idle state` (the home cards' badge animation never
+lets the screen idle; screen-diff bbox 419,473..967,1483), which is unrelated to the
+PTR path and predates these changes' build.
+
+### Upstreaming
+
+Worth offering as-is. The H5 renderer is the only renderer with an input-modality gate
+in front of its gesture handling, and the gate costs upstream the same three users it
+cost here: touch-screen laptops, DevTools device emulation, and any automation that
+drives gestures the way a person makes them.
+
+---
+
+## 20. A pinned hover stays inside its own scroller's paint order, instead of over the whole page
+
+**Files** · `core-render-web/.../expand/components/KRHoverView.kt`
+**Driven by** · Home PRD H-1.4 (the sticky category strip) and R-3 (the room screen it
+must never paint over), reached through §13/§14
+**Date** · 2026-09-03
+
+### What it did
+
+The hover element carries a large `z-index` — the compose sticky headers give it 1000,
+lifted above the grid's own items (§13) — and, while pinned, `position: fixed`. Ordinary
+Kuikly web views never establish stacking contexts, so both properties resolved against
+the PAGE's root stacking context: the hover out-stacked not only its list's items but
+every sibling screen drawn after its own. With a room screen open over Home, Home's
+sticky category strip painted OVER the room and took its taps — `room.seat#2` hit-tested
+to `home.categoryChip#dating`, `room.toolsBtn` sat under `home.categoryChip#radio`. On
+Android this cannot happen: a child's elevation reorders it within its parent view only.
+
+This is the follow-on hole of §14: that change fixed WHERE the hover pins; this one
+fixes WHOM it is allowed to paint over.
+
+### The change
+
+When the hover binds its scroller, the scroller becomes a stacking context:
+`isolation: isolate`. `isolation` creates a stacking context and nothing else — unlike
+`transform` it does NOT become the containing block for fixed descendants, so the
+pinning coordinates and `getTotalTop`'s page-offset arithmetic are untouched. The
+hover's 1000 now competes only inside its own scroller: above the content it hovers
+over, below everything drawn after that scroller — an overlay bar, a dialog, another
+screen. The property stays on the scroller after the hover leaves; a stacking context
+on a scroll container is inert on its own, and clearing it per-hover would need
+reference counting for a container that can host several hovers.
+
+### Verified
+
+Against the live web build: with a room open over Home, no `home.categoryChip#*` is the
+topmost element at any point of the viewport, in LTR and in Arabic RTL; with Home on
+top, the strip still travels 1:1 with the scroll, pins at its offset, and paints above
+the room cards passing under it (the §13/§14 checks).
+
+### Upstreaming
+
+Worth offering together with §13/§14. It restores the containment every other renderer
+already has; any Kuikly web app that layers screens in one page and uses a sticky
+header on a lower layer currently ships this bleed-through.
+
+---
+
 ## 21. iOS: a gradient background must not push later siblings under earlier ones
 
 **Files** · `core-render-ios/Extension/Category/UIView+CSS.m` (`hrv_insertSubview:atIndex:`)
@@ -2006,3 +2198,44 @@ correctly.
 
 ---
 
+## 22. Selection suppression stops silencing select-all inside web inputs
+
+**Files** · `core-render-web/h5/.../components/list/H5ListView.kt`,
+`core-render-web/h5/.../processor/EventProcessor.kt`
+**Driven by** · the client's testability rule (every committed sign-in driver clears a
+field with Ctrl/Cmd+A before retyping), found while verifying §17's addendum
+**Date** · 2026-09-04
+
+### What it did
+
+With `KuiklyProcessor.preventDefaultSelect` on (the default), both the list element and
+every pan-handling element bound `selectstart` with an unconditional `preventDefault()`.
+The suppression exists to stop accidental TEXT selection while a mouse drag pans a
+list. But `selectstart` bubbles, so the same listener saw every selection begun in an
+`<input>`/`<textarea>` hosted under it and cancelled those too: Cmd+A (and
+`document.execCommand("selectAll")`, and mouse text selection) left the caret
+collapsed while typing kept working — which reads as a broken keyboard, not as a
+scroll optimization. Measured on the live build: Cmd+A in the Edit Profile name field
+kept `selectionStart == selectionEnd`, and the committed sign-in helper's
+select-all-then-delete clear silently became "type after the old value" — the exact
+concatenated-credentials failure `scripts/web-tap.mjs` documents.
+
+### The change
+
+Both `selectstart` listeners keep suppressing, except when the event's target is an
+editable control — a text input, a textarea, or a `contenteditable` host
+(`isEditableTarget`). A selection that starts inside an editable control is never the
+accidental page-text selection the suppression is for.
+
+### Verified
+
+Live web build: Cmd+A in `edit.nameField` selects 0..length (was collapsed);
+Ctrl+A on macOS still moves the caret to the line start, which is that key's native
+binding, not a defect; the sign-in helper's clear works again. List mouse-drag panning
+still selects no page text.
+
+### Upstreaming
+
+Worth offering as-is; any Kuikly web app with a text field inside a scrolling list
+ships this defect whenever `preventDefaultSelect` is on, and the guard is one
+target check.

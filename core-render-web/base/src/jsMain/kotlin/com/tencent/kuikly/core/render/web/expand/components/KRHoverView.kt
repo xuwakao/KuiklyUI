@@ -99,6 +99,22 @@ class KRHoverView : IKuiklyRenderViewExport {
         pinned = null
         val grandParent = parent.parentElement.unsafeCast<HTMLElement?>() ?: return
         scroller = grandParent
+        // The hover carries a large `z-index` (the compose sticky headers give it 1000)
+        // and, while pinned, `position: fixed`. Left alone, both join the PAGE's root
+        // stacking context, because ordinary Kuikly views never establish one — so a
+        // sticky header out-stacked every sibling screen drawn after its own: with a
+        // room screen open over Home, Home's pinned category strip painted over the room
+        // and took its taps. Android has no such escape; a child's z there only reorders
+        // within its parent. Making the scroller a stacking context (`isolation` creates
+        // one and nothing else — unlike `transform`, it does NOT become the containing
+        // block for fixed descendants, so the pinning coordinates and `getTotalTop`'s
+        // page-offset math are untouched) confines the hover to its own scroller's spot
+        // in the paint order: above the content it hovers over, below everything a later
+        // sibling — an overlay bar, another screen — draws on top. The property is left
+        // on the scroller after removal: a stacking context on a scroll container is
+        // inert on its own, and clearing it per-hover would need reference counting for
+        // a container that can host several hovers.
+        grandParent.style.setProperty(ISOLATION, ISOLATE)
         grandParent.addEventListener("scroll", scrollListener, json("passive" to true))
         updateHoverState()
     }
@@ -181,6 +197,8 @@ class KRHoverView : IKuiklyRenderViewExport {
         const val VIEW_NAME = "KRHoverView"
         private const val FIXED = "fixed"
         private const val ABSOLUTE = "absolute"
+        private const val ISOLATION = "isolation"
+        private const val ISOLATE = "isolate"
         private const val BRING_INDEX = "bringIndex"
         private const val MARGIN_TOP = "hoverMarginTop"
     }

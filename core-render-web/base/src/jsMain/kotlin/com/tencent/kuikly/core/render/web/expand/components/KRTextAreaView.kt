@@ -28,7 +28,19 @@ class KRTextAreaView : IKuiklyRenderViewExport {
 
     // Callback props may be re-applied after recomposition. Keep one DOM listener and
     // swap only the callback field, or each re-application multiplies input delivery.
-    private var textInputStateListenerInstalled = false
+    // One flag per DOM listener below.
+    private var inputListenerInstalled = false
+    private var focusListenerInstalled = false
+    private var blurListenerInstalled = false
+    private var returnListenerInstalled = false
+    private var keyboardListenerInstalled = false
+    private var lengthLimitListenersInstalled = false
+
+    // Count of user edits: +1 per DOM `input` event, never for programmatic writes.
+    // Every reported state is stamped with it, every pushed state carries the last
+    // value the pusher saw, and a push composed before an edit already applied here
+    // is refused instead of rolling that edit back (see setTextInputState).
+    private var editGeneration = 0
 
     // Focus event callback
     private var focusedEventCallback: KuiklyRenderCallback? = null
@@ -77,9 +89,7 @@ class KRTextAreaView : IKuiklyRenderViewExport {
             TEXT_DID_CHANGE -> {
                 // Text change callback event, web needs adaptation, initiate notification
                 textDidChangedEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
-                ele.addEventListener("input", {
-                    notifyTextValueChanged(ele.value)
-                })
+                installInputListenerOnce()
                 true
             }
 
@@ -93,12 +103,7 @@ class KRTextAreaView : IKuiklyRenderViewExport {
                 // holds and skips the resync, exactly as it does against the Android
                 // renderer, whose TextWatcher raises the same event.
                 textInputStateChangeEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
-                if (!textInputStateListenerInstalled) {
-                    textInputStateListenerInstalled = true
-                    ele.addEventListener("input", {
-                        textInputStateChangeEventCallback?.invoke(currentTextInputStateMap())
-                    })
-                }
+                installInputListenerOnce()
                 true
             }
 
@@ -178,41 +183,53 @@ class KRTextAreaView : IKuiklyRenderViewExport {
             }
 
             INPUT_FOCUS -> {
-                // Focus event callback
+                // Focus event callback; the DOM listener is installed once and later
+                // prop applications replace only the callback (see installInputListenerOnce)
                 focusedEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
-                ele.addEventListener("focus", {
-                    val map = mutableMapOf<String, Any>()
-                    map["text"] = ele.value
-                    // Notify kotlin side
-                    focusedEventCallback?.invoke(map)
-                })
+                if (!focusListenerInstalled) {
+                    focusListenerInstalled = true
+                    ele.addEventListener("focus", {
+                        val map = mutableMapOf<String, Any>()
+                        map["text"] = ele.value
+                        // Notify kotlin side
+                        focusedEventCallback?.invoke(map)
+                    })
+                }
                 true
             }
 
             INPUT_BLUR -> {
-                // Blur event callback
+                // Blur event callback; listener installed once, callback replaceable
                 blurEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
-                ele.addEventListener("blur", {
-                    val map = mutableMapOf<String, Any>()
-                    map["text"] = ele.value
-                    // Notify kotlin side
-                    blurEventCallback?.invoke(map)
-                })
+                if (!blurListenerInstalled) {
+                    blurListenerInstalled = true
+                    ele.addEventListener("blur", {
+                        val map = mutableMapOf<String, Any>()
+                        map["text"] = ele.value
+                        // Notify kotlin side
+                        blurEventCallback?.invoke(map)
+                    })
+                }
                 true
             }
 
             INPUT_RETURN -> {
+                // Return key callback; listener installed once, callback replaceable —
+                // an accumulated listener here means one Enter press submits N times
                 clickReturnEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
-                ele.addEventListener("keydown", {
-                    val event = it.unsafeCast<KeyboardEvent>()
-                    // Keyboard event
-                    if (event.key === "Enter" || event.keyCode == 13) {
-                        val map = mutableMapOf<String, Any>()
-                        map["text"] = ele.value
-                        // Return key clicked
-                        clickReturnEventCallback?.invoke(map)
-                    }
-                })
+                if (!returnListenerInstalled) {
+                    returnListenerInstalled = true
+                    ele.addEventListener("keydown", {
+                        val event = it.unsafeCast<KeyboardEvent>()
+                        // Keyboard event
+                        if (event.key === "Enter" || event.keyCode == 13) {
+                            val map = mutableMapOf<String, Any>()
+                            map["text"] = ele.value
+                            // Return key clicked
+                            clickReturnEventCallback?.invoke(map)
+                        }
+                    })
+                }
                 true
             }
 
@@ -224,23 +241,30 @@ class KRTextAreaView : IKuiklyRenderViewExport {
                 // - On H5 browsers, there is no native keyboardheightchange DOM event on <textarea>,
                 //   so we additionally bind a VisualViewport-based tracker (see below) that
                 //   dispatches the same DOM event on this element.
-                ele.addEventListener(EVENT_KEYBOARD_HEIGHT_CHANGE, {
-                    val detail = it.asDynamic().detail
-                    val height = (detail?.height ?: 0).unsafeCast<Number>().toFloat()
-                    val duration = (detail?.duration ?: 0).unsafeCast<Number>().toFloat()
-                    val curve = (detail?.curve ?: 0).unsafeCast<Number>().toInt()
-                    val map = mutableMapOf<String, Any>()
-                    map["height"] = height
-                    map["duration"] = duration
-                    map["curve"] = curve
-                    keyboardHeightChangeCallback?.invoke(map)
-                })
+                // Listener installed once, callback replaceable (see installInputListenerOnce).
+                if (!keyboardListenerInstalled) {
+                    keyboardListenerInstalled = true
+                    ele.addEventListener(EVENT_KEYBOARD_HEIGHT_CHANGE, {
+                        val detail = it.asDynamic().detail
+                        val height = (detail?.height ?: 0).unsafeCast<Number>().toFloat()
+                        val duration = (detail?.duration ?: 0).unsafeCast<Number>().toFloat()
+                        val curve = (detail?.curve ?: 0).unsafeCast<Number>().toInt()
+                        val map = mutableMapOf<String, Any>()
+                        map["height"] = height
+                        map["duration"] = duration
+                        map["curve"] = curve
+                        keyboardHeightChangeCallback?.invoke(map)
+                    })
+                }
                 bindKeyboardHeightTrackingIfNeeded()
                 true
             }
 
             TEXT_LENGTH_BEYOND_LIMIT -> {
                 textLengthLimitEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
+                // Listeners installed once, callback replaceable (see installInputListenerOnce)
+                if (lengthLimitListenersInstalled) return true
+                lengthLimitListenersInstalled = true
                 // Whether it is in text combination state
                 var isComposing = false
 
@@ -280,6 +304,34 @@ class KRTextAreaView : IKuiklyRenderViewExport {
 
             else -> super.setProp(propKey, propValue)
         }
+    }
+
+    /**
+     * One `input` listener serves both text events, in the Android renderer's order:
+     * its single TextWatcher (installed once, `observeTextWatcher`) invokes
+     * textInputStateChange first, then textDidChange, for every edit. Two properties of
+     * that arrangement matter, and this view used to break both:
+     *
+     * - Install-once. There was one listener per PROP APPLICATION, and Kuikly re-applies
+     *   an event prop whenever its handler lambda recomposes, so textDidChange gained a
+     *   DOM listener per recomposition and a keystroke was reported N times. Compose's
+     *   CoreTextField suppresses exactly ONE textDidChange per textInputStateChange
+     *   (`pendingTextInputStateText` is one-shot); every duplicate walked its fallback
+     *   path, which fabricates a selection because textDidChange carries none.
+     * - Order. The full-state event must reach the Kotlin side before the text-only
+     *   fallback. Fired the other way round on a cold field, the fallback reports text
+     *   the sync mirror has not seen with a fabricated zero selection, and the next
+     *   programmatic sync faithfully pins the caret to 0 (measured on the input variant:
+     *   the first typed character of a freshly mounted field displaced to the end).
+     */
+    private fun installInputListenerOnce() {
+        if (inputListenerInstalled) return
+        inputListenerInstalled = true
+        ele.addEventListener("input", {
+            editGeneration++
+            textInputStateChangeEventCallback?.invoke(currentTextInputStateMap())
+            notifyTextValueChanged(ele.value)
+        })
     }
 
     override fun call(method: String, params: String?, callback: KuiklyRenderCallback?): Any? {
@@ -345,6 +397,13 @@ class KRTextAreaView : IKuiklyRenderViewExport {
      */
     private fun setTextInputState(params: String?) {
         val state = params.toJSONObjectSafely()
+        // Refuse a push composed before an edit this textarea has already applied —
+        // the same stale-echo guard as KRTextFieldView.setTextInputState, which see.
+        val seenGeneration = state.optInt(KEY_GENERATION, NO_GENERATION)
+        if (seenGeneration != NO_GENERATION && seenGeneration < editGeneration) {
+            textInputStateChangeEventCallback?.invoke(currentTextInputStateMap())
+            return
+        }
         var text = state.optString(KEY_TEXT)
         // A programmatic assignment bypasses the DOM's own maxlength enforcement,
         // so apply the truncation typed input would have received (the Android
@@ -394,6 +453,7 @@ class KRTextAreaView : IKuiklyRenderViewExport {
             KEY_SELECTION_END to selectionEnd,
             KEY_COMPOSITION_START to NO_COMPOSITION,
             KEY_COMPOSITION_END to NO_COMPOSITION,
+            KEY_GENERATION to editGeneration,
         )
     }
 
@@ -523,7 +583,9 @@ class KRTextAreaView : IKuiklyRenderViewExport {
         private const val KEY_SELECTION_END = "selectionEnd"
         private const val KEY_COMPOSITION_START = "compositionStart"
         private const val KEY_COMPOSITION_END = "compositionEnd"
+        private const val KEY_GENERATION = "generation"
         private const val NO_COMPOSITION = -1
+        private const val NO_GENERATION = -1
 
         // Events
         private const val TEXT_DID_CHANGE = "textDidChange"

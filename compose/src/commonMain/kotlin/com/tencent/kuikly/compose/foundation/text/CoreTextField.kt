@@ -205,6 +205,14 @@ internal fun CoreTextField(
     var lastSyncedTextInputState by remember { mutableStateOf<TextInputState?>(null) }
     // 标记是否正在处理原生事件，避免 set(value) 反向同步导致选择状态被重置
     var isProcessingNativeEvent by remember { mutableStateOf(false) }
+    // The renderer's edit generation, from the last native event that carried one
+    // (renderers that count user edits stamp every reported state — see
+    // TextInputState.generation). Echoed on every push so the renderer can refuse a
+    // state composed before edits it has already applied: on JS the app's value can
+    // lag one scheduler hop behind the events, and a push built from that stale value
+    // used to roll the field back mid-typing. Stays 0 against renderers that do not
+    // count, which also ignore the echoed value — behavior there is unchanged.
+    var lastSeenNativeGeneration by remember { mutableStateOf(0) }
 
     val measurePolicy = remember(value) { object : MeasurePolicy {
         private val placementBlock: Placeable.PlacementScope.() -> Unit = {}
@@ -458,6 +466,7 @@ internal fun CoreTextField(
                             getViewEvent().textInputStateChange {
                                 // 标记正在处理原生事件，避免 set(value) 反向同步导致选择状态被重置
                                 isProcessingNativeEvent = true
+                                it.generation?.let { g -> lastSeenNativeGeneration = g }
                                 pendingTextInputStateText = it.text
                                 lastSyncedTextInputState = TextInputState(
                                     text = it.text,
@@ -489,6 +498,7 @@ internal fun CoreTextField(
                             getViewEvent().selectionChange {
                                 // 标记正在处理原生事件，避免 set(value) 反向同步导致选择状态被重置
                                 isProcessingNativeEvent = true
+                                it.generation?.let { g -> lastSeenNativeGeneration = g }
                                 lastSyncedTextInputState = TextInputState(
                                     text = it.text,
                                     selectionStart = it.selectionStart,
@@ -586,7 +596,11 @@ internal fun CoreTextField(
                                 selectionStart = value.selection.start,
                                 selectionEnd = value.selection.end,
                                 compositionStart = composition?.start ?: TextInputState.NO_COMPOSITION,
-                                compositionEnd = composition?.end ?: TextInputState.NO_COMPOSITION
+                                compositionEnd = composition?.end ?: TextInputState.NO_COMPOSITION,
+                                // The freshest renderer edit this value can have been built
+                                // from; a counting renderer refuses the push when its field
+                                // has been edited since (see TextInputState.generation).
+                                generation = lastSeenNativeGeneration
                             )
                             getViewAttr().updatePropCache(TextConst.VALUE, incomingTextInputState.text)
 
