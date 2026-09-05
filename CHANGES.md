@@ -2239,3 +2239,65 @@ still selects no page text.
 Worth offering as-is; any Kuikly web app with a text field inside a scrolling list
 ships this defect whenever `preventDefaultSelect` is on, and the guard is one
 target check.
+
+## 23. An Android programmatic blur actually lowers the keyboard, whichever way the field goes
+
+**Files** · `core-render-android/.../expand/component/KRTextFieldView.kt`
+**Driven by** · the client's app-wide outside-tap dismissal (owner ruling 2026-09-05:
+every screen where an input raises the keyboard must lower it on a tap elsewhere)
+**Date** · 2026-09-05
+
+### What it did
+
+`setBlur()` (the `blur` view method, the terminus of the compose side's
+`stopInput`) called `clearFocus()` and posted `hideSoftInputFromWindow`. Two ways
+that failed to blur:
+
+1. **The field stays composed** (a login form, a search pill): `clearFocus()` asks
+   the framework to re-assign window focus, and in touch mode the first
+   `focusableInTouchMode` view in the tree is this same `EditText` (or a sibling
+   field). Focus bounced straight back, the focus listener fired `inputFocus`, the
+   compose side re-requested `startInput`, and the keyboard re-opened ~80 ms after
+   hiding. Measured on the Pixel (HT7BP1A01905, Android 8.1): STOP_INPUT immediately
+   followed by START_INPUT on every programmatic blur of a still-composed field.
+
+2. **The field leaves the tree in the same gesture** (the room composer collapsing):
+   the bridge call for `blur` addressed a node that no longer existed and was
+   dropped. The keyboard still went down — by accident: nothing focusable was left,
+   so the served view's death took the IME with it. Fix 1's focus sink removes that
+   accident: focus now parks on the render root, the IMM keeps serving it, and the
+   keyboard stood over a collapsed composer (the exact defect the client's
+   keyboard-dismiss sweep caught after the sink landed alone).
+
+### The change
+
+- `setBlur()` first parks focus on the nearest `KuiklyRenderView` ancestor
+  (`FOCUS_BEFORE_DESCENDANTS` + `focusableInTouchMode`, then `requestFocus()`), so
+  the re-assignment lands on a surface that is not an input.
+  `FOCUS_BEFORE_DESCENDANTS` only redirects focus *searches*; the direct
+  `requestFocus()` in `setFocus` and in a user tap is unaffected.
+- The hide no longer relies on the field's own liveness: not `view.post` (a
+  detached view's post queues until a re-attach that never comes) and not only the
+  field's `windowToken` (null once detached) — the decor window's token on the main
+  handler.
+- `onDetachedFromWindow` hides the IME when the IMM still names this view as the
+  one it serves (`imm.isActive(this)` — not `isFocused`, which `removeView` has
+  always cleared before detach is dispatched). A field that a UI collapse removes
+  mid-gesture can no longer strand the keyboard.
+
+iOS (`resignFirstResponder`) and web (`ele.blur()`) do not re-assign focus to an
+input on blur, so both fixes are Android-only.
+
+### Verified
+
+Pixel HT7BP1A01905, live cloudcone build: `scripts/keyboard-dismiss-android.mjs` —
+gate/search/edit/family (persistent fields: outside tap lowers, field/anchor tap
+keeps), room composer and seat-emote panel (removed field: stage tap lowers), all
+PASS; the room's Send keeps the keyboard up for the next message. Web leg
+(`scripts/keyboard-dismiss-web.mjs`) all PASS, unchanged renderer.
+
+### Upstreaming
+
+Worth offering: any Kuikly Android app that calls `blur()` on a still-composed field
+gets the bounce, and any that removes a focused field after the focus sink exists
+gets the stranded keyboard.

@@ -23,6 +23,8 @@ import android.graphics.Rect
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.ShapeDrawable
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
@@ -35,8 +37,10 @@ import android.text.style.ImageSpan
 import android.util.SizeF
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import com.tencent.kuikly.core.render.android.KuiklyRenderView
 import android.widget.EditText
 import android.widget.TextView
 import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderAdapterManager
@@ -44,6 +48,7 @@ import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderLog
 import com.tencent.kuikly.core.render.android.adapter.TextPostProcessorInput
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.const.KRViewConst
+import com.tencent.kuikly.core.render.android.css.ktx.activity
 import com.tencent.kuikly.core.render.android.css.ktx.drawCommonDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.drawCommonForegroundDecoration
 import com.tencent.kuikly.core.render.android.css.ktx.spToPxI
@@ -652,11 +657,78 @@ open class KRTextFieldView(context: Context, private val softInputMode: Int?) : 
     }
 
     private fun setBlur() {
+        // Blur must actually blur. `clearFocus()` alone asks the framework to re-assign
+        // window focus, and in touch mode the first focusable view is this very field
+        // (or a sibling field) — focus bounced straight back, the focus listener fired
+        // `inputFocus`, and the keyboard re-opened ~80ms after being hidden (measured
+        // via the compose keyboard controller: STOP_INPUT immediately followed by
+        // START_INPUT on every programmatic blur while the field stayed composed).
+        // Park focus on the render root first — it is not an input, so nothing
+        // re-summons the keyboard. See CHANGES.md §23.
+        parkFocusOnRenderRoot()
         clearFocus()
-        post {
+        // NOT view.post, and NOT this view's own windowToken: a blur can arrive after
+        // the field left the tree (a composer that collapses removes its field), where
+        // a detached view's post() queues until a re-attach that never comes and its
+        // windowToken is null — both made the hide silently do nothing while the parked
+        // focus kept the system from auto-hiding. The window's token outlives the field.
+        val token = windowToken
+            ?: context.activity?.window?.decorView?.windowToken
+        if (token != null) {
             val imm = context.getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.hideSoftInputFromWindow(windowToken, 0)
+            Handler(Looper.getMainLooper()).post {
+                imm.hideSoftInputFromWindow(token, 0)
+            }
         }
+    }
+
+    /**
+     * Move focus to the nearest [KuiklyRenderView] ancestor (falling back to the
+     * outermost ViewGroup), making it a focus sink first. `FOCUS_BEFORE_DESCENDANTS`
+     * only changes where a focus SEARCH lands; a direct `requestFocus()` on a field —
+     * which is how [setFocus] and a user tap focus one — is unaffected.
+     */
+    private fun parkFocusOnRenderRoot() {
+        var p = parent
+        var host: ViewGroup? = null
+        while (p is ViewGroup) {
+            host = p
+            if (p is KuiklyRenderView) break
+            p = p.parent
+        }
+        host?.let { root ->
+            if (root.descendantFocusability != ViewGroup.FOCUS_BEFORE_DESCENDANTS) {
+                root.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS
+            }
+            if (!root.isFocusableInTouchMode) {
+                root.isFocusableInTouchMode = true
+            }
+            root.requestFocus()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        // A field REMOVED from the tree cannot be blurred any more: the bridge call for
+        // METHOD_BLUR addresses a node that no longer exists and is dropped, so the
+        // scheduled blur of a field that a UI collapse takes out (a chat composer
+        // folding back into its bar) never reaches this view. Before the focus sink
+        // above existed, the keyboard still went down by accident — nothing focusable
+        // was left, and the served view dying hid the IME with it. With focus parked on
+        // the render root that accident is gone, so the removal itself must hide what
+        // this field's focus had summoned. See CHANGES.md §23.
+        // Not `isFocused`: removeView un-focuses the child BEFORE dispatching detach,
+        // so that reads false here every time. The IMM still names this view as the
+        // one it serves until its next focus pass, which is exactly the question.
+        val imm = context.getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
+        if (imm.isActive(this)) {
+            val token = context.activity?.window?.decorView?.windowToken
+            if (token != null) {
+                Handler(Looper.getMainLooper()).post {
+                    imm.hideSoftInputFromWindow(token, 0)
+                }
+            }
+        }
+        super.onDetachedFromWindow()
     }
 
     private fun getCursorIndex(callback: KuiklyRenderCallback?) {
