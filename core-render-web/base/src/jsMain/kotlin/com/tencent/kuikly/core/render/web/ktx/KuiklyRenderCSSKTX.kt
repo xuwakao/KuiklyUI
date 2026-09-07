@@ -123,6 +123,21 @@ private fun getCSSRadialGradient(value: String): String {
  * Adapt background value, convert from Kotlin format to web CSS format
  */
 fun getCSSBackgroundImage(value: String): String {
+    // Ronaq: an EMPTY value is "this view no longer has a gradient", which is how the
+    // compose layer retracts one — `SolidColor.applyTo` and `BackgroundNode.draw` clear
+    // `backgroundImage` before painting a flat colour (CHANGES.md §16). Android honours
+    // it; web did not, because the parser below read it as a gradient: `indexOf("(")` is
+    // -1, the substring collapses to "", and the result is `linear-gradient(to top,)` —
+    // invalid CSS, which the browser DISCARDS without an error, leaving the old gradient
+    // painted over the new flat fill.
+    //
+    // Measured 2026-09-07 on the Square room picker: every group chip that had ever been
+    // selected kept the accent gradient, so three chips out of three read as selected at
+    // once. Guarded here rather than at each call site so the fix covers the rich-text
+    // path as well.
+    if (value.isEmpty()) {
+        return ""
+    }
     if (value.startsWith(SWEEP_GRADIENT_PREFIX)) {
         return getCSSConicGradient(value)
     }

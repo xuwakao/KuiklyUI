@@ -490,6 +490,14 @@ class KRRichTextView : IKuiklyRenderViewExport, IKuiklyRenderShadowExport {
         // If background image is url or base64, set directly
         val backgroundImagePrefix = "background-image: "
         val stringValue = value.unsafeCast<String>()
+        if (stringValue.isEmpty()) {
+            // Ronaq: the compose layer's "no gradient any more" signal — see
+            // getCSSBackgroundImage. Clear the image WITHOUT entering the gradient branch
+            // below, which would clip the background to the text and paint the glyphs
+            // transparent against an image that is no longer there.
+            ele.style.backgroundImage = ""
+            return
+        }
         if (stringValue.startsWith(backgroundImagePrefix)) {
             ele.style.backgroundImage =
                 stringValue.substring(backgroundImagePrefix.length, stringValue.length - 1)
