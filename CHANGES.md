@@ -2301,3 +2301,117 @@ PASS; the room's Send keeps the keyboard up for the next message. Web leg
 Worth offering: any Kuikly Android app that calls `blur()` on a still-composed field
 gets the bounce, and any that removes a focused field after the focus sink exists
 gets the stranded keyboard.
+
+## 24. §16's gradient retraction reaches web, instead of being discarded as invalid CSS
+
+**Files** · `core-render-web/base/.../ktx/KuiklyRenderCSSKTX.kt`,
+`core-render-web/base/.../expand/components/KRRichTextView.kt`
+**Driven by** · the same rule §16 was: a control that cannot act must not wear an accent
+fill (the honest-failure rule in the client's `CLAUDE.md`)
+**Date** · 2026-09-07
+
+### What §16 assumed
+
+§16 made `SolidColor.applyTo` and `BackgroundNode.draw` clear `BACKGROUND_IMAGE` before
+painting a flat colour, and said "the renderers already understand the empty value as *no
+gradient*", citing Android's `KRCSSBackgroundDrawable`. It also recorded, honestly, that
+**web was not verified on hardware**.
+
+### What goes wrong on web
+
+Web does not understand it. The empty value reaches `getCSSBackgroundImage("")`, which
+parses it as a gradient:
+
+```kotlin
+val startIndex = value.indexOf("(")                 // -1 on ""
+val spilt = value.substring(startIndex + 1, value.length - 1).split(",")   // [""]
+// ...
+return "$bgImage)"                                  // "linear-gradient(to top,)"
+```
+
+`linear-gradient(to top,)` is invalid CSS. Assigning it to `style.backgroundImage` is a
+no-op the browser performs **silently** — no exception, nothing in the console — so the
+old gradient stays painted over the new flat fill. Exactly the defect §16 fixed
+everywhere else.
+
+Measured 2026-09-07 on the Square room picker's three group chips, in the long-lived
+browser window `scripts/web-live.sh` opens:
+
+| | FOLLOWING | JOINED | RECENT |
+| --- | --- | --- | --- |
+| open on FOLLOWING | `linear-gradient(...)` | `none` | `none` |
+| after tapping RECENT | `linear-gradient(...)` | `none` | `linear-gradient(...)` |
+| after tapping JOINED | `linear-gradient(...)` | `linear-gradient(...)` | `linear-gradient(...)` |
+
+Every chip that had ever been selected kept the accent gradient, so three chips out of
+three read as selected at once. The same reading on the Pixel showed one — Android
+honours the empty value, which is why §16 read as complete.
+
+### The change
+
+`getCSSBackgroundImage` returns `""` for an empty value, before any parsing. Guarded in
+the PARSER rather than at each call site, so the CSS property table and the rich-text
+view are both covered by one line. `KRRichTextView.setBackgroundImage` additionally
+returns early on the empty value: its gradient branch clips the background to the text and
+paints the glyphs transparent, which is not what "there is no gradient any more" should do.
+
+### Verification
+
+`scripts/room-picker-web.mjs` (16 checks, PASS) plus the computed-style table above,
+re-read after the fix: exactly one chip carries a gradient at any time, and it is the
+selected one. Android re-run unchanged (`scripts/room-picker-android.mjs`, 17 checks,
+PASS) — it never had the defect. iOS is unaffected: this is a web-renderer file.
+
+### Upstreaming
+
+Worth offering with §16, which it completes. Upstream's own parser cannot read the value
+upstream's own compose layer sends.
+
+## 25. A web text field stops wearing the browser's furniture, and writes in the app's font
+
+**Files** · `core-render-web/base/.../expand/components/KRTextAreaView.kt`,
+`core-render-web/base/.../expand/components/KRTextFieldView.kt`
+**Driven by** · Charter C-5 (the product ships one type system across EN / AR / TR); the
+presentation-baseline rule in the root `CLAUDE.md` §4
+**Date** · 2026-09-07
+
+### What goes wrong
+
+A `<textarea>` and an `<input>` are form controls, and a form control does not inherit the
+page. Three browser affordances no other host draws showed through every field the app
+styles itself:
+
+- **the font** — a `<textarea>` defaults to `monospace`, so multi-line fields wrote in a
+  typewriter face while their own placeholder, which the renderer draws as a `<p>`, wrote
+  in Cairo. Measured: `getComputedStyle(textarea).fontFamily === "monospace"` on the
+  Square composer, against `Cairo, sans-serif` everywhere else on the page;
+- **the focus ring** — the browser's blue `outline`, drawn over whatever border the design
+  gave the field;
+- **the resize grip and the scrollbar** — the corner handle let a reader drag the writing
+  area out of the panel that frames it, and the platform scrollbar sat inside a rounded
+  118 px box.
+
+Android and iOS draw none of the three, so a field that was right on two hosts looked
+unfinished on the third.
+
+### The change
+
+Both views set `font-family: inherit` and `outline: none` on the element they create;
+`KRTextAreaView` additionally sets `resize: none` and takes the host page's own
+`list-no-scrollbar` class, which is where `::-webkit-scrollbar` can be expressed at all —
+an inline style cannot carry a pseudo-element.
+
+`inherit` and not a hardcoded family: a field that states a family still overrides it
+through `FONT_FAMILY`, and one that states none now takes the page's instead of the
+browser's.
+
+### Verification
+
+The Square composer in the live window: `fontFamily` `Cairo, sans-serif`, `resize` `none`,
+`outline-style` `none`, `scrollbar-width` `none`, and the screenshot beside it. The
+sign-in fields are the `<input>` half and are unchanged in layout.
+
+### Upstreaming
+
+Worth offering as-is. Nothing in it is Ronaq-specific: it is the standard reset any web
+renderer needs so a styled field is the field the caller described.

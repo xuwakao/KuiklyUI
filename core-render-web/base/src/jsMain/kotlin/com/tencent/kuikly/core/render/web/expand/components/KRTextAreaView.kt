@@ -1,5 +1,6 @@
 package com.tencent.kuikly.core.render.web.expand.components
 
+import com.tencent.kuikly.core.render.web.const.KRListConst
 import com.tencent.kuikly.core.render.web.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.web.ktx.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.web.ktx.kuiklyDocument
@@ -67,6 +68,29 @@ class KRTextAreaView : IKuiklyRenderViewExport {
         val style = this.unsafeCast<HTMLTextAreaElement>().style
         style.border = "none"
         style.backgroundColor = "transparent"
+        // Ronaq: a `<textarea>` carries three browser affordances no other host draws,
+        // and every one of them shows through a design that styles the field itself.
+        //
+        //   resize  — the corner grip, which let a reader drag the composer's writing
+        //             area out of the panel that frames it;
+        //   outline — the focus ring, drawn in the browser's own blue over the design's
+        //             glass border;
+        //   scrollbar — the platform bar, inside a rounded 118px box.
+        //
+        // Seen on the Square composer 2026-09-07. Android and iOS draw none of the three,
+        // so a field that looks right on two hosts looked unfinished on the third.
+        // The scrollbar goes through the host page's own `list-no-scrollbar` class, which
+        // is where `::-webkit-scrollbar` can be expressed at all — an inline style cannot
+        // carry a pseudo-element.
+        style.asDynamic().resize = "none"
+        style.outline = "none"
+        this.classList.add(KRListConst.NO_SCROLL_BAR_CLASS)
+        // A form control does NOT inherit the page font — a `<textarea>` defaults to
+        // `monospace`. So every multi-line field in the app wrote in a typewriter face
+        // while its own placeholder, drawn by the renderer as a `<p>`, wrote in the
+        // product's. Inherit, so a field that states no family takes the page's; one
+        // that states a family still overrides this through FONT_FAMILY.
+        style.fontFamily = "inherit"
     }
 
     private var currentLength = 0

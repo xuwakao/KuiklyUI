@@ -78,6 +78,11 @@ class KRTextFieldView : IKuiklyRenderViewExport {
         val style = this.unsafeCast<HTMLTextAreaElement>().style
         style.border = CSS_BORDER_NONE
         style.backgroundColor = CSS_BG_TRANSPARENT
+        // The same two a `<textarea>` needs (KRTextAreaView): a form control does not
+        // inherit the page font, and the browser's focus ring is drawn over whatever
+        // border the design gave the field.
+        style.fontFamily = "inherit"
+        style.outline = "none"
     }
     // Current text length
     private var currentLength = 0
