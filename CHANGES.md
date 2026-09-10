@@ -2415,3 +2415,61 @@ sign-in fields are the `<input>` half and are unchanged in layout.
 
 Worth offering as-is. Nothing in it is Ronaq-specific: it is the standard reset any web
 renderer needs so a styled field is the field the caller described.
+
+## 26. `HorizontalPager` stops mirroring its pages under RTL — RTL
+
+**Files** · `compose/.../foundation/pager/MeasuredPage.kt`
+**Driven by** · Charter C-5 (Arabic is a launch language)
+**Date** · 2026-09-09
+
+### What upstream Compose does
+
+A pager measures in Ltr and mirrors ONCE at placement — `PagerMeasure` carries the note
+"Enforces Ltr layout direction as it is mirrored with placeRelative later", and
+`MeasuredPage.place` calls `placeRelativeWithLayer`, which flips x under Rtl. Upstream then
+reverses the SCROLL direction to match, through `scrollingContainer(...)` and
+`reverseLayout`, so layout and gesture agree.
+
+### What goes wrong here
+
+This fork does neither half of the second part. `reverseLayout` is commented out of both
+`HorizontalPager` and `VerticalPager` (`Pager.kt:110`, `:131`, `:197`, `:218`) and
+`.scrollingContainer(...)` is commented out of `LazyLayoutPager` — horizontal scrolling is
+delivered by the native `ScrollerView`, whose content offsets are Ltr and know nothing about
+layout direction.
+
+So the placement mirror happens on its own, against an unmirrored scroller:
+
+- page 0 is DRAWN at the right-hand end of the strip while `scrollToPage(index)` and the
+  drag both compute offsets from the index as though it were at the left;
+- the content therefore travels AGAINST the finger — measured on a Pixel in Arabic, a
+  finger moving right to left moved the current page from x 0 to x +121 and pulled the
+  next page in from x -959;
+- and the pager contradicted the tab row above it: with the row reading
+  `Home@834 Mine@665 Explore@377`, the pager held Home at x -1080 from Mine — first tab on
+  the right of the row, on the left of the pager.
+
+The vertical branch of the same function has never had this, because it already places
+absolutely.
+
+### The change
+
+One line: the horizontal branch places with `placeWithLayer` like the vertical one, so a
+page's box lands where its index says. Layout and the native scroller now agree.
+
+After: tapping Mine puts Home at x +1080, a finger moving right to left moves Mine to x
+-143 and brings Home in from x +937, and it settles on Home. The content follows the
+finger and the entering page comes from the side the tab row says it is on.
+
+### What this asks of callers
+
+**Direction is the caller's decision now, made once.** A right-to-left surface reverses its
+page ORDER — `MainTab.entries.reversed()` and the like — which is one explicit choice in one
+place instead of two mirrors that only cancel by luck. The Ronaq client's shell, Home and
+Moments pagers all do this; see `docs/issue/home-tag-swipe-needs-the-strip-outside-the-scroller.md`.
+
+**Not addressed here**: `LazyListMeasuredItem`, `LazyGridMeasuredItem` and
+`LazyStaggeredGridMeasure` place horizontally with `placeRelativeWithLayer` too and carry the
+same asymmetry. They are left alone because no measurement has been taken of them — a
+horizontal `LazyRow` scrolled in Arabic is the case to check — and a blind sweep would be a
+change without evidence.

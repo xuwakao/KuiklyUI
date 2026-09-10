@@ -100,11 +100,26 @@ internal class MeasuredPage(
                 }
             }
             offset += visualOffset
-            if (isVertical) {
-                placeable.placeWithLayer(offset)
-            } else {
-                placeable.placeRelativeWithLayer(offset)
-            }
+                // Placed ABSOLUTELY, not relatively — RTL.
+            //
+            // `placeRelativeWithLayer` mirrors x when the layout direction is Rtl, which
+            // is upstream's way of getting a right-to-left list: measure in Ltr, mirror
+            // once at placement, and reverse the SCROLL direction to match
+            // (`scrollingContainer`, `reverseLayout`). This fork does neither — that
+            // modifier is commented out and horizontal scrolling comes from the native
+            // ScrollerView, whose offsets are Ltr and know nothing about direction.
+            //
+            // So the mirror happened on its own. Measured on a Pixel in Arabic: page 0
+            // was drawn at the RIGHT end of the strip while `scrollToPage` and the drag
+            // both kept computing from the index as if it were at the left, so the
+            // content travelled AGAINST the finger and a tap on a tab scrolled to the
+            // wrong page. The vertical branch above has never had this because it places
+            // absolutely already.
+            //
+            // Direction now belongs to the caller: a right-to-left surface reverses its
+            // page ORDER, which is one explicit decision in one place instead of two
+            // mirrors that only cancel by luck.
+            placeable.placeWithLayer(offset)
         }
     }
 
