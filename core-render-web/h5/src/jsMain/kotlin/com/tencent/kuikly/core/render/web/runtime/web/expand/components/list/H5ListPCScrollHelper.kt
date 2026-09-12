@@ -596,6 +596,13 @@ class H5ListPCScrollHelper(
     fun onMouseUpEvent(it: MouseEvent) {
         isMouseDown = false
         if (listView.isClickEvent()) {
+            // A click still has to END the paging helper's gesture. `mousedown` armed it
+            // for a drag and this path used to return without telling it the button came
+            // up, so the arming outlived the click and the next move was computed as a
+            // drag from the click's own origin — see [H5ListPagingHelper.disarmPagerMouse].
+            if (listView.pagingEnabled) {
+                listView.listPagingHelper.disarmPagerMouse()
+            }
             listView.handleClickEvent(it)
             return
         }

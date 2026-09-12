@@ -124,6 +124,29 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
     }
 
     /**
+     * End a mouse gesture that turned out to be a CLICK, without snapping a page.
+     *
+     * `mousedown` arms this helper for a drag — `isMouseDown`, `isDragging` and the event
+     * the next move's delta is taken from. A click's `mouseup` is routed away on the
+     * click path and never reached [handlePagerMouseUp], so all three stayed set, and the
+     * next `mousemove` the helper was handed was computed as a drag from the CLICK's
+     * origin. Measured on the web host: after a card tap opened the post detail and the
+     * back button closed it, `moments.page#ALL` stood at x = −174, which is exactly
+     * backBtn.cx 33 − bodyTapX 207, on 3 of 3 runs and unchanged after three seconds.
+     * The touch path never had this, because `touchend` always reaches
+     * [handlePagerTouchEnd].
+     *
+     * Not [handlePagerMouseUp]: that one runs the snap, and a click must not move a pager.
+     * This only puts the arming back.
+     */
+    fun disarmPagerMouse() {
+        isMouseDown = false
+        isDragging = 0
+        isTouchMove = false
+        lastMouseEvent = null
+    }
+
+    /**
      * Handle paging calculation for Wheel event
      * Uses accumulated delta and lock mechanism to ensure only one page switch per wheel gesture
      * @param event WheelEvent from wheel listener
