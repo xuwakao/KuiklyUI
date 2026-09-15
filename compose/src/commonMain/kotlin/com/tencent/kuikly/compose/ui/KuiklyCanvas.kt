@@ -74,11 +74,22 @@ internal class KuiklyCanvas : Canvas {
     override var view: DeclarativeBaseView<*, *>? = null
         set(value) {
             if (value is CanvasView) {
+                // Batch this node's frame. Unbatched, every primitive is its own bridge
+                // call — a `drawLine` alone is six — so a Canvas issuing a few hundred
+                // primitives pays a few hundred crossings per frame. `KNode.draw` brackets
+                // the pass (`canvas.view = view` … `canvas.view = null`), which is what
+                // makes the buffer safe to close in the else branch below.
                 context = CanvasContext(value.renderView!!, value.pagerId, value.nativeRef)
+                    .also { it.batchDraw = true }
                 densityValue = value.getPager().pagerDensity()
+                // Sent unbatched and first, so it lands before the buffered frame.
                 value.renderView?.callMethod("reset", "")
                 strokeCap = StrokeCap.Butt
             } else {
+                // End of this node's draw pass — send the frame. A buffer dropped here
+                // would be a frame silently not drawn, which is why this is not left to
+                // the next bind to clear.
+                context?.flush()
                 context = null
             }
             field = value

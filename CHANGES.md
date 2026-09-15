@@ -2473,3 +2473,52 @@ Moments pagers all do this; see `docs/issue/home-tag-swipe-needs-the-strip-outsi
 same asymmetry. They are left alone because no measurement has been taken of them — a
 horizontal `LazyRow` scrolled in Arabic is the case to check — and a blind sweep would be a
 change without evidence.
+
+## 27. The Compose `Canvas` batches its frame's draw commands, and web learns to receive them
+
+**Why.** Unbatched, every canvas primitive is its own bridge crossing. `CanvasContext`
+already had the batching path — `batchDraw = true` buffers into a `JSONArray` and `flush()`
+sends it as one `batchDraw` call, and the fork's own doc says it 「可大幅减少 bridge 调用
+次数…显著提升性能」 — but nothing in any tree ever set the flag, so the path was dead code.
+It cost the DSL `Canvas` nothing to leave off, because `CanvasView.draw()` calls
+`context.flush()` either way. It cost the Compose `Canvas` a great deal: that path does not
+go through `CanvasView.drawCallback` at all — `KuiklyCanvas` builds its own `CanvasContext`
+— so its commands were always sent one at a time.
+
+Measured on the Pixel 2 / Android 8.1 the client treats as its low-end reference, room
+screen: `Slow issue draw commands` fired on 100% of frames and the room sat at ~97 ms.
+A single `drawLine` is six canvas ops, and the client's gift-flight decoration issues on
+the order of 600–750 ops per recipient per frame. Full numbers and the attribution caveats:
+the Ronaq client's `docs/issue/room-screen-frame-cost-on-pixel.md`.
+
+**What changed.**
+
+- `compose/.../ui/KuiklyCanvas.kt` — the context it builds is created with
+  `batchDraw = true`, and the buffer is sent when the node's draw pass ends. `KNode.draw`
+  already brackets that pass (`canvas.view = view` … `super.draw` … `canvas.view = null`),
+  so the unbind is the frame boundary and the `else` arm of the `view` setter is where the
+  flush belongs. Dropping the buffer there instead would be a frame silently not drawn.
+  The `reset` the setter sends stays unbatched and therefore still lands first.
+- `core/.../views/CanvasView.kt` — `CanvasContext.flush()` becomes public. It was
+  `internal`, which the Compose module cannot reach across a module boundary; without it
+  that path could buffer but never send.
+- `core-render-web/.../expand/components/KRCanvasView.kt` — **the web renderer now answers
+  `batchDraw`**, replaying each `{m, p}` entry through its own `call`, the same shape the
+  Android arm uses. Android, iOS and OHOS already implemented the method; web did not, so
+  enabling batching without this would have rendered every Compose canvas as nothing on
+  web — silently, since an unknown method falls through to `super.call`.
+
+**Verified.** `:shared` compiles for Android, JS and iOS; `:core-render-web:base`
+compiles. `:shared:testDebugUnitTest` 1387 tests, 0 failures. Installed on the Pixel and
+looked at: the room's canvas-drawn surfaces — seat rings, chips, gift art — all still
+draw, which is the failure this change could plausibly have caused. Web and iOS are
+compiled but NOT yet run with batching on; the web arm in particular is new code on a path
+that previously did not exist, and wants a browser check before anyone leans on it.
+
+**PRD basis.** None required — no clause asks for a drawing primitive. It serves
+`ARCHITECTURE.md §3`'s 60 fps merge gate on the low-end device, the same budget §12's
+radial-gradient work served.
+
+**Upstreamable.** Nothing here is Ronaq-specific: the flag, the flush and the web arm are
+general capability, and the web handler closes a gap between renderers that upstream would
+want closed regardless.

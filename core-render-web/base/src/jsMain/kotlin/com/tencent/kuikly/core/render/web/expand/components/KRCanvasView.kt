@@ -12,6 +12,7 @@ import com.tencent.kuikly.core.render.web.ktx.setFrame
 import com.tencent.kuikly.core.render.web.ktx.splitCanvasColorDefinitions
 import com.tencent.kuikly.core.render.web.ktx.toJSONObjectSafely
 import com.tencent.kuikly.core.render.web.ktx.toRgbColor
+import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONArray
 import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONObject
 import com.tencent.kuikly.core.render.web.runtime.dom.element.ElementType
 import com.tencent.kuikly.core.render.web.utils.Log
@@ -111,6 +112,7 @@ class KRCanvasView(
             ROTATE -> rotate(params)
             SKEW -> skew(params)
             TRANSFORM -> transform(params)
+            BATCH_DRAW -> batchDraw(params)
             else -> super.call(method, params, callback)
         }
     }
@@ -602,9 +604,35 @@ class KRCanvasView(
         ctx.restore()
     }
 
+    /**
+     * Replay one frame's buffered commands — `CanvasContext.batchDraw`.
+     *
+     * Android and iOS already answer this method; web did not, so a canvas drawn by a
+     * batching context rendered NOTHING here while the other hosts were fine. Same shape
+     * as the Android arm (`core-render-android/.../KRCanvasView.batchDraw`): each entry is
+     * `{m: method, p: params}` and goes back through this view's own `call`, so every
+     * command behaves exactly as it does unbatched.
+     */
+    private fun batchDraw(params: String?) {
+        if (params.isNullOrEmpty()) return
+        try {
+            val arr = JSONArray(params)
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val method = item.optString("m")
+                if (method.isNotEmpty()) {
+                    call(method, item.optString("p"), null)
+                }
+            }
+        } catch (e: Throwable) {
+            Log.warn("KRCanvasView: batchDraw parse error: ${e.message}")
+        }
+    }
+
     companion object {
         const val VIEW_NAME = "KRCanvasView"
 
+        private const val BATCH_DRAW = "batchDraw"
         private const val BEGIN_PATH = "beginPath"
         private const val MOVE_TO = "moveTo"
         private const val LINE_TO = "lineTo"

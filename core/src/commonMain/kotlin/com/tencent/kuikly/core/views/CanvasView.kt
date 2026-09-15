@@ -219,8 +219,13 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      * 批量模式下，将缓冲区中的所有命令一次性发送给 native（batchDraw）。
      * 非批量模式下此方法为空操作。
      * 由 [CanvasView.draw] 在 drawCallback 执行完毕后调用。
+     *
+     * Public rather than internal so the Compose layer can close its own frame: it builds
+     * its `CanvasContext` itself (`KuiklyCanvas.view`) instead of going through
+     * [CanvasView.drawCallback], and lives in a different module, where `internal` is out
+     * of reach. Without this the Compose path could buffer but never send.
      */
-    internal fun flush() {
+    fun flush() {
         cmdBuffer?.let {
             if (batchDraw && it.length() > 0) {
                 renderView.callMethod("batchDraw", cmdBuffer.toString())
