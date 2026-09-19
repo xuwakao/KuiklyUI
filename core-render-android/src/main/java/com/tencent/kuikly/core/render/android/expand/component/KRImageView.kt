@@ -54,6 +54,7 @@ import com.tencent.kuikly.core.render.android.expand.component.image.NinePatchHe
 import com.tencent.kuikly.core.render.android.expand.module.KRMemoryCacheModule
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
+import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
 import com.tencent.kuikly.core.render.android.scheduler.KRSubThreadScheduler
 import org.json.JSONObject
 import java.nio.ByteBuffer
@@ -212,6 +213,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     @SuppressLint("DrawAllocation")
     override fun onDraw(canvas: Canvas) {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onDraw(this)
         updatePaintMaskGradientIfNeedOnDraw()
         var saveCount = 0
         paintMaskGradient?.also {

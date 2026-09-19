@@ -43,6 +43,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.optViewDecorator
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
 import org.json.JSONObject
+import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
 
 open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExport {
 
@@ -363,6 +364,7 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         }
     }
     override fun draw(canvas: Canvas) {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onDraw(this)
         val checkpoint: Int = if (hasCustomClipPath()) {
             canvas.save()
         } else {

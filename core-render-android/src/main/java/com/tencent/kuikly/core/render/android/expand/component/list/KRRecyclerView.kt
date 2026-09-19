@@ -47,6 +47,7 @@ import org.json.JSONObject
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.abs
+import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
 
 enum class KRNestedScrollMode(val value: String){
     SELF_ONLY("SELF_ONLY"),
@@ -520,6 +521,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     override fun draw(c: Canvas) {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onDraw(this)
         val checkpoint: Int = if (hasCustomClipPath()) {
             c.save()
         } else {

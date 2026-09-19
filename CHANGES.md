@@ -2558,3 +2558,39 @@ OHOS; the file is Android's.
 
 **Upstreamable.** Yes — the double clip is a general cost on every rounded view, and the
 change keeps the path clip for the cases that need it.
+
+## 29. An off-by-default invalidation probe in the Android renderer
+
+**Files** · `core-render-android/.../performace/frame/KRInvalidationProbe.kt` (new) ·
+one-line hooks in `KuiklyRenderView.kt` (`onDescendantInvalidated`, `requestLayout`,
+`dispatchDraw`), `css/ktx/KRCSSViewExtension.kt` (`setCommonProp`),
+`expand/component/KRView.kt` (`draw`), `KRImageView.kt` (`onDraw`),
+`list/KRRecyclerView.kt` (`draw`)
+
+**What.** A diagnostic the host can switch on (`KRInvalidationProbe.enabled`; Ronaq's
+debug `UiDumpReceiver` does so on `--es krProbe on`). While on, it tallies per
+Choreographer frame: every prop `setCommonProp` wrote and to which view (`frame`,
+`transform`, `opacity` with their values), every view invalidated under the root and,
+once a second, the stack that invalidated it, every `requestLayout` that reached the
+root with its stack, and every view whose `draw()` ran — that is, re-recorded its
+display list. One logcat line per frame under `KRProbe`. Off, each hook is a volatile
+read. It keeps the Choreographer ticking while on, so it must not be read for what the
+app does in the background.
+
+**Why.** "Who invalidates what, each frame" is the question behind every Android jank
+this renderer has had, and neither `dumpsys gfxinfo` (where the time went) nor a
+perfetto trace (`Record View#draw()` names no view on AOSP) answers it. On 2026-09-19 it
+settled in one run that a drag of the VIP centre re-records nothing (five `transform`
+props a frame, `setTranslationX` → `damageInParent`, zero `draw()` calls, 60 fps on a
+MediaTek G35), while a changed `frame` prop — `KuiklyRenderExtension.kt:191`
+`layoutParams = lp` → `View.setLayoutParams` → `requestLayout` — flags every ancestor
+`PFLAG_INVALIDATED` (that is what `View.requestLayout` does), so the Home feed's
+height-animated level meters re-record 79–91 `KRView`s and run a measure/layout pass
+every frame, 17–20 fps on that phone. Details in Ronaq's
+`docs/progress/vip-scroll-sync.md`.
+
+**Verified.** Built into Ronaq's debug APK and run on the OnePlus PJU110 (Android 14):
+VIP centre at rest, across a drag, and the Home feed. Release builds carry the hooks
+(volatile reads) and no switch.
+
+**Upstreamable.** Yes — general diagnostic, no Ronaq types; the switch is the host's.

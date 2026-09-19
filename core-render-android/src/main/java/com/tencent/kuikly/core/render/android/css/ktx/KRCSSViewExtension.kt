@@ -50,6 +50,7 @@ import com.tencent.kuikly.core.render.android.css.gesture.KRCSSGestureDetector
 import com.tencent.kuikly.core.render.android.css.gesture.KRCSSGestureListener
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
 import org.json.JSONObject
+import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
 
 /**
  * 设置通用的css样式，支持的属性列表可以查看[KRCssConst]定义的属性
@@ -66,6 +67,7 @@ import org.json.JSONObject
  */
 @Suppress("UNCHECKED_CAST")
 fun View.setCommonProp(key: String, value: Any): Boolean {
+    if (KRInvalidationProbe.enabled) KRInvalidationProbe.onProp(this, key, value)
     if (tryAddAnimationOperation(key, value)) {
         return true
     }

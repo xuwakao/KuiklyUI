@@ -61,6 +61,7 @@ import com.tencent.kuikly.core.render.android.export.IKuiklyRenderShadowExport
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewPropExternalHandler
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderBaseModule
+import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
 import com.tencent.kuikly.core.render.android.scheduler.KuiklyRenderCoreTask
 import com.tencent.tdf.module.TDFBaseModule
 import com.tencent.tdf.module.TDFModuleContext
@@ -643,6 +644,21 @@ class KuiklyRenderView(
 
     override fun isDebugLogEnable(): Boolean {
         return delegate?.debugLogEnable() == true
+    }
+
+    override fun onDescendantInvalidated(child: View, target: View) {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onInvalidated(target)
+        super.onDescendantInvalidated(child, target)
+    }
+
+    override fun requestLayout() {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onLayoutRequested()
+        super.requestLayout()
+    }
+
+    override fun dispatchDraw(canvas: android.graphics.Canvas) {
+        if (KRInvalidationProbe.enabled) KRInvalidationProbe.onRootDraw()
+        super.dispatchDraw(canvas)
     }
 
     companion object {
