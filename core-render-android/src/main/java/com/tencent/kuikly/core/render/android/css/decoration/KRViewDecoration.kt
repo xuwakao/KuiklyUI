@@ -226,6 +226,17 @@ class KRViewDecoration(targetView: View) : IKRViewDecoration {
         if (!needClip) { // 没有设置圆角或路径的情况
             return
         }
+        // ronaq: a view the outline already clips (rounded corners, no shadow, no custom
+        // path — see setOutlineViewProviderIfNeed) is not clipped a second time here.
+        // `canvas.clipPath` is a non-rectangular clip HWUI cannot do on the fast path;
+        // one per rounded view, every frame, made a page of rounded rows and cards
+        // GPU-bound: 27–70 ms of draw-command issue per frame on a Pixel 2, 6 ms with
+        // this line (measured 2026-09-19, CHANGES.md 28). Not under isBeforeM (API
+        // 21–23): there the outline is widened by the border on purpose (getOutline),
+        // and this path clip is what keeps the corner tight.
+        if (!isBeforeM && targetViewWeakRef.get()?.clipToOutline == true) {
+            return
+        }
 
         rectF.set(0f, 0f, w.toFloat(), h.toFloat())
         paint.color = Color.TRANSPARENT

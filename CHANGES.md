@@ -2522,3 +2522,39 @@ radial-gradient work served.
 **Upstreamable.** Nothing here is Ronaq-specific: the flag, the flush and the web arm are
 general capability, and the web handler closes a gap between renderers that upstream would
 want closed regardless.
+
+## 28. A rounded view the outline clips is not clipped a second time with `clipPath` — Android
+
+**Files** · `core-render-android/.../css/decoration/KRViewDecoration.kt`
+
+**What.** `KRViewDecoration.drawCommonDecoration` ran `clipPath(w, h, canvas)` on every
+draw of every view with a border radius: build the round-rect path, `canvas.drawPath` it
+with a transparent paint, `canvas.clipPath` it. It did so even when
+`setOutlineViewProviderIfNeed` had already given the view a `ViewOutlineProvider` and
+`clipToOutline = true` — the outline is the clip on that view, and the path clip was a
+second one over it. Now `clipPath` returns first when the target view's `clipToOutline`
+is set, on N (24) and later. The path clip still runs where the outline cannot be used: a
+view with a box shadow, a custom (possibly concave) clip path, or `useOutline` turned off
+— exactly the cases `setOutlineViewProviderIfNeed` already sends down that road — and
+under `isBeforeM` (API 21–23, the predicate is `SDK_INT <= M`), where `getOutline` widens
+the outline by the border width on purpose (so a foreground border is not clipped) and
+the path clip is what keeps the corner tight.
+
+**Why.** `canvas.clipPath` is a non-rectangular clip, which HWUI cannot serve from the
+fast path; each one is a stencil/mask step for everything drawn under it. A page of
+rounded rows, rounded cards, rounded tiles and dots issues tens of them a frame. On a
+Pixel 2 the VIP centre's horizontal swipe measured with `dumpsys gfxinfo framestats`
+(2026-09-19, after its image decoding was already fixed): 26–33 ms of draw-command issue
+per frame, 60–75 ms per frame in all, 100 % janky. With this change: 6 ms of issue,
+12–14 ms per frame, 120 frames in the same window — the 60 fps budget in
+`ARCHITECTURE.md §3`. The outline clip is what the platform's own rounded cards use, and
+it has been anti-aliased since API 21; the only visual difference is on the views that
+were never outline-clipped anyway, and there is none.
+
+**Verified.** Measured as above on the Pixel 2 (walleye), and the VIP centre looked at on
+it and on the OnePlus PJU110 afterwards: rounded rows, rounded cards, the dots, the
+header's round back button and the wallet's tiles all keep their corners. Not measured on
+OHOS; the file is Android's.
+
+**Upstreamable.** Yes — the double clip is a general cost on every rounded view, and the
+change keeps the path clip for the cases that need it.
