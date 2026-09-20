@@ -15,6 +15,9 @@
 
 package com.tencent.kuikly.core.render.android.expand.component.blur
 
+import android.app.ActivityManager
+import android.os.SystemClock
+import com.tencent.kuikly.core.render.android.expand.component.KRView
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -37,6 +40,14 @@ import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
  */
 class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExport {
 
+    private var capturedSource: KRView? = null
+    private var capturedRevision = -1L
+    private var capturedSourceX = 0
+    private var capturedSourceY = 0
+    private var capturedSourceWidth = 0
+    private var capturedSourceHeight = 0
+    private var capturedRadius = Float.NaN
+    private val sourceLocation = IntArray(2)
     private var internalBitmap: Bitmap? = null
     private var internalCanvas: BlurViewCanvas? = null
     private var initialized = false
@@ -48,7 +59,22 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     } else {
         RenderScriptBlur(context)
     }
-    private var filterInvalidDraw = false
+    private var adaptiveRefresh = false
+    private var lastCaptureMs = 0L
+    private val baseCaptureInterval by lazy {
+        val memory = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        when {
+            memory.isLowRamDevice || memory.memoryClass <= 128 -> 100L
+            Build.VERSION.SDK_INT < 31 || memory.memoryClass < 256 -> 66L
+            else -> 33L
+        }
+    }
+    private var captureInterval = 0L
+    private var snapshotOnly = false
+    private var geometryChangedAt = 0L
+    private var captureX = Int.MIN_VALUE
+    private var captureY = Int.MIN_VALUE
+    private val currentLocation = IntArray(2)
 
     private var blurRootViewList = mutableListOf<View>()
 
@@ -62,10 +88,31 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     private val preDrawListener = OnPreDrawListener {
-        if (!filterInvalidDraw) {
-            updateBlurBitmap()
-        } else {
-            filterInvalidDraw = false
+        if (isShown) {
+            val now = SystemClock.uptimeMillis()
+            getLocationOnScreen(currentLocation)
+            if (currentLocation[0] != captureX || currentLocation[1] != captureY) {
+                captureX = currentLocation[0]; captureY = currentLocation[1]
+                capturedSource = null
+                geometryChangedAt = now
+                snapshotOnly = false
+                if (adaptiveRefresh) postInvalidateDelayed(120L)
+            }
+            val settled = !adaptiveRefresh || now - geometryChangedAt >= 100L
+            if (settled && !snapshotOnly && (!adaptiveRefresh || now - lastCaptureMs >= captureInterval)) {
+                val start = SystemClock.elapsedRealtimeNanos()
+                android.os.Trace.beginSection("KRBlurView.capture")
+                try { updateBlurBitmap() } finally { android.os.Trace.endSection() }
+                lastCaptureMs = now
+                if (adaptiveRefresh) {
+                    val costMs = (SystemClock.elapsedRealtimeNanos() - start) / 1_000_000L
+                    // If software capture consumes half a 60Hz frame, cache this
+                    // backdrop rather than inserting long frames throughout the sheet.
+                    // Foreground keeps updating. A new attachment/geometry recaptures.
+                    snapshotOnly = costMs > 8L
+                    captureInterval = maxOf(baseCaptureInterval, costMs * 8).coerceAtMost(200L)
+                }
+            }
         }
         true
     }
@@ -76,6 +123,9 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        snapshotOnly = false
+        captureX = Int.MIN_VALUE
+        captureY = Int.MIN_VALUE
         krRootView()?.viewTreeObserver?.also {
             it.removeOnPreDrawListener(preDrawListener)
             it.addOnPreDrawListener(preDrawListener)
@@ -84,11 +134,17 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        capturedSource = null
         krRootView()?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
     }
 
     override fun setProp(propKey: String, propValue: Any): Boolean {
         return when (propKey) {
+            "adaptiveRefresh" -> {
+                adaptiveRefresh = propValue.toNumberFloat() != 0f
+                captureInterval = if (adaptiveRefresh) baseCaptureInterval else 0L
+                true
+            }
             PROP_BLUR_RADIUS -> blurRadius(propValue)
             PROP_TARGET_BLUR_VIEW_NATIVE_REFS -> blurViewTag(propValue)
             PROP_BLUR_OTHER_LAYER -> blurOtherLayer(propValue)
@@ -97,6 +153,9 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     override fun draw(canvas: Canvas) {
+        // Stop at the actual backdrop boundary, including ancestors' later siblings.
+        // Never toggle visibility: doing so requests a new measure/layout every capture.
+        if (canvas is BlurViewCanvas && canvas.stopAt === this) throw StopBackdropCapture
         if (!initialized) {
             super.draw(canvas)
         } else
@@ -116,6 +175,9 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         updateBlurViewSize(w, h)
+        snapshotOnly = false
+        geometryChangedAt = SystemClock.uptimeMillis()
+        if (adaptiveRefresh) postInvalidateDelayed(120L)
     }
 
     override fun onDestroy() {
@@ -129,18 +191,14 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     private fun blurViewTag(propValue: Any): Boolean {
-        val tags = propValue as String
-        if (tags.isEmpty()) {
-            return true
-        }
-
+        val tags = (propValue as String).split("|").mapNotNull { it.toIntOrNull() }.filter { it != -1 }
+        if (tags == targetBlurViewTags) return true
+        capturedSource = null
         targetBlurViewTags.clear()
-        tags.split("|").forEach {
-            val tag = it.toIntOrNull() ?: -1
-            if (tag != -1) {
-                targetBlurViewTags.add(tag)
-            }
-        }
+        snapshotOnly = false
+        lastCaptureMs = 0L
+        if (adaptiveRefresh) postInvalidateDelayed(120L)
+        targetBlurViewTags.addAll(tags)
         return true
     }
 
@@ -150,6 +208,7 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     private fun updateBlurViewSize(width: Int, height: Int) {
+        capturedSource = null
         val sizeScaler = SizeScaler(20f)
         if (sizeScaler.isZeroSized(width, height)) {
             return
@@ -169,14 +228,61 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
 
         val bitmap = internalBitmap ?: return
         val canvas = internalCanvas ?: return
-        bitmap.eraseColor(Color.TRANSPARENT)
-        getBlurRootViewList().forEach { krRootView ->
-            drawBlurContent(canvas, bitmap, krRootView)
+        // Hardware capture is safe only for an explicit subtree that cannot contain
+        // this effect. Recording an ancestor would create a recursive RenderNode graph.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && isHardwareAccelerated &&
+            adaptiveRefresh && targetBlurViewTags.size == 1 && !blurOtherLayer) {
+            val source = kuiklyRenderContext?.getView(targetBlurViewTags.single())
+            var ancestor: View? = this
+            var recursive = false
+            while (ancestor != null) {
+                if (ancestor === source) recursive = true
+                ancestor = ancestor.parent as? View
+            }
+            if (source != null && source.isShown && source.width > 0 && source.height > 0 && !recursive) {
+                val tracked = source as? KRView
+                tracked?.trackBackdropInvalidations = true
+                source.getLocationOnScreen(sourceLocation)
+                if (tracked != null && capturedSource === tracked &&
+                    capturedRevision == tracked.backdropRevision && !source.isDirty &&
+                    !source.hasTransientState() && capturedRadius == blurRadius &&
+                    capturedSourceWidth == source.width && capturedSourceHeight == source.height &&
+                    capturedSourceX == sourceLocation[0] && capturedSourceY == sourceLocation[1]) return
+                val revisionBeforeDraw = tracked?.backdropRevision ?: -1L
+                android.os.Trace.beginSection("KRBlurView.hardwareCapture")
+                try {
+                    (blur as RenderEffectBlur).capture(bitmap.width, bitmap.height, blurRadius) { recording ->
+                        val checkpoint = recording.save()
+                        try {
+                            setupInternalCanvasMatrix(source, bitmap, recording)
+                            source.draw(recording)
+                        } finally { recording.restoreToCount(checkpoint) }
+                    }
+                } finally { android.os.Trace.endSection() }
+                capturedSource = tracked
+                capturedRevision = revisionBeforeDraw
+                capturedSourceWidth = source.width
+                capturedSourceHeight = source.height
+                capturedSourceX = sourceLocation[0]
+                capturedSourceY = sourceLocation[1]
+                capturedRadius = blurRadius
+                return
+            }
         }
-        internalBitmap = blur.blur(bitmap, blurRadius)
+        capturedSource = null
+        bitmap.eraseColor(Color.TRANSPARENT)
+        android.os.Trace.beginSection("KRBlurView.captureContent")
+        try {
+            getBlurRootViewList().forEach { krRootView ->
+                drawBlurContent(canvas, bitmap, krRootView)
+            }
+        } finally { android.os.Trace.endSection() }
+        android.os.Trace.beginSection("KRBlurView.filter")
+        try { internalBitmap = blur.blur(bitmap, blurRadius) }
+        finally { android.os.Trace.endSection() }
     }
 
-    private fun drawBlurContent(canvas: Canvas, bitmap: Bitmap, rootView: View) {
+    private fun drawBlurContent(canvas: BlurViewCanvas, bitmap: Bitmap, rootView: View) {
         if (targetBlurViewTags.isNotEmpty()) {
             drawBlurContentWithTags(targetBlurViewTags, canvas, bitmap, rootView)
         } else {
@@ -184,14 +290,17 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
         }
     }
 
-    private fun drawBlurContentWithRootView(canvas: Canvas, bitmap: Bitmap, rootView: View) {
-        canvas.save()
-        setupInternalCanvasMatrix(rootView, bitmap, canvas)
-        val setGoneViewList = setUpperViewVisibleGone() // 不截取BlurView上层的视图, 暂时把位置BlurView上层的View设为不可见
-        rootView.draw(canvas)
-        tryDrawTextureView(rootView, canvas)
-        restoreSetGoneViews(setGoneViewList) // 恢复上层View的可见性
-        canvas.restore()
+    private fun drawBlurContentWithRootView(canvas: BlurViewCanvas, bitmap: Bitmap, rootView: View) {
+        val checkpoint = canvas.save()
+        canvas.stopAt = this
+        try {
+            setupInternalCanvasMatrix(rootView, bitmap, canvas)
+            try { rootView.draw(canvas) } catch (_: StopBackdropCaptureException) { }
+            tryDrawTextureView(rootView, canvas)
+        } finally {
+            canvas.stopAt = null
+            canvas.restoreToCount(checkpoint)
+        }
     }
 
     private fun tryDrawTextureView(rootView: View, canvas: Canvas) {
@@ -240,41 +349,6 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
             view = rootView.findViewWithTag<View>(tag)
         }
         return view
-    }
-
-    private fun setUpperViewVisibleGone(): Set<View>? {
-        val parent = parent as? ViewGroup ?: return null
-        val index = parent.indexOfChild(this)
-        if (index == -1) {
-            return null
-        }
-
-        val setGoneViewList = mutableSetOf<View>()
-        val size = parent.childCount
-        for (i in index + 1 until size) {
-            val child = parent.getChildAt(i)
-            if (child !is KRBlurView && child.visibility == VISIBLE) {
-                child.visibility = GONE
-                setGoneViewList.add(child)
-                filterInvalidDraw = true
-            }
-        }
-        for (i in 0 until index) {
-            parent.getChildAt(i)?.also {
-                if (it.z > z && it !is KRBlurView && it.visibility == VISIBLE) {
-                    it.visibility = GONE
-                    setGoneViewList.add(it)
-                    filterInvalidDraw = true
-                }
-            }
-        }
-        return setGoneViewList
-    }
-
-    private fun restoreSetGoneViews(setGoneViews: Set<View>?) {
-        setGoneViews?.forEach {
-            it.visibility = View.VISIBLE
-        }
     }
 
     /**
@@ -369,4 +443,10 @@ private class SizeScaler(private val scaleFactor: Float) {
     }
 }
 
-private class BlurViewCanvas(bitmap: Bitmap) : Canvas(bitmap)
+private class BlurViewCanvas(bitmap: Bitmap) : Canvas(bitmap) {
+    var stopAt: KRBlurView? = null
+}
+private class StopBackdropCaptureException : RuntimeException() {
+    override fun fillInStackTrace(): Throwable = this
+}
+private val StopBackdropCapture = StopBackdropCaptureException()

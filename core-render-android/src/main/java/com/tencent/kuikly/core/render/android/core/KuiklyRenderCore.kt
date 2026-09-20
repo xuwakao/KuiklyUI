@@ -399,20 +399,41 @@ class KuiklyRenderCore(
                     if (shouldSync && uiScheduler?.isPerformingMainQueueTask == true) {
                         shouldSync = false
                     }
-                    performOnContextQueue(sync = shouldSync) {
-                        contextHandler?.call(
-                            KuiklyRenderContextMethod.KuiklyRenderContextMethodFireViewEvent,
-                            listOf(instanceId, tag, args.thirdArg(), result)
-                        )
-                        if (shouldSync) {
-                            uiScheduler?.performSyncMainQueueTasksBlockIfNeed(true)
-                            uiScheduler?.performOnMainQueueWithTask(sync = false) {
-                                uiScheduler?.performMainThreadTaskWaitToSyncBlockIfNeed()
+                    val traceName = "KR.event." + args.thirdArg<String>()
+                    android.os.Trace.beginSection(if (shouldSync) "KR.syncWait" else "KR.asyncPost")
+                    try {
+                        performOnContextQueue(sync = shouldSync) {
+                            android.os.Trace.beginSection(traceName)
+                            try {
+                                android.os.Trace.beginSection("KR.callback")
+                                try {
+                                    contextHandler?.call(
+                                        KuiklyRenderContextMethod.KuiklyRenderContextMethodFireViewEvent,
+                                        listOf(instanceId, tag, args.thirdArg(), result)
+                                    )
+                                } finally {
+                                    android.os.Trace.endSection()
+                                }
+                                if (shouldSync) {
+                                    android.os.Trace.beginSection("KR.flushSyncUi")
+                                    try {
+                                        uiScheduler?.performSyncMainQueueTasksBlockIfNeed(true)
+                                        uiScheduler?.performOnMainQueueWithTask(sync = false) {
+                                            uiScheduler?.performMainThreadTaskWaitToSyncBlockIfNeed()
+                                        }
+                                    } finally {
+                                        android.os.Trace.endSection()
+                                    }
+                                }
+                            } finally {
+                                android.os.Trace.endSection()
                             }
                         }
-                    }
-                    if (shouldSync) {
-                        uiScheduler?.performMainThreadTaskWaitToSyncBlockIfNeed()
+                        if (shouldSync) {
+                            uiScheduler?.performMainThreadTaskWaitToSyncBlockIfNeed()
+                        }
+                    } finally {
+                        android.os.Trace.endSection()
                     }
                 }
             }

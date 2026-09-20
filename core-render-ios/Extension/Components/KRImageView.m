@@ -85,6 +85,38 @@ typedef void (^KRSetImageBlock) (UIImage *_Nullable image);
 
 @end
 
+// Shared source blur cache. Weak identity keys avoid retaining full-resolution sources.
+static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
+    static NSCache<NSString *, UIImage *> *cache;
+    static NSMapTable<UIImage *, NSNumber *> *identities;
+    static NSObject *lock;
+    static NSUInteger nextIdentity = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.totalCostLimit = 2 * 1024 * 1024;
+        identities = [NSMapTable weakToStrongObjectsMapTable];
+        lock = [NSObject new];
+    });
+    // Runs on the image worker, never the main thread. Concurrent consumers coalesce.
+    @synchronized(lock) {
+        NSNumber *identity = [identities objectForKey:source];
+        if (!identity) {
+            identity = @(++nextIdentity);
+            [identities setObject:identity forKey:source];
+        }
+        NSString *key = [NSString stringWithFormat:@"%@:%g", identity, radius];
+        UIImage *cached = [cache objectForKey:key];
+        if (cached) return cached;
+        UIImage *result = [source kr_blurBlurRadius:radius];
+        if (result.CGImage) {
+            NSUInteger cost = CGImageGetBytesPerRow(result.CGImage) * CGImageGetHeight(result.CGImage);
+            [cache setObject:result forKey:key cost:cost];
+        }
+        return result;
+    }
+}
+
 @implementation KRImageView {
     UIImage *_originImage;
 }
@@ -706,7 +738,7 @@ typedef void (^KRSetImageBlock) (UIImage *_Nullable image);
         NSString *src = [self.css_src copy];
         KR_WEAK_SELF
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            UIImage *blurImage = [image kr_blurBlurRadius:blurRadius];;
+            UIImage *blurImage = KRSharedBlurImage(image, blurRadius);
             dispatch_async(dispatch_get_main_queue(), ^{
                 if ([weakSelf.css_src isEqualToString:src] && [weakSelf.css_blurRadius floatValue] == blurRadius) {
                     [weakSelf superSetImage:blurImage];

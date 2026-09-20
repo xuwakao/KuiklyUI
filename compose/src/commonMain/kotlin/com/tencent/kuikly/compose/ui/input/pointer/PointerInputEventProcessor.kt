@@ -16,6 +16,8 @@
 
 package com.tencent.kuikly.compose.ui.input.pointer
 
+import com.tencent.kuikly.compose.ui.util.PointerPhaseTrace
+
 import androidx.collection.LongSparseArray
 import androidx.collection.forEach
 import com.tencent.kuikly.compose.ui.node.HitTestResult
@@ -102,6 +104,7 @@ internal class PointerInputEventProcessor(val root: LayoutNode) {
             }
 
             // Add new hit paths to the tracker due to down events.
+            PointerPhaseTrace.section("KR.pointer.hitTest") {
             for (i in 0 until internalPointerEvent.changes.size()) {
                 val pointerInputChange = internalPointerEvent.changes.valueAt(i)
                 if (isHover || pointerInputChange.changedToDownIgnoreConsumed()) {
@@ -122,6 +125,7 @@ internal class PointerInputEventProcessor(val root: LayoutNode) {
                 }
             }
 
+            }
             // Remove [PointerInputFilter]s that are no longer valid and refresh the offset information
             // for those that are.
             hitPathTracker.removeDetachedPointerInputFilters()
@@ -134,7 +138,9 @@ internal class PointerInputEventProcessor(val root: LayoutNode) {
 
             // Dispatch to PointerInputFilters
             val dispatchedToSomething =
-                hitPathTracker.dispatchChanges(internalPointerEvent, isInBounds)
+                PointerPhaseTrace.section("KR.pointer.dispatch") {
+                    hitPathTracker.dispatchChanges(internalPointerEvent, isInBounds)
+                }
 
             val anyMovementConsumed = if (internalPointerEvent.suppressMovementConsumption) {
                 false

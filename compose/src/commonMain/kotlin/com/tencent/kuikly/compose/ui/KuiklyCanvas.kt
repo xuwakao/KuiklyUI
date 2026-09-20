@@ -80,7 +80,10 @@ internal class KuiklyCanvas : Canvas {
                 // the pass (`canvas.view = view` … `canvas.view = null`), which is what
                 // makes the buffer safe to close in the else branch below.
                 context = CanvasContext(value.renderView!!, value.pagerId, value.nativeRef)
-                    .also { it.batchDraw = true }
+                    .also {
+                        it.batchDraw = true
+                        it.structuredBatchParams = value.getPager().pageData.isAndroid
+                    }
                 densityValue = value.getPager().pagerDensity()
                 // Sent unbatched and first, so it lands before the buffered frame.
                 value.renderView?.callMethod("reset", "")

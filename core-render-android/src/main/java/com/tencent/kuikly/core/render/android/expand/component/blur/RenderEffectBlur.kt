@@ -35,6 +35,7 @@ class RenderEffectBlur(private val context: Context) : IBlur {
     private var width = 0
     private var height = 0
     private var lastBlurRadius = 1f
+    private var appliedBlurRadius = Float.NaN
 
     private var fallbackBlur: IBlur? = null
 
@@ -51,8 +52,26 @@ class RenderEffectBlur(private val context: Context) : IBlur {
         val canvas = node.beginRecording()
         canvas.drawBitmap(bitmap, 0f, 0f, null)
         node.endRecording()
-        node.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.MIRROR))
+        applyRadius(radius)
         return bitmap
+    }
+
+    /** Records an explicitly separate backdrop subtree using cached hardware display lists. */
+    fun capture(width: Int, height: Int, radius: Float, drawContent: (Canvas) -> Unit) {
+        this.width = width
+        this.height = height
+        lastBlurRadius = radius
+        node.setPosition(0, 0, width, height)
+        val canvas = node.beginRecording()
+        try { drawContent(canvas) } finally { node.endRecording() }
+        applyRadius(radius)
+    }
+
+    private fun applyRadius(radius: Float) {
+        // Content recordings change independently of this immutable filter.
+        if (appliedBlurRadius == radius) return
+        node.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.MIRROR))
+        appliedBlurRadius = radius
     }
 
     override fun draw(canvas: Canvas, bitmap: Bitmap) {

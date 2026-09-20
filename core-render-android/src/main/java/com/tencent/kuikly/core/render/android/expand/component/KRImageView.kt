@@ -287,7 +287,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             val tBlurRadius = blurRadius
             val tSrc = src
             KRSubThreadScheduler.scheduleTask(0) {
-                val blurDrawable = RenderScriptBlur.blurImage(safeDrawable, context, tBlurRadius)
+                val blurDrawable = com.tencent.kuikly.core.render.android.expand.component.blur.CachedImageBlur.load(safeDrawable, context, tBlurRadius)
                 runOnUiThread {
                     if (src == tSrc && blurRadius == tBlurRadius) {
                         superSetImage(blurDrawable)
@@ -367,7 +367,9 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     private fun setBlurRadius(blurRadius: Any): Boolean {
         // image
-        this.blurRadius = blurRadius.toNumberFloat()
+        val next = blurRadius.toNumberFloat()
+        if (this.blurRadius == next) return true
+        this.blurRadius = next
         updateDrawableImage(originDrawable)
         return true
     }

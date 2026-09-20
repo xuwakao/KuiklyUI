@@ -2594,3 +2594,121 @@ VIP centre at rest, across a drag, and the Home feed. Release builds carry the h
 (volatile reads) and no switch.
 
 **Upstreamable.** Yes — general diagnostic, no Ronaq types; the switch is the host's.
+
+## 2026-09-19 — Opt-in render cache for bounded static subtrees (Android)
+
+`KRView` accepts `renderCache=1` to use a hardware layer, and clears it on property reset.
+This is a rendering hint, not a data or lifecycle change: descendant invalidations rebuild
+Android's cached texture normally. Default views retain no extra texture. Callers should
+use it only for small static artwork containers, not full scrolling pages or video.
+Ronaq Home header A/B on PJU110: banner plus board caches reached59.7fps while the
+uncached loaded-header capture dropped frames. Final production integration still under
+verification; see mobile docs/progress/combo-cannon-and-feed-performance.md.
+Other renderers may ignore this optimization hint without changing visuals or behavior.
+
+## Cache inverse layer transforms during pointer processing (2026-09-20)
+
+`compose/.../ui/platform/RenderNodeLayer.kt` previously allocated and inverted a
+matrix on every inverse coordinate lookup, including unchanged layers. OPPO VIP
+pointer sampling shows this path during hit testing. Cache the inverse until the
+forward matrix changes; forward recalculation invalidates it even when a forward
+lookup happens before the next inverse lookup. Preserve the existing identity
+fallback for singular matrices. Transform tests cover rotation, scaling, resize,
+return to identity, and singular transforms after a populated cache.
+
+`core-render-android/.../core/KuiklyRenderCore.kt` temporarily traces event names
+and synchronous waits for this investigation; no event payloads are recorded and
+callback synchronization semantics are unchanged. Remove after investigation.
+
+The temporary `PointerPhaseTrace` hook is off by default. The debug Android UI
+receiver enables platform trace spans for layout preparation, synthetic pointer
+updates, hit testing, and dispatch while collecting a trace. It records only
+phase names. These diagnostics must be removed before closing the investigation.
+
+## Source image blur reuse (2026-09-20, in progress)
+Room Pearl glass reuses a blurred source wallpaper, rather than sampling the animated room tree. Android `CachedImageBlur` coalesces image-worker requests under a bounded 2 MiB bitmap LRU, keyed by bitmap generation/dimensions/radius/sample tier. Capability tiers use low-RAM/memory class/API, never device names. Width96/150/240, maximum output height512; RenderScript context is destroyed after each miss. Views receive independent drawables sharing the immutable result bitmap. Eviction never recycles an in-use bitmap. Runtime frame-based adaptation and cross-platform cache parity remain to be validated/implemented.
+
+## 2026-09-20 optional backdrop capture budget
+
+KRBlurView Android accepts optional `adaptiveRefresh` (default off). It reuses its existing downsampled backdrop bitmap between captures, with 33/66/100ms capability baseline and measured capture cost limiting updates to at most 200ms. Foreground UI is not throttled. Existing callers retain their refresh behavior. This is enabled on the room gift sheet only; Android runtime verification pending.
+
+## Backdrop capture boundary and idempotent image blur (2026-09-20)
+`KRImageView.setBlurRadius` now skips unchanged values so recomposition does not
+resubmit an identical bitmap blur/upload. `KRBlurView` backdrop capture stops at
+its own draw boundary using a private, stackless capture sentinel and restores
+canvas state in `finally`. It no longer toggles later siblings GONE/VISIBLE
+(which requested layout and could still capture ancestor siblings above the panel).
+Hidden blur views do not capture. `KRBlurView.capture` trace slices expose cost.
+Existing target-ref capture remains unchanged. Runtime performance verification
+is recorded in mobile/docs/progress/room-pearl.md; this is not a cross-device FPS guarantee.
+
+## Android structured Canvas batch parameters (2026-09-20)
+CPU samples of simultaneous gift flights showed JSON stringification and parsing on
+both framework/UI threads. CanvasContext has an opt-in structuredBatchParams flag
+(default false); Compose enables it only for this Android renderer. Android accepts
+both old parameter strings and object parameters, reusing each parsed object for its
+command. Other hosts retain the existing wire format. No geometry/sample count is
+removed. The flag must not be enabled on legacy Android hosts lacking this parser.
+Structured Canvas batches also coalesce consecutive move/line/quadratic/cubic/close
+operations into one numeric `pathOps` array. Ordering across style/transform/arc
+commands and frames is preserved by flushing at every non-path command. Legacy
+hosts keep individual commands. Shared CanvasBatchWireTest verifies exact signed
+coordinates, operation order, two-frame separation and legacy string compatibility.
+Adaptive backdrop captures wait until panel geometry settles, and switch to a cached
+snapshot when measured capture cost exceeds8ms (half a60Hz frame). New attachment,
+position or size invalidates that snapshot. A delayed invalidation guarantees the
+initial capture even for static content. Foreground remains live; slow devices no
+longer pay recurring full-tree software captures. Non-adaptive callers are unchanged.
+The packed path payload uses Base64 little-endian IEEE754 float words (opcode then
+coordinates), not decimal JSON values. This preserves exact Float precision while
+avoiding per-point number formatting/parsing. The wire test decodes independently
+and checks signed coordinates and complete opcode ordering. All non-Android hosts
+continue the previous string-command protocol.
+
+### Explicit hardware backdrop recording (Android 12+)
+- Adaptive BlurView with one explicitly supplied, separate source subtree records
+  cached hardware display lists into RenderEffectBlur rather than repainting all
+  content into a software bitmap. Ancestor/self sources are rejected to prevent
+  recursive RenderNode graphs; unsupported/untargeted callers retain bitmap capture.
+- Preserve crop coordinates and blur radius. Add captureContent/filter/hardwareCapture
+  trace sections to distinguish source capture from filtering costs. OPPO baseline:
+  source capture54.3ms, filtering0.22ms. OPPO hardware trace:44 captures,
+  source mean0.53ms/max1.04ms; total mean0.67ms/max1.30ms. Actual room blur
+  retained. Cold GPU shader compilation still causes long frames; this is not
+  a complete opening-latency fix. Older Android and software export unverified.
+- Clearing source tags now clears the old binding and invalidates its capture cache.
+
+### Pointer position bookkeeping
+- Update or remove each pointer directly instead of iterating the snapshot map and
+  searching the input list again. Preserves mouse hover/release, mouse exit even
+  when pressed, touch/stylus release and pointers absent from the current event.
+- Three ComposeSceneInputHandler regression tests pass on Android JVM. Removes
+  quadratic bookkeeping and a snapshot iterator on the synchronous input path;
+  device latency benefit must be measured separately, not inferred from tests.
+
+### 2026-09-20: Reuse unchanged RenderEffect blur filters
+`RenderEffectBlur` now updates its immutable RenderEffect only when radius changes,
+independently of content recording. Both bitmap and explicit hardware capture paths
+retain content refresh. This avoids replacing the same filter on each adaptive
+capture; driven by the owner requirement for high-frame-rate real room backdrops.
+No claim of a standalone latency reduction without controlled device evidence.
+
+### 2026-09-20: Explicit backdrop source revisions
+`KRView` exposes an internal opt-in revision for descendant draw invalidations,
+self invalidations, native property updates and changed layout. `KRBlurView`
+reuses a separately captured hardware subtree only while revision, radius, source
+identity, dimensions and screen position remain unchanged and no dirty/transient
+state exists. Attachment/geometry/source changes discard reuse; untracked sources
+and software capture keep existing behavior. Identical target-list updates no
+longer reset capture. Framework basis: Android ViewGroup.onDescendantInvalidated
+https://developer.android.com/reference/android/view/ViewGroup#onDescendantInvalidated(android.view.View,%20android.view.View)
+OPPO stable-panel trace eliminates repeated blur layer recording, but total render
+time remains similar. Dynamic invalidation verification is still incomplete.
+
+### 2026-09-20: Memory-bounded raster cache hint
+`KRView.adaptiveRenderCache` opt-in reuses a native hardware layer, respecting
+hardware availability, low-RAM classification and memoryClass>=192MiB. A conservative
+8bytes/pixel estimate must fit memoryClass/32 (bounded4..16MiB). No device-model
+branches. Size changes re-evaluate, detachment/reset releases, reattachment restores
+only when allowed. Normal View invalidation keeps content current. Existing explicit
+renderCache behavior is unchanged. Unmeasured on low-RAM/API21 devices.

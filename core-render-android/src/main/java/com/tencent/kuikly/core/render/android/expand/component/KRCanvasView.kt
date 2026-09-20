@@ -108,6 +108,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
             ROTATE -> rotate(params)
             SKEW -> skew(params)
             TRANSFORM -> transform(params)
+            "pathOps" -> packedPath(params)
             BATCH_DRAW -> batchDraw(params)
             else -> super.call(method, params, callback)
         }
@@ -143,18 +144,40 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
         }
     }
 
+    private fun packedPath(params: String?) {
+        val data = drawParams(params).optString("data")
+        if (data.isEmpty()) return
+        val bytes = android.util.Base64.decode(data, android.util.Base64.NO_WRAP)
+        require(bytes.size % 4 == 0) { "Invalid packed Canvas path length" }
+        val ops = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        fun coordinate(): Float = kuiklyRenderContext.toPxF(ops.float)
+        while (ops.hasRemaining()) {
+            when (ops.float.toInt()) {
+                0 -> hrPath.path.moveTo(coordinate(), coordinate())
+                1 -> hrPath.path.lineTo(coordinate(), coordinate())
+                2 -> hrPath.path.quadTo(coordinate(), coordinate(), coordinate(), coordinate())
+                3 -> hrPath.path.cubicTo(coordinate(), coordinate(), coordinate(), coordinate(), coordinate(), coordinate())
+                4 -> hrPath.path.close()
+                else -> error("Invalid packed Canvas path operation")
+            }
+        }
+    }
+
+    private var batchParams: JSONObject? = null
+    private fun drawParams(params: String?): JSONObject = batchParams ?: params.toJSONObjectSafely()
+
     private fun setLineCap(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         currentDrawStyle.lineCap(paramsJSON.optString(STYLE))
     }
 
     private fun setLineWidth(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         currentDrawStyle.lineWidth(kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.WIDTH).toFloat()))
     }
 
     private fun setLineDash(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val jsonArray = json.optJSONArray("intervals")
         if (jsonArray == null) {
             currentDrawStyle.lineDash(null)
@@ -168,12 +191,12 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun setStrokeStyle(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         currentDrawStyle.strokeStyle(paramsJSON.optString(STYLE))
     }
 
     private fun setFillStyle(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         currentDrawStyle.fillStyle(paramsJSON.optString(STYLE))
     }
 
@@ -183,21 +206,21 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun moveTo(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         val x = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.X).toFloat())
         val y = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.Y).toFloat())
         hrPath.path.moveTo(x, y)
     }
 
     private fun lineTo(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         val x = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.X).toFloat())
         val y = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.Y).toFloat())
         hrPath.path.lineTo(x, y)
     }
 
     private fun arc(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         val cx = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.X).toFloat())
         val cy = kuiklyRenderContext.toPxF(paramsJSON.optDouble(KRViewConst.Y).toFloat())
         val radius = kuiklyRenderContext.toPxF(paramsJSON.optDouble(RADIUS).toFloat())
@@ -289,7 +312,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun quadraticCurveTo(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val cpx = kuiklyRenderContext.toPxF(json.optDouble("cpx").toFloat())
         val cpy = kuiklyRenderContext.toPxF(json.optDouble("cpy").toFloat())
         val x = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.X).toFloat())
@@ -298,7 +321,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun bezierCurveTo(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val cp1x = kuiklyRenderContext.toPxF(json.optDouble("cp1x").toFloat())
         val cp1y = kuiklyRenderContext.toPxF(json.optDouble("cp1y").toFloat())
         val cp2x = kuiklyRenderContext.toPxF(json.optDouble("cp2x").toFloat())
@@ -317,7 +340,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun setFont(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val size = json.optDouble("size", 0.0)
         if (size > 0) {
             currentDrawStyle.textSize = kuiklyRenderContext.toPxF(size.toFloat())
@@ -329,12 +352,12 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
 
     private fun fillText(params: String?) {
         currentDrawStyle.drawStyle(Paint.Style.FILL)
-        flushTextCommand(params.toJSONObjectSafely())
+        flushTextCommand(drawParams(params))
     }
 
     private fun strokeText(params: String?) {
         currentDrawStyle.drawStyle(Paint.Style.STROKE)
-        flushTextCommand(params.toJSONObjectSafely())
+        flushTextCommand(drawParams(params))
     }
 
     private fun flushTextCommand(json: JSONObject) {
@@ -391,7 +414,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun drawImage(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val cacheKey = json.optString("cacheKey")
         val drawable: Any? = kuiklyRenderContext?.module<KRMemoryCacheModule>(KRMemoryCacheModule.MODULE_NAME)?.get(cacheKey)
         if (drawable !is Drawable) {
@@ -430,7 +453,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun saveLayer(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val x = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.X).toFloat())
         val y = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.Y).toFloat())
         val width = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.WIDTH).toFloat())
@@ -444,7 +467,7 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
 
     private fun clip(params: String?) {
         hrPath.path.also {
-            val json = params.toJSONObjectSafely()
+            val json = drawParams(params)
             val op = if (json.optInt("intersect", TRUE) == TRUE) {
                 Region.Op.INTERSECT
             } else {
@@ -455,34 +478,34 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     private fun translate(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val x = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.X).toFloat())
         val y = kuiklyRenderContext.toPxF(json.optDouble(KRViewConst.Y).toFloat())
         drawOperationList.add(LambdaOp { _, canvas -> canvas.translate(x, y) })
     }
 
     private fun scale(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         val x = paramsJSON.optDouble(KRViewConst.X).toFloat()
         val y = paramsJSON.optDouble(KRViewConst.Y).toFloat()
         drawOperationList.add(LambdaOp { _, canvas -> canvas.scale(x, y) })
     }
 
     private fun rotate(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = drawParams(params)
         val degrees = paramsJSON.optDouble("angle") * KRViewConst.PI_AS_ANGLE / PI
         drawOperationList.add(LambdaOp { _, canvas -> canvas.rotate(degrees.toFloat()) })
     }
 
     private fun skew(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val x = json.optDouble(KRViewConst.X).toFloat()
         val y = json.optDouble(KRViewConst.Y).toFloat()
         drawOperationList.add(LambdaOp { _, canvas -> canvas.skew(x, y) })
     }
 
     private fun transform(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = drawParams(params)
         val values = json.optJSONArray("values") ?: return
         if (values.length() < 9) {
             return
@@ -511,9 +534,11 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
                 val method = item.optString("m")
-                val p = item.optString("p", null)
+                val structured = item.optJSONObject("p")
+                val p = if (structured == null) item.optString("p", null) else null
                 if (method.isNotEmpty()) {
-                    call(method, p, null)
+                    batchParams = structured
+                    try { call(method, p, null) } finally { batchParams = null }
                 }
             }
         } catch (e: Exception) {

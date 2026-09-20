@@ -95,7 +95,7 @@ class RenderScriptBlur(context: Context) : IBlur {
     }
 
     companion object {
-        fun blurImage(drawable: Drawable, context: Context, blurRadius: Float): Drawable? {
+        fun blurImage(drawable: Drawable, context: Context, blurRadius: Float, sampleWidth: Int = 150): Drawable? {
             if (drawable !is BitmapDrawable) {
                 return null
             }
@@ -107,14 +107,14 @@ class RenderScriptBlur(context: Context) : IBlur {
             }
 
             // 将Drawable等比缩小到宽度为150px的分辨率
-            val targetWidth = 150f
+            val targetWidth = min(sampleWidth.toFloat(), 512f * bitmap.width / bitmap.height).coerceAtLeast(1f)
             val scaleFactor = targetWidth / bitmap.width
             val targetHeight = bitmap.height * scaleFactor
 
             // 创建一个空的 ARGB_8888 格式的位图
             val resizedBitmap = Bitmap.createBitmap(
                 targetWidth.toInt(),
-                targetHeight.toInt(),
+                targetHeight.toInt().coerceAtLeast(1),
                 Bitmap.Config.ARGB_8888
             )
 
@@ -147,6 +147,7 @@ class RenderScriptBlur(context: Context) : IBlur {
             output.destroy()
             script.destroy()
             rs.finish()
+            rs.destroy()
             
             // 将Bitmap转换回Drawable
             return BitmapDrawable(context.resources, resizedBitmap)

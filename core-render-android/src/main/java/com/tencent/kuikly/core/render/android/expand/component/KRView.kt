@@ -47,6 +47,56 @@ import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationPro
 
 open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExport {
 
+    // Opted in only by a separate hardware backdrop consumer. Foreground siblings
+    // do not advance this version, while descendant drawing/property changes do.
+    internal var trackBackdropInvalidations = false
+    internal var backdropRevision = 0L
+        private set
+
+    private fun markBackdropChanged() {
+        if (trackBackdropInvalidations) backdropRevision++
+    }
+
+    override fun onDescendantInvalidated(child: View, target: View) {
+        markBackdropChanged()
+        super.onDescendantInvalidated(child, target)
+    }
+
+    override fun invalidate() {
+        markBackdropChanged()
+        super.invalidate()
+    }
+
+    override fun invalidate(dirty: android.graphics.Rect?) {
+        markBackdropChanged()
+        super.invalidate(dirty)
+    }
+
+    override fun invalidate(l: Int, t: Int, r: Int, b: Int) {
+        markBackdropChanged()
+        super.invalidate(l, t, r, b)
+    }
+
+    private var adaptiveRenderCache = false
+    private val rasterMemory by lazy {
+        context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+    }
+
+    private fun syncAdaptiveRenderCache() {
+        val allowed = adaptiveRenderCache && isHardwareAccelerated && width > 0 && height > 0 &&
+            !rasterMemory.isLowRamDevice && rasterMemory.memoryClass >= 192 &&
+            width.toLong() * height * 8L <=
+            (rasterMemory.memoryClass.toLong() * 1024L * 1024L / 32L)
+                .coerceIn(4L * 1024L * 1024L, 16L * 1024L * 1024L)
+        val requested = if (allowed) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
+        if (layerType != requested) setLayerType(requested, null)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (adaptiveRenderCache) syncAdaptiveRenderCache()
+    }
+
     private var touchDownCallback: KuiklyRenderCallback? = null
     private var touchMoveCallback: KuiklyRenderCallback? = null
     private var touchUpCallback: KuiklyRenderCallback? = null
@@ -126,7 +176,17 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
     }
 
     override fun setProp(propKey: String, propValue: Any): Boolean {
+        markBackdropChanged()
         return when (propKey) {
+            "adaptiveRenderCache" -> {
+                adaptiveRenderCache = propValue == 1 || propValue == true
+                syncAdaptiveRenderCache()
+                true
+            }
+            "renderCache" -> {
+                setLayerType(if (propValue == 1 || propValue == true) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE, null)
+                true
+            }
             SCREEN_FRAME_PAUSE -> {
                 setScreenFramePause(propValue)
                 true
@@ -202,6 +262,15 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
         touchListenerProxy = null
         currentActionState = -1
         return when (propKey) {
+            "adaptiveRenderCache" -> {
+                adaptiveRenderCache = false
+                setLayerType(View.LAYER_TYPE_NONE, null)
+                true
+            }
+            "renderCache" -> {
+                setLayerType(View.LAYER_TYPE_NONE, null)
+                true
+            }
             EVENT_TOUCH_DOWN -> {
                 touchDownCallback = null
                 true
@@ -451,6 +520,7 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
     override fun onDetachedFromWindow() {
         resetTextSelector()
         super.onDetachedFromWindow()
+        if (adaptiveRenderCache) setLayerType(View.LAYER_TYPE_NONE, null)
     }
 
     override fun onDestroy() {
@@ -643,7 +713,9 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
 
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        if (changed) markBackdropChanged()
         super.onLayout(changed, left, top, right, bottom)
+        if (adaptiveRenderCache && changed) syncAdaptiveRenderCache()
         logOnLayoutIfNeeded(changed)
     }
 

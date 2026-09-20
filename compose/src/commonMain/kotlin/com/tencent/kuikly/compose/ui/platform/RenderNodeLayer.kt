@@ -62,18 +62,28 @@ internal class RenderNodeLayer(
     private var outline: Outline? = null
     private var roundRect: RoundRect? = null
     private var matrixInvalided = true
+    private var inverseMatrixInvalidated = true
     // Internal for testing
     internal val matrix = Matrix()
         get() {
             if (matrixInvalided) {
                 updateMatrix(field)
                 matrixInvalided = false
+                inverseMatrixInvalidated = true
             }
             return field
         }
-    private val inverseMatrix: Matrix
-        get() = Matrix().apply {
-            matrix.invertTo(this)
+    private val inverseMatrix = Matrix()
+        get() {
+            // Resolve the forward transform first: resize/properties may have dirtied it.
+            val forward = matrix
+            if (inverseMatrixInvalidated) {
+                // Preserve the previous identity fallback for singular transforms.
+                field.reset()
+                forward.invertTo(field)
+                inverseMatrixInvalidated = false
+            }
+            return field
         }
 
     private var isDestroyed = false

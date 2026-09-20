@@ -189,6 +189,9 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      */
     var batchDraw: Boolean = false
 
+    /** Opt-in for renderers accepting structured parameters; legacy hosts keep strings. */
+    var structuredBatchParams: Boolean = false
+
     /**
      * 批量绘制命令缓冲区（batchDraw = true 时使用）。
      */
@@ -199,7 +202,39 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      * @param method 命令名称
      * @param params 命令参数（JSON 字符串或空字符串）
      */
+    private var pathOps: MutableList<Float>? = null
+    private fun packPath(op: Int, vararg coords: Float): Boolean {
+        if (!batchDraw || !structuredBatchParams) return false
+        val buffer = pathOps ?: ArrayList<Float>().also { pathOps = it }
+        buffer.add(op.toFloat())
+        coords.forEach { buffer.add(it) }
+        return true
+    }
+    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+    private fun flushPath() {
+        val ops = pathOps ?: return
+        pathOps = null
+        // Exact IEEE754 coordinates avoid per-point decimal formatting/parsing.
+        val bytes = ByteArray(ops.size * 4)
+        ops.forEachIndexed { index, value ->
+            val bits = value.toBits()
+            for (part in 0..3) bytes[index*4+part] = (bits ushr (part*8)).toByte()
+        }
+        enqueue("pathOps", JSONObject().apply { put("data", kotlin.io.encoding.Base64.encode(bytes)) })
+    }
+
+    private fun enqueue(method: String, params: JSONObject) {
+        flushPath()
+        if (batchDraw && structuredBatchParams) {
+            if (cmdBuffer == null) cmdBuffer = JSONArray()
+            cmdBuffer!!.put(JSONObject().apply { put("m", method); put("p", params) })
+        } else {
+            enqueue(method, params.toString())
+        }
+    }
+
     private fun enqueue(method: String, params: String) {
+        flushPath()
         if (batchDraw) {
             if (cmdBuffer == null) {
                 cmdBuffer = JSONArray()
@@ -226,6 +261,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      * of reach. Without this the Compose path could buffer but never send.
      */
     fun flush() {
+        flushPath()
         cmdBuffer?.let {
             if (batchDraw && it.length() > 0) {
                 renderView.callMethod("batchDraw", cmdBuffer.toString())
@@ -263,11 +299,12 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      * @param y 目标 y 坐标
      */
     override fun moveTo(x: Float, y: Float) {
+        if (packPath(0, x, y)) return
         val params = JSONObject().apply {
             put("x", x)
             put("y", y)
         }
-        enqueue("moveTo", params.toString())
+        enqueue("moveTo", params)
     }
 
     /**
@@ -276,11 +313,12 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
      * @param y 目标 y 坐标
      */
     override fun lineTo(x: Float, y: Float) {
+        if (packPath(1, x, y)) return
         val params = JSONObject().apply {
             put("x", x)
             put("y", y)
         }
-        enqueue("lineTo", params.toString())
+        enqueue("lineTo", params)
     }
 
     /**
@@ -315,13 +353,14 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
             put("eAngle", eAngle)
             put("counterclockwise", rClockWise.toInt())
         }
-        enqueue("arc", params.toString())
+        enqueue("arc", params)
     }
 
     /**
      * 关闭当前路径。
      */
     override fun closePath() {
+        if (packPath(4)) return
         enqueue("closePath", "")
     }
 
@@ -347,14 +386,14 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject().apply {
             put("style", color.toString())
         }
-        enqueue("strokeStyle", params.toString())
+        enqueue("strokeStyle", params)
     }
 
     override fun strokeStyle(linearGradient: CanvasLinearGradient) {
         val params = JSONObject().apply {
             put("style", linearGradient.toString())
         }
-        enqueue("strokeStyle", params.toString())
+        enqueue("strokeStyle", params)
     }
 
     /**
@@ -365,7 +404,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject().apply {
             put("style", color.toString())
         }
-        enqueue("fillStyle", params.toString())
+        enqueue("fillStyle", params)
     }
 
     /**
@@ -378,7 +417,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject().apply {
             put("style", linearGradient.toString())
         }
-        enqueue("fillStyle", params.toString())
+        enqueue("fillStyle", params)
     }
 
     /**
@@ -389,7 +428,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject().apply {
             put("width", width)
         }
-        enqueue("lineWidth", params.toString())
+        enqueue("lineWidth", params)
     }
 
     /**
@@ -408,7 +447,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
             }
             params.put("intervals", jsonArray)
         }
-        enqueue("lineDash", params.toString())
+        enqueue("lineDash", params)
     }
 
     /**
@@ -440,7 +479,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject().apply {
             put("style", style)
         }
-        enqueue("lineCap", params.toString())
+        enqueue("lineCap", params)
     }
 
     /**
@@ -454,12 +493,13 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
                                   controlPointY: Float,
                                   pointX: Float,
                                   pointY: Float) {
+        if (packPath(2, controlPointX, controlPointY, pointX, pointY)) return
         val params = JSONObject()
         params.put("cpx", controlPointX)
         params.put("cpy", controlPointY)
         params.put("x", pointX)
         params.put("y", pointY)
-        enqueue("quadraticCurveTo", params.toString())
+        enqueue("quadraticCurveTo", params)
     }
 
     /**
@@ -479,6 +519,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         pointX: Float,
         pointY: Float
     ) {
+        if (packPath(3, controlPoint1X, controlPoint1Y, controlPoint2X, controlPoint2Y, pointX, pointY)) return
         val params = JSONObject()
         params.put("cp1x", controlPoint1X)
         params.put("cp1y", controlPoint1Y)
@@ -486,7 +527,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("cp2y", controlPoint2Y)
         params.put("x", pointX)
         params.put("y", pointY)
-        enqueue("bezierCurveTo", params.toString())
+        enqueue("bezierCurveTo", params)
     }
 
     /**
@@ -528,7 +569,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         if (colorStopStr.isNotEmpty()) {
             params.put("colors", colorStopStr.substring(0, colorStopStr.length - 1))
         }
-        enqueue("createRadialGradient", params.toString())
+        enqueue("createRadialGradient", params)
     }
 
     /**
@@ -561,7 +602,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         if (family.isNotEmpty()) {
             params.put("family", family)
         }
-        enqueue("font", params.toString())
+        enqueue("font", params)
     }
 
     /**
@@ -601,7 +642,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("text", text)
         params.put("x", x)
         params.put("y", y)
-        enqueue("fillText", params.toString())
+        enqueue("fillText", params)
     }
 
     override fun strokeText(text: String, x: Float, y: Float) {
@@ -609,7 +650,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("text", text)
         params.put("x", x)
         params.put("y", y)
-        enqueue("strokeText", params.toString())
+        enqueue("strokeText", params)
     }
 
     override fun drawImage(image: ImageRef, dx: Float, dy: Float){
@@ -618,7 +659,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("dx", dx)
         params.put("dy", dy)
 
-        enqueue("drawImage", params.toString())
+        enqueue("drawImage", params)
     }
     override fun drawImage(image: ImageRef, dx: Float, dy: Float, dWidth: Float, dHeight: Float){
         val params = JSONObject()
@@ -628,7 +669,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("dWidth", dWidth)
         params.put("dHeight", dHeight)
 
-        enqueue("drawImage", params.toString())
+        enqueue("drawImage", params)
     }
     override fun drawImage(image: ImageRef,
                            sx: Float, sy: Float,
@@ -646,7 +687,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("dWidth", dWidth)
         params.put("dHeight", dHeight)
 
-        enqueue("drawImage", params.toString())
+        enqueue("drawImage", params)
     }
 
     override fun save() {
@@ -659,7 +700,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         params.put("y", y)
         params.put("width", width)
         params.put("height", height)
-        enqueue("saveLayer", params.toString())
+        enqueue("saveLayer", params)
     }
 
     override fun restore() {
@@ -672,7 +713,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
     override fun clip(intersect: Boolean) {
         val params = JSONObject()
         params.put("intersect", if (intersect) 1 else 0)
-        enqueue("clip", params.toString())
+        enqueue("clip", params)
     }
 
     override fun clipPathIntersect() {
@@ -690,7 +731,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject()
         params.put("x", x)
         params.put("y", y)
-        enqueue("translate", params.toString())
+        enqueue("translate", params)
     }
 
     override fun scale(x: Float, y: Float) {
@@ -700,7 +741,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject()
         params.put("x", x)
         params.put("y", y)
-        enqueue("scale", params.toString())
+        enqueue("scale", params)
     }
 
     override fun rotate(angle: Float) {
@@ -709,7 +750,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         }
         val params = JSONObject()
         params.put("angle", angle)
-        enqueue("rotate", params.toString())
+        enqueue("rotate", params)
     }
 
     override fun skew(x: Float, y: Float) {
@@ -719,7 +760,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         val params = JSONObject()
         params.put("x", x)
         params.put("y", y)
-        enqueue("skew", params.toString())
+        enqueue("skew", params)
     }
 
     override fun transform(array: FloatArray) {
@@ -732,7 +773,7 @@ open class CanvasContext(private val renderView: RenderView, private val pagerId
         }
         val params = JSONObject()
         params.put("values", values)
-        enqueue("transform", params.toString())
+        enqueue("transform", params)
     }
 
 }
