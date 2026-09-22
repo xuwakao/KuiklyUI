@@ -267,6 +267,33 @@ open class Attr : Props(), IStyleAttr, ILayoutAttr {
         return this
     }
 
+    /**
+     * Ronaq: the elliptical form — `radial-gradient(cx cy r rx,<argb> <stop>,…)`.
+     *
+     * [radiusX] is the horizontal semi-axis as a fraction of the view's WIDTH, beside
+     * [radius] as the vertical one of its HEIGHT: CSS's `ellipse 95% 130%`. A wide, short
+     * surface lit from above its top centre — a list row, a card — is such an ellipse,
+     * and a circle of the height extinguishes its ends far too soon. The three-token form
+     * above stays the circle every renderer drew before this overload existed.
+     * Ronaq：椭圆形式。radiusX 为横向半轴（视图宽度的比例），radius 为竖向半轴（高度的
+     * 比例），即 CSS 的 `ellipse 95% 130%`；三参数形式仍为原来的圆。
+     */
+    fun backgroundRadialGradient(
+        centerX: Float,
+        centerY: Float,
+        radius: Float,
+        radiusX: Float,
+        vararg colorStops: ColorStop
+    ): Attr {
+        var css = "radial-gradient($centerX $centerY $radius $radiusX"
+        for (color in colorStops) {
+            css += ",$color"
+        }
+        css += ")"
+        StyleConst.BACKGROUND_IMAGE with css
+        return this
+    }
+
     override fun boxShadow(boxShadow: BoxShadow): Attr {
         BoxShadow.ensureSupportFill(this)
         StyleConst.BOX_SHADOW with boxShadow.toString()

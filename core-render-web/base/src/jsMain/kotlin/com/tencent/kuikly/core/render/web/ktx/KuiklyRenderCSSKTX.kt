@@ -85,15 +85,18 @@ private fun getCSSConicGradient(value: String): String {
  * Ronaq: convert a radial gradient into CSS.
  * Ronaq：将径向渐变转换为 CSS。
  *
- * Wire form: `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>,<argb> <stop>,…)`
+ * Wire form: `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>[ <radiusXFraction>],<argb> <stop>,…)`
  * 线上形式如上。
  *
  * The radius is a fraction of the element's HEIGHT, which is what shapes a page glow —
  * the design's own glows are ellipses wider than the screen, so the vertical extent is
  * the one that matters. CSS says that directly with a single length and `at`, so unlike
- * the conic case nothing needs converting but the units.
+ * the conic case nothing needs converting but the units. The optional fourth token is
+ * the horizontal semi-axis as a fraction of the WIDTH — the design's own
+ * `ellipse 95% 130%` — and CSS takes it as the first of the pair verbatim.
  * 半径为元素高度的比例 —— 决定页面光晕形状的是竖向半径；设计的光晕本就宽于屏幕。
- * CSS 可直接以单一长度加 at 表达，故除单位外无需换算。
+ * CSS 可直接以单一长度加 at 表达，故除单位外无需换算。可选的第四个数为横向半轴
+ * （宽度比例），即 CSS 椭圆的第一个半径。
  */
 private fun getCSSRadialGradient(value: String): String {
     val inner = value.substring(RADIAL_GRADIENT_PREFIX.length, value.length - 1)
@@ -102,6 +105,7 @@ private fun getCSSRadialGradient(value: String): String {
     val centreX = (head.getOrNull(0)?.toFloatOrNull() ?: 0.5f) * 100f
     val centreY = (head.getOrNull(1)?.toFloatOrNull() ?: 0.5f) * 100f
     val radius = (head.getOrNull(2)?.toFloatOrNull() ?: 0.5f) * 100f
+    val radiusX = head.getOrNull(3)?.toFloatOrNull()?.let { it * 100f } ?: radius
     val stops = StringBuilder()
     for (i in 1 until parts.size) {
         val colorStopSplit = parts[i].trim().split(" ")
@@ -116,7 +120,7 @@ private fun getCSSRadialGradient(value: String): String {
     // `<radius>% of the height` is what the wire means, and CSS reads a single
     // percentage length against the element's height for the vertical axis of an
     // ellipse — so the pair states the same circle the other renderers draw.
-    return "radial-gradient($radius% $radius% at $centreX% $centreY%,$stops)"
+    return "radial-gradient($radiusX% $radius% at $centreX% $centreY%,$stops)"
 }
 
 /**

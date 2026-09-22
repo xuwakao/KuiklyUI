@@ -1454,6 +1454,9 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     CGPoint _radialCenter;
     /// Ronaq: 径向半径，取视图高度的比例 / radius, as a fraction of the view's HEIGHT
     CGFloat _radialRadius;
+    /// Ronaq: 横向半轴，取视图宽度的比例；NaN 为圆 / horizontal semi-axis as a fraction of
+    /// the WIDTH; NaN means the circle of `_radialRadius`
+    CGFloat _radialRadiusX;
     /// Ronaq: 偏移 0 自十二点顺时针的角度 / where offset 0 sits, clockwise from twelve
     CGFloat _sweepStartDeg;
 }
@@ -1480,11 +1483,14 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
  * Ronaq: 解析径向渐变 / parse a radial gradient.
  *
  * 线上形式 / wire form:
- *   `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>,<argb> <stop>,…)`
+ *   `radial-gradient(<cxFraction> <cyFraction> <radiusFraction>[ <radiusXFraction>],<argb> <stop>,…)`
  *
  * 半径为视图高度的比例：设计的页面光晕是比屏幕更宽的椭圆，决定其形状的是竖向半径。
  * The radius is a fraction of the HEIGHT: the design's page glows are ellipses wider
- * than the screen, so the vertical extent is what shapes them.
+ * than the screen, so the vertical extent is what shapes them. The optional fourth
+ * token is a horizontal semi-axis as a fraction of the WIDTH — CSS's `ellipse 95% 130%`
+ * — for a wide, short surface a circle of the height would extinguish too soon.
+ * 可选的第四个数为横向半轴（宽度的比例），即 CSS 的 `ellipse 95% 130%`。
  */
 - (BOOL)p_tryToParseWithRadialGradient:(NSString *)cssGricent {
     NSString *radialGradientPrefix = @"radial-gradient(";
@@ -1501,6 +1507,7 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     CGFloat centerX = head.count > 0 ? [head[0] floatValue] : 0.5;
     CGFloat centerY = head.count > 1 ? [head[1] floatValue] : 0.5;
     CGFloat radius = head.count > 2 ? [head[2] floatValue] : 0.5;
+    CGFloat radiusX = head.count > 3 ? [head[3] floatValue] : NAN;
 
     _colors = [NSMutableArray array];
     _locations = [NSMutableArray array];
@@ -1526,6 +1533,7 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     _isRadial = YES;
     _radialCenter = CGPointMake(centerX, centerY);
     _radialRadius = radius;
+    _radialRadiusX = radiusX;
     return YES;
 }
 
@@ -1537,7 +1545,10 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
  * The radial type takes the centre as `startPoint` and the two semi-axes as `endPoint`,
  * both in unit coordinates. The wire's radius is a fraction of the HEIGHT, so the
  * horizontal semi-axis is scaled by the aspect ratio — otherwise the same number would
- * describe a squashed ellipse rather than the circle the other renderers draw.
+ * describe a squashed ellipse rather than the circle the other renderers draw. A stated
+ * horizontal semi-axis is already a fraction of the width, i.e. a unit x, and is used as
+ * is: that is the ellipse the wire asked for.
+ * 若线上给出横向半轴（宽度比例，即单位坐标 x），直接采用 —— 那正是所要的椭圆。
  */
 - (BOOL)p_applyRadialGeometry {
     if (self.bounds.size.width <= 0 || self.bounds.size.height <= 0) {
@@ -1545,7 +1556,9 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     }
     self.type = kCAGradientLayerRadial;
     CGFloat vertical = _radialRadius;
-    CGFloat horizontal = _radialRadius * (self.bounds.size.height / self.bounds.size.width);
+    CGFloat horizontal = isnan(_radialRadiusX)
+        ? _radialRadius * (self.bounds.size.height / self.bounds.size.width)
+        : _radialRadiusX;
     self.startPoint = _radialCenter;
     self.endPoint = CGPointMake(_radialCenter.x + horizontal, _radialCenter.y + vertical);
     return YES;

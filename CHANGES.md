@@ -2712,3 +2712,18 @@ hardware availability, low-RAM classification and memoryClass>=192MiB. A conserv
 branches. Size changes re-evaluate, detachment/reset releases, reattachment restores
 only when allowed. Normal View invalidation keeps content current. Existing explicit
 renderCache behavior is unchanged. Unmeasured on low-RAM/API21 devices.
+
+### 2026-09-21: Elliptical radial gradient backgrounds
+`Brush.radialGradient` takes an optional `radiusX` — the horizontal semi-axis as a
+fraction of the view's WIDTH beside `radius` as the vertical one of its HEIGHT — and
+`Attr.backgroundRadialGradient` gains the matching overload; the wire form grows an
+optional fourth head token, `radial-gradient(cx cy r rx,…)`, and the three-token form
+stays the circle it was. Android paints the ellipse itself in `KRCSSBackgroundDrawable`
+(a circular `RadialGradient` shader under a local x-scale matrix over the drawable's own
+rounded rect, stroke inset and clip; the platform pass keeps only the stroke, since
+`GradientDrawable`'s radial is one length), iOS uses the stated semi-axis directly as
+`CAGradientLayer`'s unit `endPoint.x`, and the web emits `ellipse rx% ry%`. Motivated by
+the VIP centre's lamp-lit cards and rows (`ellipse 95% 130%` / `ellipse 100% 190%` in
+the design): a circle of the height extinguished a row's ends four rows early. Verified
+on the OPPO (Android); iOS compiled on the simulator; web unverified on a browser.
+

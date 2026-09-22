@@ -331,23 +331,34 @@ sealed class Brush {
          * view resized. [radius] is a fraction of the view's HEIGHT: the design's glows are
          * ellipses wider than the screen, so the vertical extent is what shapes them.
          *
+         * [radiusX] makes it an ELLIPSE: the horizontal semi-axis as a fraction of the
+         * view's WIDTH, the way CSS states `radial-gradient(ellipse 95% 130% at …)`. A
+         * wide, short surface — a list row, a card — lit by a lamp above its top centre is
+         * such an ellipse; a circle of the height would extinguish its ends far too soon.
+         * Left unspecified, the gradient stays the circle of [radius] the renderers drew
+         * before this parameter existed.
+         *
          * @param colorStops Colors and their offset (0..1) from the centre outward
          * @param centerX 0..1 across the view
          * @param centerY 0..1 down the view
-         * @param radius fraction of the view's HEIGHT
+         * @param radius fraction of the view's HEIGHT — the vertical semi-axis
+         * @param radiusX fraction of the view's WIDTH — the horizontal semi-axis; NaN
+         * (the default) draws a circle of [radius]
          */
         @Stable
         fun radialGradient(
             vararg colorStops: Pair<Float, Color>,
             centerX: Float = 0.5f,
             centerY: Float = 0.5f,
-            radius: Float = 0.5f
+            radius: Float = 0.5f,
+            radiusX: Float = Float.NaN
         ): Brush = RadialGradient(
             colors = List(colorStops.size) { i -> colorStops[i].second },
             stops = List(colorStops.size) { i -> colorStops[i].first },
             centerX = centerX,
             centerY = centerY,
-            radius = radius
+            radius = radius,
+            radiusX = radiusX
         )
 
         /**
@@ -807,7 +818,9 @@ class RadialGradient internal constructor(
     val stops: List<Float>? = null,
     val centerX: Float = 0.5f,
     val centerY: Float = 0.5f,
-    val radius: Float = 0.5f
+    val radius: Float = 0.5f,
+    /** Horizontal semi-axis as a fraction of the WIDTH; NaN means a circle of [radius]. */
+    val radiusX: Float = Float.NaN
 ) : Brush() {
 
     val colorStops: ArrayList<ColorStop> by lazy {
@@ -838,11 +851,19 @@ class RadialGradient internal constructor(
         val brush = if (alpha.isNaN() || alpha >= 1f) this else copy(alpha)
         if (view.getPager().pageData.isWeb) {
             view.getViewAttr().setProp(Attr.StyleConst.BACKGROUND_IMAGE, brush.toPropValue())
+        } else if (brush.radiusX.isNaN()) {
+            view.getViewAttr().backgroundRadialGradient(
+                brush.centerX,
+                brush.centerY,
+                brush.radius,
+                *brush.colorStops.toTypedArray()
+            )
         } else {
             view.getViewAttr().backgroundRadialGradient(
                 brush.centerX,
                 brush.centerY,
                 brush.radius,
+                brush.radiusX,
                 *brush.colorStops.toTypedArray()
             )
         }
@@ -852,6 +873,7 @@ class RadialGradient internal constructor(
     internal fun toPropValue(): String {
         val builder = StringBuilder(RADIAL_GRADIENT_PREFIX)
         builder.append(centerX).append(' ').append(centerY).append(' ').append(radius)
+        if (!radiusX.isNaN()) builder.append(' ').append(radiusX)
         colorStops.forEach { builder.append(',').append(it) }
         return builder.append(')').toString()
     }
@@ -861,7 +883,8 @@ class RadialGradient internal constructor(
         stops = stops,
         centerX = centerX,
         centerY = centerY,
-        radius = radius
+        radius = radius,
+        radiusX = radiusX
     )
 
     override fun equals(other: Any?): Boolean {
@@ -872,6 +895,7 @@ class RadialGradient internal constructor(
         if (centerX != other.centerX) return false
         if (centerY != other.centerY) return false
         if (radius != other.radius) return false
+        if (!(radiusX.isNaN() && other.radiusX.isNaN()) && radiusX != other.radiusX) return false
         return true
     }
 
@@ -881,6 +905,7 @@ class RadialGradient internal constructor(
         result = 31 * result + centerX.hashCode()
         result = 31 * result + centerY.hashCode()
         result = 31 * result + radius.hashCode()
+        result = 31 * result + (if (radiusX.isNaN()) 0 else radiusX.hashCode())
         return result
     }
 

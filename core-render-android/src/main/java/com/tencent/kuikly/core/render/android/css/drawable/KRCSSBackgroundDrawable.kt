@@ -192,10 +192,15 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
             // 否则该视图上的下一个线性渐变仍会按扫描渐变绘制。
             gradientType = GradientDrawable.LINEAR_GRADIENT
             colors = intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT) // 清除渐变背景
+            // Ronaq: and the radial, or an ellipse would still be painted under nothing.
+            pendingRadial = null
+            ellipseShader = null
             return
         }
         val sweep = parseSweepGradient(backgroundImage)
         if (sweep != null) {
+            pendingRadial = null
+            ellipseShader = null
             applySweepGradient(sweep)
             return
         }
@@ -207,6 +212,7 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         // Ronaq: a view that carried a radial must forget it, for the same reason the
         // sweep reset above exists — the drawable is reused across views.
         pendingRadial = null
+        ellipseShader = null
         gradientType = GradientDrawable.LINEAR_GRADIENT
         val backgroundImageTriple = parseBackgroundImage(backgroundImage)
         orientation = backgroundImageTriple.first
@@ -259,6 +265,19 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
      */
     private fun applyRadialGradient(radial: KRCSSRadialGradient) {
         pendingRadial = radial
+        ellipseShader = null
+        if (radial.radiusXFraction != null) {
+            // Ronaq: an ELLIPSE. [GradientDrawable]'s radial is a circle and nothing else
+            // (`gradientRadius` is one length), so the ellipse is painted by this class
+            // in [drawWithClipPath] — a circular shader under a local matrix that scales
+            // its x axis — and the platform's own fill is set to nothing so it draws only
+            // the stroke over it. Same rounded rect, same stroke inset, same clip.
+            // Ronaq：椭圆。GradientDrawable 的径向只能是圆，故由本类在 drawWithClipPath
+            // 中以带横向缩放矩阵的圆形着色器绘制，平台自身的填充置空、只画描边。
+            gradientType = GradientDrawable.LINEAR_GRADIENT
+            colors = intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)
+            return
+        }
         gradientType = RADIAL_GRADIENT
         setGradientCenter(radial.centerX, radial.centerY)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -267,6 +286,56 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
             colors = radial.colors
         }
         resolveRadialRadius(bounds.width(), bounds.height())
+    }
+
+    /**
+     * Ronaq: the elliptical radial's shader, built for the current bounds and dropped
+     * whenever the bounds or the gradient change; the paint that draws it.
+     * Ronaq：椭圆径向渐变的着色器，随边界或渐变变化重建；及其画笔。
+     */
+    private var ellipseShader: Shader? = null
+    private val ellipsePaint by lazy(LazyThreadSafetyMode.NONE) { Paint(Paint.ANTI_ALIAS_FLAG) }
+    private val ellipsePath by lazy(LazyThreadSafetyMode.NONE) { Path() }
+
+    /**
+     * Ronaq: paint the elliptical radial over the drawable's own rounded rect, inset by
+     * half the stroke the way [GradientDrawable] insets its fill, so the stroke drawn
+     * after it sits on the same edge.
+     * Ronaq：在本 drawable 的圆角矩形内绘制椭圆径向渐变，按描边宽度一半内缩，
+     * 与 GradientDrawable 自身填充的内缩一致。
+     */
+    private fun drawEllipticalRadial(canvas: Canvas, radial: KRCSSRadialGradient) {
+        val b = bounds
+        if (b.width() <= 0 || b.height() <= 0) return
+        val radiusX = radial.radiusXFraction ?: return
+        val ry = radial.radiusFraction * b.height()
+        val rx = radiusX * b.width()
+        if (ry <= 0f || rx <= 0f) return
+        val cx = b.left + radial.centerX * b.width()
+        val cy = b.top + radial.centerY * b.height()
+        val shader = ellipseShader ?: RadialGradient(
+            cx, cy, ry, radial.colors, radial.offsets, Shader.TileMode.CLAMP
+        ).also {
+            it.setLocalMatrix(Matrix().apply { setScale(rx / ry, 1f, cx, cy) })
+            ellipseShader = it
+        }
+        ellipsePaint.shader = shader
+        val path = clipPath
+        if (path != null) {
+            canvas.drawPath(path, ellipsePaint)
+            return
+        }
+        val inset = if (lineWidth > 0 && lineColor != Color.TRANSPARENT) lineWidth * 0.5f else 0f
+        val rect = RectF(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset)
+        ellipsePath.reset()
+        val radii = borderRadii
+        when {
+            radii != null -> ellipsePath.addRoundRect(rect, radii, Path.Direction.CW)
+            borderRadiusF != BORDER_RADIUS_UNSET_VALUE ->
+                ellipsePath.addRoundRect(rect, borderRadiusF, borderRadiusF, Path.Direction.CW)
+            else -> ellipsePath.addRect(rect, Path.Direction.CW)
+        }
+        canvas.drawPath(ellipsePath, ellipsePaint)
     }
 
     /**
@@ -288,6 +357,7 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
 
     override fun onBoundsChange(bounds: android.graphics.Rect) {
         super.onBoundsChange(bounds)
+        ellipseShader = null
         resolveRadialRadius(bounds.width(), bounds.height())
     }
 
@@ -318,11 +388,16 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
     }
 
     private fun drawWithClipPath(canvas: Canvas) {
+        // Ronaq: the elliptical radial goes under the platform's own pass, whose fill is
+        // empty in that case and whose stroke then lands on top.
+        val ellipse = pendingRadial?.takeIf { it.radiusXFraction != null }
         if (clipPath == null) {
+            if (ellipse != null) drawEllipticalRadial(canvas, ellipse)
             super.draw(canvas)
         } else {
             val checkpoint = canvas.save()
             canvas.clipPath(clipPath!!)
+            if (ellipse != null) drawEllipticalRadial(canvas, ellipse)
             super.draw(canvas)
             canvas.restoreToCount(checkpoint)
             if (lineWidth > 0 && lineColor != Color.TRANSPARENT) {
@@ -375,6 +450,7 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
         private const val RADIAL_HEAD_CENTER_X_INDEX = 0
         private const val RADIAL_HEAD_CENTER_Y_INDEX = 1
         private const val RADIAL_HEAD_RADIUS_INDEX = 2
+        private const val RADIAL_HEAD_RADIUS_X_INDEX = 3
         private const val RADIAL_CENTER_DEFAULT = 0.5f
         private const val RADIAL_RADIUS_DEFAULT = 0.5f
 
@@ -485,6 +561,9 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
                     ?: RADIAL_CENTER_DEFAULT,
                 radiusFraction = head.getOrNull(RADIAL_HEAD_RADIUS_INDEX)?.toFloatOrNull()
                     ?: RADIAL_RADIUS_DEFAULT,
+                // Ronaq: the optional fourth token — a horizontal semi-axis of the WIDTH
+                // — makes the gradient an ellipse; absent, it is the circle it always was.
+                radiusXFraction = head.getOrNull(RADIAL_HEAD_RADIUS_X_INDEX)?.toFloatOrNull(),
                 colors = stops.colors,
                 offsets = stops.offsets,
             )
@@ -749,7 +828,10 @@ class KRCSSBackgroundDrawable : GradientDrawable() {
 class KRCSSRadialGradient(
     val centerX: Float,
     val centerY: Float,
+    /** The vertical semi-axis, a fraction of the HEIGHT — the circle's radius when alone. */
     val radiusFraction: Float,
+    /** The horizontal semi-axis, a fraction of the WIDTH; null draws a circle. */
+    val radiusXFraction: Float?,
     val colors: IntArray,
     val offsets: FloatArray
 )
