@@ -20,6 +20,7 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.AttributeSet
+import android.util.Log
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
@@ -611,6 +612,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 nestedScrollLastMoveTime = ev.eventTime
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (ptrTraceOn()) {
+                    Log.d(PTR_TRACE_TAG, "drag end overscroll=${overScrollHandler?.overScrolling} " +
+                        "translationY=${contentView.translationY}")
+                }
                 nestedScrollVelocityTracker?.addMovement(ev)
                 nestedScrollVelocityTracker?.computeCurrentVelocity(1000,
                     ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat())
@@ -1305,6 +1310,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      */
     private fun contentInsetWhenEndDrag(contentInset: String?) {
         val ci = contentInset ?: return
+        if (ptrTraceOn()) Log.d(PTR_TRACE_TAG, "arm end-drag $ci translationY=${contentView.translationY}")
         overScrollHandler?.contentInsetWhenEndDrag = KRRecyclerContentViewContentInset(kuiklyRenderContext, ci)
     }
 
@@ -1314,8 +1320,15 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      */
     private fun contentInset(contentInset: String?) {
         val ci = contentInset ?: return
+        if (ptrTraceOn()) Log.d(PTR_TRACE_TAG, "inset $ci translationY=${contentView.translationY}")
         overScrollHandler?.bounceWithContentInset(KRRecyclerContentViewContentInset(kuiklyRenderContext, ci))
     }
+
+    /**
+     * Ronaq: pull-to-refresh timing trace, the Android twin of KRScrollView.m's `-ptrTrace`.
+     * Off unless `adb shell setprop log.tag.KRPtr DEBUG`; one `isLoggable` per inset call.
+     */
+    private fun ptrTraceOn(): Boolean = Log.isLoggable(PTR_TRACE_TAG, Log.DEBUG)
 
     /**
      * Clear transient native state for Compose DSL reuse (not the native reuse pool).
@@ -1498,6 +1511,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         private const val METHOD_CONTENT_INSET_WHEN_END_DRAG =
             "contentInsetWhenEndDrag" // 结束拖拽时，设置的ContentInset
         private const val METHOD_CONTENT_INSET = "contentInset" // 设置内容边距
+        private const val PTR_TRACE_TAG = "KRPtr"
         private const val METHOD_ABORT_CONTENT_OFFSET_ANIMATE = "abortContentOffsetAnimate" // 停止滚动动画
         private const val METHOD_PREPARE_FOR_COMPOSE_REUSE = "prepareForComposeReuse" // Compose DSL 复用前重置瞬态
 

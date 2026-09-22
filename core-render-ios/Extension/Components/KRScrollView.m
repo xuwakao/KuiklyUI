@@ -24,6 +24,19 @@
 #import "NSObject+KR.h"
 #import "KRContentOffsetAnimator.h"
 
+/// Ronaq: pull-to-refresh timing trace, off unless the app was launched with `-ptrTrace YES`
+/// (the argument domain, read once). It prints the native half of the pull: where the finger
+/// let go, the inset the Kotlin side had armed for that moment, and when the Kotlin side's
+/// inset calls actually landed — the order of those is the whole question when a released
+/// pull springs back and is then pulled down again.
+static BOOL KRPtrTraceOn(void) {
+    static BOOL on;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ on = [NSUserDefaults.standardUserDefaults boolForKey:@"ptrTrace"]; });
+    return on;
+}
+#define KR_PTR_TRACE(fmt, ...) do { if (KRPtrTraceOn()) { NSLog(@"[ptr-trace] " fmt, ##__VA_ARGS__); } } while (0)
+
 typedef NS_ENUM(NSUInteger, KRSetContentOffsetAnimation) {
     KRSetContentOffsetAnimationSpring = 0,
     KRSetContentOffsetAnimationLinear = 1,
@@ -293,6 +306,7 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
     self.lContentOffset = scrollView.contentOffset;
 
     _isCurrentlyDragging = YES;
+    KR_PTR_TRACE(@"drag begin y=%.1f inset=%.1f", scrollView.contentOffset.y, scrollView.contentInset.top);
     [_ku_coreAnimator stop];
     _ku_coreAnimator = nil;
     if (_css_dragBegin) {
@@ -311,9 +325,11 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
     if (_css_dragEnd) {
         _css_dragEnd([self p_generateEventBaseParams]);
     }
-    if (!UIEdgeInsetsEqualToEdgeInsets(_contentInsetWhenEndDrag, UIEdgeInsetsZero)
-        && scrollView.contentOffset.y < -_contentInsetWhenEndDrag.top
-        ) {
+    BOOL holds = !UIEdgeInsetsEqualToEdgeInsets(_contentInsetWhenEndDrag, UIEdgeInsetsZero)
+        && scrollView.contentOffset.y < -_contentInsetWhenEndDrag.top;
+    KR_PTR_TRACE(@"drag end y=%.1f armed=%.1f holds=%d decelerate=%d", scrollView.contentOffset.y,
+                 _contentInsetWhenEndDrag.top, holds, decelerate);
+    if (holds) {
         UIEdgeInsets insets = _contentInsetWhenEndDrag;
         self.contentInset = insets;
     }
@@ -465,6 +481,8 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
     NSArray<NSString *> *points = [params componentsSeparatedByString:@" "];
     BOOL animated = [points count] > 4 ? [points[4] boolValue] : NO;
     UIEdgeInsets contentInset = UIEdgeInsetsMake([points[0] doubleValue], [points[1] doubleValue], [points[2] doubleValue], [points[3] doubleValue]);
+    KR_PTR_TRACE(@"inset top=%.1f animated=%d at y=%.1f dragging=%d", contentInset.top, animated,
+                 self.contentOffset.y, _isCurrentlyDragging);
     if (animated) {
         CGPoint maxContentOffset = [self p_maxContentOffsetInContentInset:contentInset];
         if (!CGPointEqualToPoint(self.contentOffset, maxContentOffset)) {
@@ -487,6 +505,8 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
 - (void)css_contentInsetWhenEndDragWithParams:(NSString *)params {
     NSArray<NSString *> *points = [params componentsSeparatedByString:@" "];
     UIEdgeInsets contentInset = UIEdgeInsetsMake([points[0] doubleValue], [points[1] doubleValue], [points[2] doubleValue], [points[3] doubleValue]);
+    KR_PTR_TRACE(@"arm end-drag top=%.1f at y=%.1f dragging=%d", contentInset.top, self.contentOffset.y,
+                 _isCurrentlyDragging);
     _contentInsetWhenEndDrag = contentInset;
 }
 
