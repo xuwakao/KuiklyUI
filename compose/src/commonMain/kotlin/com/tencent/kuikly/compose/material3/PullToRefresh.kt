@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import com.tencent.kuikly.compose.foundation.layout.Box
 import com.tencent.kuikly.compose.foundation.layout.fillMaxWidth
 import com.tencent.kuikly.compose.foundation.layout.height
@@ -147,7 +148,40 @@ class PullToRefreshState(
     internal fun updatePullState(newState: PullState) {
         pullState = newState
     }
+
+    /**
+     * Ronaq: a release asked the caller to refresh and the caller has not yet said so.
+     *
+     * Between `onRefresh()` and the caller's `isRefreshing = true` reaching this state there
+     * is at least one frame, and a released pull that is still moving (a flick carries the
+     * list past the threshold after the finger lifts) emits scroll positions in it. The
+     * REFRESHING failsafe below read that gap as "the refresh already came and went",
+     * reset to IDLE — contentInset 0, animated — and the caller's `true` a few ms later put
+     * it back to REFRESHING — contentInset 80, animated: the list sprang up and was pulled
+     * straight down again. Measured on the iPhone 2026-09-23 (`-ptrTrace`: inset 0 at
+     * 42.243, inset 80 at 42.249, one release in twelve, the one with momentum).
+     */
+    internal var awaitingRefreshAck: Boolean = false
+
+    /**
+     * Ronaq: bumped by every release that asks for a refresh — the key of the effect that
+     * bounds [awaitingRefreshAck]. A key of its own rather than `pullState`, because a
+     * refresh can end and a new release land between two compositions (REFRESHING → IDLE →
+     * PULLING → REFRESHING), and an effect keyed on the state would see REFRESHING twice
+     * and never re-arm.
+     */
+    internal var releaseSeq: Int by mutableStateOf(0)
 }
+
+/**
+ * Ronaq: how long a release's request may go unacknowledged before it is read as one the
+ * caller declined, or began and ended between two compositions — the round trip the
+ * REFRESHING failsafe exists for. The acknowledgement reaches this state on the recomposition
+ * after `onRefresh()`, so the bound is counted in FRAMES (a janky main thread delays both
+ * alike) with a short floor in time (a 120 Hz panel runs three frames in 25 ms).
+ */
+private const val REFRESH_ACK_FRAMES = 3
+private const val REFRESH_ACK_MIN_MS = 100L
 
 /**
  * Pull-to-refresh component that should be placed as the first item in LazyColumn.
@@ -324,6 +358,10 @@ internal fun PullToRefreshItem(
                 return@collectLatest
             }
 
+            // Ronaq: the caller's true is the acknowledgement, wherever it is first seen — this
+            // collector reads the global value, the sync effect only its own key.
+            if (state.isRefreshing) state.awaitingRefreshAck = false
+
             // Handle pull logic when at top
             val scrollView = scrollState.kuiklyInfo.scrollView
             val pullDistance = if (contentOffset < 0) abs(contentOffset.toFloat()) else 0f
@@ -337,7 +375,10 @@ internal fun PullToRefreshItem(
                     // (true -> false) within a single frame interval, Compose may never
                     // observe the intermediate true value. This leaves pullState stuck
                     // in REFRESHING. Detect and force reset to IDLE.
-                    if (!state.isRefreshing) {
+                    // Ronaq: but not while our own request is still unacknowledged — a
+                    // false then means "not yet", not "already over". That case is bounded
+                    // by the LaunchedEffect(state.releaseSeq) below.
+                    if (!state.isRefreshing && !state.awaitingRefreshAck) {
                         state.updatePullState(PullState.IDLE)
                         state.updateProgress(0f)
                     }
@@ -368,6 +409,8 @@ internal fun PullToRefreshItem(
                             "PULLING -> REFRESHING (release): offset=$contentOffset " +
                                 "pullDistance=$pullDistance"
                         }
+                        state.awaitingRefreshAck = !state.isRefreshing
+                        if (state.awaitingRefreshAck) state.releaseSeq++
                         state.updatePullState(PullState.REFRESHING)
                         updatedOnRefresh()
                     }
@@ -392,6 +435,8 @@ internal fun PullToRefreshItem(
                 scrollView?.setContentInset(top = refreshThresholdLogical, animated = true)
             }
             PullState.IDLE -> {
+                // Ronaq: an IDLE band has no request outstanding, whichever path got it here.
+                state.awaitingRefreshAck = false
                 // Never apply contentInset while dragging:
                 // - iOS: animated inset also animates contentOffset back to bounds
                 // - Android: non-animated inset calls setFinalTranslation and snaps overscroll to 0
@@ -421,14 +466,40 @@ internal fun PullToRefreshItem(
             }
     }
 
+    // Ronaq: bound a release's wait for the caller's acknowledgement — see
+    // [PullToRefreshState.awaitingRefreshAck]. At the deadline the flag is cleared whatever
+    // happened; the band goes back to IDLE only if the caller never said it was refreshing.
+    LaunchedEffect(state.releaseSeq) {
+        if (state.releaseSeq == 0 || !state.awaitingRefreshAck) return@LaunchedEffect
+        var frames = 0
+        var firstFrameNanos = -1L
+        var elapsedMs = 0L
+        while (state.awaitingRefreshAck &&
+            (frames < REFRESH_ACK_FRAMES || elapsedMs < REFRESH_ACK_MIN_MS)
+        ) {
+            val now = withFrameNanos { it }
+            if (firstFrameNanos < 0) firstFrameNanos = now
+            elapsedMs = (now - firstFrameNanos) / 1_000_000
+            frames++
+        }
+        val declined = state.awaitingRefreshAck && !state.isRefreshing
+        state.awaitingRefreshAck = false
+        if (declined && state.pullState == PullState.REFRESHING) {
+            pullToRefreshLog { "refresh not acknowledged in $frames frames / ${elapsedMs}ms -> IDLE" }
+            state.updatePullState(PullState.IDLE)
+            state.updateProgress(0f)
+        }
+    }
+
     // Sync external refresh state
     LaunchedEffect(state.isRefreshing) {
         if (state.isRefreshing) {
+            state.awaitingRefreshAck = false
             if (state.pullState != PullState.REFRESHING) {
                 state.updatePullState(PullState.REFRESHING)
             }
         } else {
-            if (state.pullState == PullState.REFRESHING) {
+            if (state.pullState == PullState.REFRESHING && !state.awaitingRefreshAck) {
                 state.updatePullState(PullState.IDLE)
                 state.updateProgress(0f)
             }

@@ -2727,3 +2727,18 @@ the VIP centre's lamp-lit cards and rows (`ellipse 95% 130%` / `ellipse 100% 190
 the design): a circle of the height extinguished a row's ends four rows early. Verified
 on the OPPO (Android); iOS compiled on the simulator; web unverified on a browser.
 
+### 2026-09-23: Pull-to-refresh no longer springs back on a still-moving release
+`PullToRefresh.kt`: a release that asks for a refresh marks the state `awaitingRefreshAck`
+and bumps `releaseSeq`. Until the caller's `isRefreshing = true` is seen, the REFRESHING
+failsafe and the sync effect's false branch stand down. Before this, a scroll emission in
+the frame between `onRefresh()` and the caller's `true` read the gap as "the refresh already
+ended" and reset to IDLE: contentInset 0 animated, then contentInset 80 animated a few ms
+later. The list sprang toward rest and was pulled back down, on one release in twelve on the
+iPhone (the one with momentum). The wait is bounded by an effect keyed on `releaseSeq`, at
+least 3 frames and 100 ms. At that deadline the flag clears unconditionally, and the band
+returns to IDLE only if the caller never acknowledged, so a declined refresh or a true→false
+round trip between compositions still releases the band. Opt-in timing traces sit beside it:
+`KRScrollView.m` logs `[ptr-trace]` under the launch argument `-ptrTrace YES`, and
+`KRRecyclerView.kt` logs tag `KRPtr` when `log.tag.KRPtr` is DEBUG. Evidence:
+Ronaq `docs/issue/ios-pull-to-refresh-carpet-and-spring.md`.
+
