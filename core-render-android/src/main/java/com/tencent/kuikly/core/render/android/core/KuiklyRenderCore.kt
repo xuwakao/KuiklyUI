@@ -365,7 +365,12 @@ class KuiklyRenderCore(
             if (isSyncMethodCall(method, args)) { // 同步方法的话，直接调用，不调度到UI线程
                 return it(method, args)
             } else {
-                uiScheduler?.scheduleTask(isUpdateViewTree = isUpdateViewTreeMethodCall(method)) {
+                uiScheduler?.scheduleTask(
+                    isUpdateViewTree = isUpdateViewTreeMethodCall(method),
+                    method = method,
+                    tag = args.getOrNull(1),
+                    detail = args.getOrNull(2),
+                ) {
                     it(method, args)
                 } // end task
             }

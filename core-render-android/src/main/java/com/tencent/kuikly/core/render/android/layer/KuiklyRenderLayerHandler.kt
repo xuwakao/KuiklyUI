@@ -79,6 +79,33 @@ class KuiklyRenderLayerHandler : IKuiklyRenderLayerHandler {
      */
     private val renderViewReuseListMap = ArrayMap<String, MutableList<RenderViewHandler>>()
 
+    /**
+     * Ronaq: what happened to recent view tags on THIS handler — create, create-dropped,
+     * remove — so a removal of a tag the registry does not hold can say which of the three
+     * cases it is: removed twice, never created here, or created on another handler.
+     * Bounded; the UI thread only. The assertion it serves fires in debuggable builds only
+     * (D8 force-enables them there; a release build skips the removal silently).
+     */
+    private val tagHistory = object : LinkedHashMap<Int, String>(TAG_HISTORY_SIZE, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, String>?): Boolean =
+            size > TAG_HISTORY_SIZE
+    }
+    private val handlerBornAt = android.os.SystemClock.uptimeMillis()
+    private var viewTreeOps = 0L
+
+    private fun noteTag(tag: Int, what: String) {
+        viewTreeOps++
+        val previous = tagHistory.remove(tag)
+        val stamp = "$what@${android.os.SystemClock.uptimeMillis() - handlerBornAt}ms#$viewTreeOps"
+        tagHistory[tag] = if (previous == null) stamp else "$previous > $stamp"
+    }
+
+    private fun unknownTagReport(tag: Int): String =
+        "remove of tag $tag not in the registry (handler ${System.identityHashCode(this)}, " +
+            "${android.os.SystemClock.uptimeMillis() - handlerBornAt}ms old, op #$viewTreeOps, " +
+            "registry ${renderViewRegistry.size()}, renderView ${renderViewWeakRef?.get() != null}): " +
+            "history of this tag = ${tagHistory[tag] ?: "none on this handler"}"
+
 
     /**
      * 是否开启debug日志
@@ -325,7 +352,10 @@ class KuiklyRenderLayerHandler : IKuiklyRenderLayerHandler {
         assert(isMainThread()) {
             "must call on ui thread"
         }
-        val renderView: IKuiklyRenderView = renderViewWeakRef?.get() ?: return
+        val renderView: IKuiklyRenderView = renderViewWeakRef?.get() ?: run {
+            noteTag(tag, "create-dropped($viewName)")
+            return
+        }
 
         var renderViewHandler = getRenderViewHandler(tag)
 
@@ -342,6 +372,7 @@ class KuiklyRenderLayerHandler : IKuiklyRenderLayerHandler {
         renderViewHandler.viewExport.kuiklyRenderContext = renderView.kuiklyRenderContext
         renderViewHandler.viewExport.setViewTag(tag)
         putRenderViewHandler(tag, renderViewHandler)
+        noteTag(tag, "create($viewName)")
     }
 
     private fun popRenderViewHandlerFromReuseQueue(viewName: String): RenderViewHandler? {
@@ -382,7 +413,12 @@ class KuiklyRenderLayerHandler : IKuiklyRenderLayerHandler {
 
     private fun innerRemoveRenderView(tag: Int) {
         val renderViewHandler = getRenderViewHandler(tag)
-        assert(renderViewHandler != null)
+        if (renderViewHandler == null) {
+            val report = unknownTagReport(tag)
+            android.util.Log.e("KRTagTrace", report)
+            assert(false) { report }
+        }
+        noteTag(tag, "remove(${renderViewHandler?.viewName})")
 
         renderViewHandler?.viewExport?.also {
             pushRenderViewHandlerToReuseQueue(renderViewHandler.viewName, renderViewHandler)
@@ -525,3 +561,6 @@ private fun ReentrantReadWriteLock.withReadLock(task: () -> Unit) {
         readLock().unlock()
     }
 }
+
+/** Ronaq: how many recent tags [KuiklyRenderLayerHandler] remembers the history of. */
+private const val TAG_HISTORY_SIZE = 4096

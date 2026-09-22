@@ -2742,3 +2742,21 @@ round trip between compositions still releases the band. Opt-in timing traces si
 `KRRecyclerView.kt` logs tag `KRPtr` when `log.tag.KRPtr` is DEBUG. Evidence:
 Ronaq `docs/issue/ios-pull-to-refresh-carpet-and-spring.md`.
 
+### 2026-09-23: Say what a failed UI batch dropped, and what happened to an unknown tag
+Diagnostics for a debuggable-build crash seen once in about 25 cold launches on the OPPO:
+`AssertionError` at `KuiklyRenderLayerHandler.innerRemoveRenderView`, a removal of a view
+tag the render layer never registered. D8 force-enables assertions in debuggable builds,
+so a release build skips the removal silently instead. The leading hypothesis, from code
+reading, is that one task of a main-queue batch throws an `Exception`, and
+`KuiklyRenderCoreUIScheduler.runMainQueueTasks` catches it and drops every later task of
+the batch, a `createRenderView` among them. The Ronaq exception adapter only logs, so the
+view is never created, and its later removal fails the assertion.
+- `runMainQueueTasks` logs (tag `KRTagTrace`) which task threw and names up to 40 of the
+  tasks it dropped. Each scheduled native call now carries its method, tag and detail as
+  raw fields, formatted only on failure.
+- `KuiklyRenderLayerHandler` keeps a bounded history (4096 tags) of create,
+  create-dropped and remove per tag. A removal of an unknown tag logs that tag's history,
+  the handler's identity and age, and the registry size (`KRTagTrace`), and puts the same
+  report in the assertion message, which the crash buffer keeps.
+No behaviour changes: the same assertion fires in the same place.
+

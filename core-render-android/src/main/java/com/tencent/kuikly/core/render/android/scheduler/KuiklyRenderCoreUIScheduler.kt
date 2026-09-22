@@ -98,6 +98,11 @@ class KuiklyRenderCoreUIScheduler(
         addTaskToMainQueue(KuiklyRenderCoreTaskExecutor(task, isUpdateViewTree))
     }
 
+    /** Ronaq: [scheduleTask] for a native method call, remembering what it is for the log. */
+    fun scheduleTask(isUpdateViewTree: Boolean, method: Any?, tag: Any?, detail: Any?, task: Runnable) {
+        addTaskToMainQueue(KuiklyRenderCoreTaskExecutor(task, isUpdateViewTree, method, tag, detail))
+    }
+
     override fun destroy() {
         KuiklyRenderLog.i("KuiklyRenderCoreUIScheduler", "--destroy uiScheduler--")
         uiHandler.removeCallbacksAndMessages(null)
@@ -223,6 +228,7 @@ class KuiklyRenderCoreUIScheduler(
         assert(isMainThread()) {
             "must call on ui thread"
         }
+        var index = 0
         try {
             val uiTasks = tasks ?: return
             isPerformingMainQueueTask = true
@@ -231,9 +237,24 @@ class KuiklyRenderCoreUIScheduler(
                 if (task.isUpdateViewTree) {
                     viewTreeUpdateListener?.onUpdateViewTreeFinish()
                 }
+                index++
             }
             isPerformingMainQueueTask = false
         } catch (e : Exception) {
+            // Ronaq: every task after the failing one in this batch is dropped with it —
+            // a create among them never reaches the render layer, and a later remove of that
+            // tag then fails its assertion (a debuggable build dies there). Say what was
+            // lost, and which task threw, so that later failure can be traced to this one.
+            tasks?.let { uiTasks ->
+                val dropped = uiTasks.subList((index + 1).coerceAtMost(uiTasks.size), uiTasks.size)
+                android.util.Log.e(
+                    "KRTagTrace",
+                    "UI batch threw at task ${index + 1}/${uiTasks.size} " +
+                        "(${uiTasks.getOrNull(index)?.label}); dropped ${dropped.size}: " +
+                        dropped.take(DROPPED_TASKS_LOGGED).joinToString { it.label ?: "?" },
+                    e,
+                )
+            }
             exceptionListener?.onRenderException(e, ErrorReason.UPDATE_VIEW_TREE)
         }
         isPerformingMainQueueTask = false
@@ -275,10 +296,20 @@ class KuiklyRenderCoreUIScheduler(
  */
 class KuiklyRenderCoreTaskExecutor(
     private val task: Runnable,
-    val isUpdateViewTree: Boolean) {
+    val isUpdateViewTree: Boolean,
+    /** Ronaq: the native method, view tag and detail (view name / prop key) — kept raw and
+     *  formatted only for the dropped-batch log, so a task costs no string on the hot path. */
+    private val method: Any? = null,
+    private val tag: Any? = null,
+    private val detail: Any? = null) {
+
+    val label: String? get() = method?.let { "$it(tag=$tag, $detail)" }
 
     fun execute() {
         task.run()
     }
 
 }
+
+/** Ronaq: how many dropped tasks the batch-failure log names. */
+private const val DROPPED_TASKS_LOGGED = 40
