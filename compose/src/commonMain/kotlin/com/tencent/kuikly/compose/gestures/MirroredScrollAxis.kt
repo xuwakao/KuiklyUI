@@ -103,7 +103,8 @@ internal class MirroredScrollAxis {
 
     /**
      * The re-anchor a content-size or viewport change requires, or null when [renderedNativeMax]
-     * does not move. Only meaningful while [mirrored]; the caller does not ask otherwise.
+     * does not move — which is always the case when not [mirrored]: a left-to-right
+     * scroller's start is its native 0 whatever the content size.
      *
      * A mirrored list's logical start is the host's physical END, so a change of `C - W`
      * moves every item's native x and the native offset by the same Δ. Applying Δ to both
@@ -111,6 +112,7 @@ internal class MirroredScrollAxis {
      * (invariant I2).
      */
     fun planReanchor(contentSize: Int, viewport: Int): Reanchor? {
+        if (!mirrored) return null
         val newMax = nativeMaxFor(contentSize, viewport)
         val delta = newMax - renderedNativeMax
         if (delta == 0) return null
@@ -183,6 +185,15 @@ internal class MirroredScrollAxis {
         lastNative = nativePx
         return true
     }
+
+    /**
+     * The host's (forward, backward) nested-scroll modes for the list's own [forward] (towards
+     * its end) and [backward] (towards its start). A host applies them physically — forward
+     * is its native offset growing (`KRRecyclerView` `parentDx > 0`) — and a mirrored list
+     * moves towards its end by LOWERING the native offset, so they swap. Identity otherwise.
+     */
+    fun <T> hostNestedModes(forward: T, backward: T): Pair<T, T> =
+        if (mirrored) backward to forward else forward to backward
 
     /** Forget everything bound to a particular host view; keeps [mirrored]. */
     fun reset() {

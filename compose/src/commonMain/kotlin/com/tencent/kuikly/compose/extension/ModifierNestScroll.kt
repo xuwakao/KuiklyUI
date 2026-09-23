@@ -20,7 +20,8 @@ import com.tencent.kuikly.compose.ui.node.KNode
 import com.tencent.kuikly.compose.ui.node.ModifierNodeElement
 import com.tencent.kuikly.compose.ui.node.requireLayoutNode
 import com.tencent.kuikly.core.views.KRNestedScrollMode
-import com.tencent.kuikly.core.views.ScrollerAttr
+import com.tencent.kuikly.compose.views.DeclaredNestedScrollKey
+import com.tencent.kuikly.compose.views.applyDeclaredNestedScroll
 import com.tencent.kuikly.core.views.ScrollerView
 
 /**
@@ -118,12 +119,12 @@ private class NestedScrollNode(
         val krDownMode = currentDownMode.toFrameworkMode()
 
         // 3. 应用滚动模式到视图属性
-        (scrollerView.getViewAttr() as ScrollerAttr).apply {
-            nestedScroll(
-                forward = krUpMode,    // 上滑方向对应forward
-                backward = krDownMode  // 下滑方向对应backward
-            )
-        }
+        // Ronaq fork (CHANGES.md §30): recorded in the list's own directions (scrollUp is
+        // forward, towards the end; scrollDown backward) and applied through the mirror, so a
+        // horizontal lazy list under Rtl keeps the declared meaning. Identity for every other
+        // scroller.
+        scrollerView.extProps[DeclaredNestedScrollKey] = krUpMode to krDownMode
+        scrollerView.applyDeclaredNestedScroll()
     }
 }
 

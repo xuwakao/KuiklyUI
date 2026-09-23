@@ -2766,9 +2766,10 @@ No behaviour changes: the same assertion fires in the same place.
 
 ## 30. Horizontal lazy lists and grids scroll with the finger under RTL — RTL
 
-**Files** · `compose/.../gestures/MirroredScrollAxis.kt` (new) · `gestures/KuiklyScrollInfo.kt` ·
-`ui/layout/SubcomposeLayout.kt` · `ui/node/KNode.kt` · `views/ScrollViewEx.kt` ·
-`layout/SubcomposeLayoutEx.kt` · a comment in `foundation/lazy/LazyListState.kt` ·
+**Files** · `compose/.../gestures/MirroredScrollAxis.kt` (new) · `gestures/MirroredScrollHost.kt`
+(new, review) · `gestures/KuiklyScrollInfo.kt` · `ui/layout/SubcomposeLayout.kt` · `ui/node/KNode.kt` ·
+`views/ScrollViewEx.kt` · `layout/SubcomposeLayoutEx.kt` · `extension/ModifierNestScroll.kt` (review) ·
+a comment in `foundation/lazy/LazyListState.kt` ·
 test `compose/src/commonTest/.../gestures/MirroredScrollAxisTest.kt` (new)
 **Driven by** · Charter C-5; the owner's ruling 「要修」 (2026-09-23) on the Ronaq issue
 `docs/issue/rtl-horizontal-list-drags-backwards.md`
@@ -2821,9 +2822,11 @@ hit-tests it, and a finger that lowers the native offset raises the logical one.
   `currentContentSize`, `realContentSize`, the `isAtTop` / `tryExpandStartSize*` logic, the
   `+2000dp` growth, the `LazyListState.Saver` — stays as it was and is now read as logical.
   Only values crossing to or from the host are converted: the `scroll`, `dragEnd` and
-  `scrollEnd` handlers, `applyOffsetDelta` (reads and writes), `restoreScrollerViewOnReuse`,
-  `KNode.updateKuiklyViewFrame` / `updateScrollViewOffset`. The `ignoreScrollOffset` match
-  still compares raw native values.
+  `scrollEnd` handlers (`KuiklyScrollInfo.offsetFromHost`), `applyOffsetDelta` (reads and
+  writes), `restoreScrollerViewOnReuse`, `KNode.updateKuiklyViewFrame` /
+  `updateScrollViewOffset`, and the nested-scroll modes `Modifier.nestedScroll` declares
+  (forward / backward swap, see the review below). The `ignoreScrollOffset` match still
+  compares raw native values.
 - **Re-anchoring.** A mirrored list's logical start is the host's physical END, so a change
   of `C - W` (the 3000 dp default growing by 1500 dp, the collapse to the real size once the
   last item is visible, a new viewport) moves every item's native x and the native offset
@@ -2832,7 +2835,11 @@ hit-tests it, and a finger that lowers the native offset raises the logical one.
   offset by Δ in one batch — frame first when growing, offset first when shrinking, so a
   browser's `scrollLeft` clamp and Android's deferred write (`canScrollImmediately`) never
   see an out-of-range pair. `KNode.updateFrame` calls it when a mirrored scroller's own size
-  changes. The logical offset does not change across a re-anchor.
+  changes. The logical offset does not change across a re-anchor. A content-size re-anchor
+  (which fires from the scroll handler, mid-drag and mid-fling) moves the host's offset
+  RELATIVE to wherever the host is (`shiftContentOffset`, §32) on iOS, Android and web; a
+  viewport re-anchor, and every host without §32, writes it absolutely. Either way the move
+  runs with nested scrolling on SELF_ONLY, as `applyOffsetDelta` guards its own moves.
 - **Stale events.** Hosts deliver scroll events through the Kotlin context queue, so events
   produced before the host applied a re-anchor arrive in pre-shift coordinates. They are
   dropped when nearer the host's pre-write position than the value Kotlin wrote last; the
@@ -2851,16 +2858,8 @@ false, every conversion is the identity and the code path is the one it was.
 ### Verification
 
 - **JVM** — `./gradlew :KuiklyUI:compose:testDebugUnitTest --tests '*MirroredScrollAxisTest'`
-  (from the Ronaq client's `mobile/`): 19 tests, 0 failures. Eleven cover the arithmetic
-  (identity when not mirrored, the inverse, rest rounding, growth / shrink / viewport
-  re-anchors and their write order, the stale filter and its budget); eight drive a model —
-  a physically left-to-right host scroller, a row that mirrors its placement, and the
-  bridge steps expressed through `MirroredScrollAxis` — with a finger: every chip moves with
-  it in both directions and both languages, chip 0 opens at the start edge, a backward
-  finger at the start moves nothing, repeated forward fingers reach the last chip and stop,
-  the collapse at the last item moves nothing on screen, a stale event across a re-anchor
-  does not jump, `scrollToItem` + the 150 ms realignment keeps the screen still. The same
-  model with the pre-fix bridge (no mirror) fails six of the eight model tests.
+  (from the Ronaq client's `mobile/`): 26 tests, 0 failures, as of the review below (19 at
+  first, then over a copy of the bridge; the review moved them onto the production bridge).
 - **Build** — `:shared:compileDebugKotlinAndroid :shared:compileKotlinJs
   :shared:compileKotlinIosSimulatorArm64 :shared:testDebugUnitTest` (1793 tests, 0
   failures), `:KuiklyUI:compose:testDebugUnitTest`, `:androidApp:compileApkDebugKotlin`.
@@ -2874,6 +2873,9 @@ false, every conversion is the identity and the code path is the one it was.
 
 ### Known limits
 
+- A fling longer than `KRMaxAllowedDistance` (6500 pt) on iOS runs on `KRContentOffsetAnimator`
+  towards an absolute target; a re-anchor during it stops it (§32), as an absolute write did.
+  Chip strips do not fling that far.
 - A horizontal `stickyHeader` under Rtl is unsupported: `StickyHeaderCacheManager` stores
   native positions and is not shifted by a re-anchor. No call site.
 - `ScrollableTabRow` / a horizontal `ScrollState` under Rtl is untouched (another model, no
@@ -2898,6 +2900,51 @@ OutputContentOffset` misses `dragEnd`, `scrollEnd`, `willDragEnd` and `curOffset
 General capability, no Ronaq types. Upstream would likely rather restore
 `scrollingContainer`'s reversal on hosts that can, but the bridge's virtual content size
 makes this Kotlin-side mapping the one place that serves every host.
+
+### Review, 2026-09-23
+
+An adversarial review of `bfc99ae3..3e38b901` (with the Ronaq side) reported five findings.
+The three below concern the fork and are fixed here; one sub-claim of the first did not
+hold. The other two (the probes, the record's claims) are the Ronaq client's. Ronaq issue
+record, "Review 2026-09-23".
+
+1. **A re-anchor mid-gesture stopped an iOS fling** (fixed). Every change of `C - W` wrote
+   the native offset absolutely, from the scroll handler: through `css_contentOffsetWithParams`
+   to `-setContentOffset:animated:NO` (`KRScrollView.m`), which ends a UIScrollView
+   deceleration — the same call Kuikly itself uses to stop one (`css_abortContentOffsetAnimate`).
+   The collapse fires as the last chip first shows, so a fling towards the end of an Arabic
+   strip would stop with that chip part-shown, and every growth step mid-fling would stop it
+   too. On Android and web the fling survives, but the absolute value (`lastNative + Δ`, from
+   the event Kotlin was answering) dropped the motion the host made since: a jerk back of a
+   frame or two. Now a content-size re-anchor calls `shiftContentOffset` (§32), which moves
+   the offset by Δ from wherever the host is and leaves the drag or deceleration running; a
+   viewport re-anchor stays absolute, because the host has just resized its own frame and may
+   already have clamped its offset. The re-anchor move is also wrapped in the SELF_ONLY
+   nested-scroll guard `applyOffsetDelta` uses. Not a regression, and left alone: the review
+   said the absolute write also arms `skipNestScrollLock` for the rest of the gesture, but
+   the content view's own `setFrame:` (`KRScrollContentView`) arms it on every content-size
+   change, which left-to-right lists make at the same moments.
+2. **The unit tests exercised a copy of the bridge** (fixed). The host operations moved
+   behind `MirroredScrollHost` (production: `ScrollerMirroredHost`), the mirrored
+   `applyOffsetDelta` into `KuiklyScrollInfo.applyMirroredOffsetDelta`, and the handlers'
+   conversion into `KuiklyScrollInfo.offsetFromHost`. The model now drives those production
+   functions against a fake scroller that clamps like a browser (so write ORDER shows) and,
+   for flings, models iOS's stop-on-absolute-write and a one-frame event lag. Each of these
+   production mutations now fails at least one test: flipping the children's sign in
+   `applyMirroredOffsetDelta`, writing the offset before the frame when growing or the frame
+   before the offset when shrinking, dropping `toLogical`, the Android `-0.01dp` changed,
+   the re-anchor written absolutely, the guard removed, a viewport re-anchor shifted. The
+   old `assertNull(... ?.takeIf { axis.mirrored })` could never fail; `planReanchor` now
+   returns null whenever not mirrored and the test asserts it.
+3. **Nested-scroll directions were physical** (fixed; no call site). `Modifier.nestedScroll`
+   declares forward (towards the list's end) and backward; hosts apply them to the native
+   offset growing and shrinking (`KRRecyclerView` `parentDx > 0`). On a mirrored list those are
+   the other way round. The modifier now records the declared modes on the scroller
+   (`DeclaredNestedScrollKey`) and applies them through `MirroredScrollAxis.hostNestedModes`,
+   again after binding and when the mirror flips.
+
+Tests: `MirroredScrollAxisTest` 26/26. With the refactor alone, before the fixes, 5 of them
+failed, one per finding; the issue record lists them and the mutations.
 
 ## 31. Android: the list renderer is pinned left-to-right
 

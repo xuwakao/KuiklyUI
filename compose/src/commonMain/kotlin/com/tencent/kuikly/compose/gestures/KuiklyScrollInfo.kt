@@ -21,7 +21,6 @@ import androidx.compose.runtime.setValue
 import com.tencent.kuikly.compose.foundation.gestures.Orientation
 import com.tencent.kuikly.compose.ui.node.StickyHeaderCacheManager
 import com.tencent.kuikly.compose.ui.unit.IntOffset
-import com.tencent.kuikly.core.base.domChildren
 import com.tencent.kuikly.core.layout.Frame
 import com.tencent.kuikly.core.pager.PageData
 import com.tencent.kuikly.core.views.ScrollerAttr
@@ -178,6 +177,13 @@ class KuiklyScrollInfo {
     internal val axis = MirroredScrollAxis()
 
     /**
+     * Ronaq fork (CHANGES.md §30): the host operations of the mirrored bridge. Production
+     * drives the bound [scrollView]; `MirroredScrollAxisTest` puts a fake scroller here, so
+     * the bridge functions below are the ones under test.
+     */
+    internal var mirroredHost: MirroredScrollHost = ScrollerMirroredHost(this)
+
+    /**
      * Update content size to render view
      *
      * Ronaq fork (CHANGES.md §30): for a mirrored scroller this is also the one place where
@@ -187,31 +193,43 @@ class KuiklyScrollInfo {
      */
     fun updateContentSizeToRender() {
         if (axis.mirrored) {
-            updateMirroredContentToRender()
+            updateMirroredContentToRender(viewportChanged = false)
             return
         }
         val frame = createContentFrame()
         scrollView?.contentView?.setFrameToRenderView(frame)
     }
 
-    private fun updateMirroredContentToRender() {
-        val sv = scrollView ?: return
-        val contentView = sv.contentView ?: return
-        val frame = createContentFrame()
-        val plan = axis.planReanchor(currentContentSize, viewportSize)
+    /**
+     * Ronaq fork (CHANGES.md §30, I6): a mirrored content view is never narrower than its
+     * viewport. A short strip's mirrored items sit at the viewport's right end, and a
+     * content view only C wide would leave them outside it (Android's FrameLayout clips).
+     */
+    private fun mirroredContentWidthDp(host: MirroredScrollHost): Float =
+        max(currentContentSize, host.viewportPx) / host.density
+
+    /**
+     * [viewportChanged]: the re-anchor follows a change of the scroller's own frame
+     * ([reanchorForViewport]) rather than of the content size.
+     */
+    private fun updateMirroredContentToRender(viewportChanged: Boolean) {
+        val host = mirroredHost
+        if (!host.bound || !host.hasContent) return
+        val width = mirroredContentWidthDp(host)
+        val plan = axis.planReanchor(currentContentSize, host.viewportPx)
         if (plan == null) {
-            contentView.setFrameToRenderView(frame)
+            host.setContentWidth(width)
             return
         }
-        val density = getDensity()
+        val deltaDp = plan.delta / host.density
         if (plan.frameFirst) {
-            contentView.setFrameToRenderView(frame)
-            shiftMirroredChildren(plan.delta / density)
-            writeMirroredNative(plan.toNative)
+            host.setContentWidth(width)
+            host.shiftChildren(deltaDp)
+            moveMirroredNative(plan, viewportChanged)
         } else {
-            writeMirroredNative(plan.toNative)
-            shiftMirroredChildren(plan.delta / density)
-            contentView.setFrameToRenderView(frame)
+            moveMirroredNative(plan, viewportChanged)
+            host.shiftChildren(deltaDp)
+            host.setContentWidth(width)
         }
         axis.commitReanchor(plan)
         // A pending echo of an earlier write moved with the host's coordinates.
@@ -219,15 +237,33 @@ class KuiklyScrollInfo {
     }
 
     /**
-     * Move every content child by [dx] dp, from its Kotlin-side frame so that successive
-     * shifts in one turn compose (as `applyOffsetDelta` moves them).
+     * Move the host's native offset by a re-anchor's Δ.
+     *
+     * A content-size re-anchor fires from the scroll handler, so it lands mid-drag and
+     * mid-fling (the +1500 dp growth, the collapse when the last item first shows). There the
+     * host shifts its offset by Δ from wherever it is at that moment (`shiftContentOffset`):
+     * an absolute write would stop an iOS deceleration dead (`-setContentOffset:animated:NO`)
+     * and, on every host, would drop the motion the host made since the event Kotlin is
+     * handling, a jerk back of a frame or two. Hosts without the method (HarmonyOS, macOS,
+     * mini programs) keep the absolute write.
+     *
+     * A viewport re-anchor stays absolute: the host has just resized its own frame, and may
+     * already have clamped its offset to the new range, so a relative shift would count
+     * that clamp twice.
+     *
+     * Either way the move runs with nested scrolling on SELF_ONLY, as `applyOffsetDelta`
+     * has always guarded its programmatic moves.
      */
-    internal fun shiftMirroredChildren(dx: Float) {
-        if (dx == 0f) return
-        scrollView?.contentView?.domChildren()?.forEach { subview ->
-            val cur = subview.renderView?.currentFrame ?: return@forEach
-            subview.setFrameToRenderView(Frame(cur.x + dx, cur.y, cur.width, cur.height))
+    private fun moveMirroredNative(plan: MirroredScrollAxis.Reanchor, viewportChanged: Boolean) {
+        val host = mirroredHost
+        val restoreNested = host.holdNestedScrollSelfOnly()
+        if (!viewportChanged && host.canShiftOffset) {
+            host.shiftOffset(plan.delta / host.density)
+            axis.noteWrite(plan.toNative)
+        } else {
+            writeMirroredNative(plan.toNative)
         }
+        restoreNested?.invoke()
     }
 
     /**
@@ -236,14 +272,79 @@ class KuiklyScrollInfo {
      * physical end.
      */
     internal fun writeMirroredNative(nativePx: Float) {
-        val sv = scrollView ?: return
-        val density = getDensity()
-        if (pageData?.isAndroid == true) {
-            sv.setContentOffset(max(0f, nativePx / density - 0.01f), 0f)
+        val host = mirroredHost
+        if (!host.bound) return
+        val density = host.density
+        if (host.isAndroid) {
+            host.writeOffset(max(0f, nativePx / density - 0.01f))
         } else {
-            sv.setContentOffset(nativePx / density, 0f)
+            host.writeOffset(nativePx / density)
         }
         axis.noteWrite(nativePx)
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §30): `applyOffsetDelta` for a mirrored scroller (a horizontal
+     * lazy list or grid under Rtl). [delta] and the returned x are LOGICAL, like
+     * `composeOffset`; the native offset is `nativeMax - logical`. [curYPx] is the host's
+     * current y offset, passed through as the left-to-right path passes it.
+     *
+     * The same steps as the left-to-right path, converted where a value crosses to the host:
+     * 1. the current offset is read from the native one Kotlin last wrote or accepted
+     *    (`curOffsetX` still holds the pre-shift value between a re-anchor and its echo);
+     * 2. the content grows as before; `updateContentSizeToRender` now re-anchors, which moves
+     *    the native offset and `nativeMax` together;
+     * 3. the children move by `-delta`, because their native x is
+     *    `pos.x + nativeMax - composeOffset` and `composeOffset` grows by `delta`;
+     * 4. `nativeMax - newLogical` is written with the post-growth `nativeMax`, keeping the
+     *    Android `-0.01dp` end write, and its echo is ignored in native units.
+     */
+    internal fun applyMirroredOffsetDelta(delta: Int, curYPx: Int): IntOffset {
+        val host = mirroredHost
+        val density = host.density
+        val hostNative = axis.lastNative
+        val newLogical = axis.toLogical(hostNative) + delta
+
+        if (composeOffset.toInt() == newLogical) {
+            return IntOffset(newLogical, curYPx)
+        }
+
+        // Grow the content (logical, as before); the re-anchor keeps the screen still.
+        if (host.rendered) {
+            if (newLogical + host.viewportPx > currentContentSize) {
+                currentContentSize += (2000 * density + delta).toInt()
+                updateContentSizeToRender()
+            }
+        }
+
+        // Keep nested scrolling out of the programmatic move.
+        val restoreNested = host.holdNestedScrollSelfOnly()
+
+        host.shiftChildren(-delta / density)
+
+        val newNative = axis.toNative(newLogical)
+        if (abs(newNative - hostNative) >= 1f) {
+            // Only wait for an echo the host will send: an offset left where the host already
+            // is sends none.
+            ignoreScrollOffset = IntOffset(newNative, curYPx)
+        }
+        writeMirroredNative(newNative.toFloat())
+
+        restoreNested?.invoke()
+
+        return IntOffset(newLogical, curYPx)
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §30): the Compose-side offset of a host `scroll`, `dragEnd` or
+     * `scrollEnd` event at ([offsetXPx], [offsetYPx]) (density-scaled), or null when a
+     * mirrored scroller drops it as stale (produced before the host applied a re-anchor).
+     * Vertical: `offsetY.toInt()`; horizontal and not mirrored: `offsetX.toInt()` — exactly
+     * as the handlers always read it. Mirrored: `nativeMax - native`.
+     */
+    internal fun offsetFromHost(isVertical: Boolean, offsetXPx: Float, offsetYPx: Float): Int? {
+        if (!axis.accept(offsetXPx)) return null
+        return if (isVertical) offsetYPx.toInt() else axis.toLogical(offsetXPx)
     }
 
     /**
@@ -259,7 +360,7 @@ class KuiklyScrollInfo {
      */
     internal fun reanchorForViewport() {
         if (!axis.mirrored) return
-        updateContentSizeToRender()
+        updateMirroredContentToRender(viewportChanged = true)
     }
 
     /**
@@ -268,24 +369,23 @@ class KuiklyScrollInfo {
      * Children follow at the relayout the direction change causes.
      */
     internal fun resyncNative() {
-        val sv = scrollView ?: return
-        if (sv.renderView == null) return
+        val host = mirroredHost
+        if (!host.bound || !host.rendered) return
         // The host still holds the offset of the mapping being left.
         val hostNative = if (axis.mirrored) contentOffset.toFloat() else axis.lastNative
-        val frame = createContentFrame()
-        axis.rebase(currentContentSize, viewportSize)
+        val width = if (axis.mirrored) mirroredContentWidthDp(host) else currentContentSize / host.density
+        axis.rebase(currentContentSize, host.viewportPx)
         val native = axis.toNative(contentOffset)
-        val oldWidth = sv.contentView?.renderView?.currentFrame?.width ?: 0f
-        val frameFirst = frame.width >= oldWidth
-        if (frameFirst) sv.contentView?.setFrameToRenderView(frame)
+        val frameFirst = width >= (host.contentWidthDp ?: 0f)
+        if (frameFirst) host.setContentWidth(width)
         // Only wait for an echo the host will actually send: an unchanged offset sends none.
         ignoreScrollOffset = if (abs(hostNative - native) >= 1f) IntOffset(native, 0) else null
         if (axis.mirrored) {
             writeMirroredNative(native.toFloat())
         } else {
-            sv.setContentOffset(native / getDensity(), 0f)
+            host.writeOffset(native / host.density)
         }
-        if (!frameFirst) sv.contentView?.setFrameToRenderView(frame)
+        if (!frameFirst) host.setContentWidth(width)
     }
 
     /**
@@ -328,15 +428,10 @@ class KuiklyScrollInfo {
                 height = currentContentSize / getDensity()
             )
         } else {
-            // Ronaq fork (CHANGES.md §30, I6): mirrored content is never narrower than its
-            // viewport. A short strip's mirrored items sit at the viewport's right end, and
-            // a content view only C wide would leave them outside it (Android's FrameLayout
-            // clips children).
-            val width = if (axis.mirrored) max(currentContentSize, viewportSize) else currentContentSize
             Frame(
                 x = 0f,
                 y = 0f,
-                width = width / getDensity(),
+                width = currentContentSize / getDensity(),
                 height = scrollView?.renderView?.currentFrame?.height ?: 0f
             )
         }

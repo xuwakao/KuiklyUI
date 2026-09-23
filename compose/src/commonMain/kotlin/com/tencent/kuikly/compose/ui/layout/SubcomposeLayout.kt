@@ -77,6 +77,7 @@ import com.tencent.kuikly.compose.ui.util.fastForEach
 import com.tencent.kuikly.compose.gestures.KuiklyScrollInfo
 import com.tencent.kuikly.compose.views.KuiklyInfoKey
 import com.tencent.kuikly.compose.views.VirtualNodeView
+import com.tencent.kuikly.compose.views.applyDeclaredNestedScroll
 import com.tencent.kuikly.compose.layout.bindKuiklyInfo
 import com.tencent.kuikly.compose.layout.checkOffScreenNode
 import com.tencent.kuikly.compose.layout.hideOffsetScreenView
@@ -263,7 +264,10 @@ fun SubcomposeLayout(
         // runtime): rewrite the host from the logical offset. A fresh scroller is written by
         // the update block instead.
         if (scrollableState.kuiklyInfo.scrollView != null) {
-            SideEffect { scrollableState.kuiklyInfo.resyncNative() }
+            SideEffect {
+                scrollableState.kuiklyInfo.resyncNative()
+                scrollableState.kuiklyInfo.scrollView?.applyDeclaredNestedScroll()
+            }
         }
     }
 
@@ -331,8 +335,8 @@ fun SubcomposeLayout(
                 val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
                 // Ronaq fork (CHANGES.md §30): a stale event of a mirrored scroller (pre
                 // re-anchor coordinates) must not move the offset; the gesture still ends.
-                if (kuiklyInfo.axis.accept(scaleParams.offsetX)) {
-                    val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
+                val offset = kuiklyInfo.offsetFromHost(isVertical, scaleParams.offsetX, scaleParams.offsetY)
+                if (offset != null) {
                     kuiklyInfo.contentOffset = offset
                     (scrollableState as? PagerState)?.onNativeContentOffsetChanged(offset)
                     (scrollableState as? DrawerInternalPagerState)?.onNativeContentOffsetChanged(offset)
@@ -348,8 +352,8 @@ fun SubcomposeLayout(
             dragEnd {
                 val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
                 // Ronaq fork (CHANGES.md §30): see scrollEnd.
-                if (kuiklyInfo.axis.accept(scaleParams.offsetX)) {
-                    val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
+                val offset = kuiklyInfo.offsetFromHost(isVertical, scaleParams.offsetX, scaleParams.offsetY)
+                if (offset != null) {
                     kuiklyInfo.contentOffset = offset
                 }
                 kuiklyInfo.isDragging = kuiklyInfo.scrollView?.isDragging ?: false
@@ -360,10 +364,8 @@ fun SubcomposeLayout(
                 // produced before it applied a re-anchor, and reads the rest as the logical
                 // offset (`nativeMax - native`). Identity for every other scroller. The
                 // ignoreScrollOffset match below still compares raw native values.
-                if (!kuiklyInfo.axis.accept(scaleParams.offsetX)) {
-                    return@scroll
-                }
-                val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
+                val offset = kuiklyInfo.offsetFromHost(isVertical, scaleParams.offsetX, scaleParams.offsetY)
+                    ?: return@scroll
 
                 // Reject unexpected native offset jumps (e.g. HarmonyOS HandleCrashTop).
                 // Correct the native side back and skip this event entirely to prevent
@@ -492,6 +494,9 @@ fun SubcomposeLayout(
                 val kuiklyInfo = bindKuiklyInfo(sv, scrollableState, orientation)
                 transferScrollToTopCallback(oldKuiklyInfo, kuiklyInfo)
                 restoreScrollerViewOnReuse(sv, kuiklyInfo, isPagerView, orientation, oldKuiklyInfo?.nativeContentOffset)
+                // Ronaq fork (CHANGES.md §30): a nested-scroll declaration made before binding
+                // is re-applied through this scroller's mirror.
+                sv.applyDeclaredNestedScroll()
 
                 scrollViewSize = Size(
                     width = sv.renderView?.currentFrame?.width ?: 0f,
