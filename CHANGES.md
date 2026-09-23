@@ -2921,3 +2921,52 @@ whose system language is Arabic, which is the owner's decision to change and res
 is resolved per paragraph (first strong), so Arabic text still renders right-to-left.
 
 **Upstreamable.** Yes, for any renderer that keeps direction in the bridge.
+
+## 32. List renderers shift the content offset relative to where they are — iOS, Android, web
+
+**Files** · `core-render-ios/Extension/Components/KRScrollView.m` ·
+`core-render-android/.../list/KRRecyclerView.kt` ·
+`core-render-web/base/.../list/KRListView.kt` · `core-render-web/base/.../element/IListElement.kt` ·
+`core-render-web/h5/.../list/H5ListView.kt`
+**Driven by** · §30's review, finding 1 (Ronaq `docs/issue/rtl-horizontal-list-drags-backwards.md`,
+"Review 2026-09-23")
+**Date** · 2026-09-23
+
+**What.** A new render method, `shiftContentOffset` with params `"dx dy"` in dp: move the
+list's content offset by (dx, dy) from wherever it is at that moment.
+
+- **iOS** (`css_shiftContentOffsetWithParams:`): the plain `setContentOffset:` setter, which
+  UIScrollView lets a drag or a deceleration carry on from; `-setContentOffset:animated:`
+  (the `contentOffset` method) ends a deceleration. The nested-scroll record
+  `lContentOffset` (and `tempLastContentOffsetForMultiLayerNested`) moves with it, so the
+  coordinator does not read the shift as a scroll step; `skipNestScrollLock` is left alone.
+  A fling running on `_ku_coreAnimator` (over `KRMaxAllowedDistance`) is stopped first, as an
+  absolute write stops it.
+- **Android**: a relative `scrollBy`, which a RecyclerView fling (driven by its own
+  `OverScroller` deltas) survives. Like `contentOffset`, it waits for the next layout while
+  the content view is not yet wide enough (`canScrollImmediately`), and an absolute
+  `contentOffset` call drops a pending shift.
+- **Web** (`H5ListView`): `scrollBy` on the element (`pagingEnabled`: the paging helper's
+  offset plus the shift). `IListElement` gains the method with a no-op default; the
+  mini-program element keeps it.
+
+**Why.** §30 re-anchors a mirrored lazy list mid-gesture: the content moves by Δ and the
+offset must move by the same Δ in the same batch. Written as an absolute target it stopped
+an iOS fling dead and, on every host, dropped the motion made since the event Kotlin was
+answering. Only §30's content-size re-anchor sends it, and only to `isIOS`, `isAndroid` and
+`isWeb` pages (`ScrollerMirroredHost.canShiftOffset`); HarmonyOS, macOS and mini programs keep
+the absolute write, so nothing is sent to a renderer that does not implement it.
+
+**Verified.** Android: compiles (`:KuiklyUI:core-render-android:compileDebugKotlin` in the
+Ronaq gate). iOS: `clang -fsyntax-only` against the iPhoneSimulator and macOS SDKs, clean.
+Web: in the Ronaq web bundle, headless Chromium, synthetic touch flings in Arabic cross the
+growth and collapse re-anchors of the Store, Backpack and Home strips without stopping (Ronaq
+`scripts/lazyrow-direction-web.mjs`, the issue record) — and so do they on the bundle with the
+absolute write: Chromium does not end a fling on a programmatic scroll. The web shows the
+shift is harmless there, not that it was needed; the iOS failure it fixes is known from
+UIKit's semantics and the fork's own use of them, not observed. The iPhone fling-to-end
+check and the Android runs are PENDING in the issue record. HarmonyOS is
+untouched (`core-render-ohos` not changed, and it is never sent the method).
+
+**Upstreamable.** Yes: a relative offset move is a general list capability.
+

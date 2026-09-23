@@ -219,6 +219,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     private var pendingSetContentOffsetStr = ""
 
     /**
+     * Ronaq fork (CHANGES.md §32): a relative move ([shiftContentOffset]) still waiting for the
+     * content view to be laid out wide enough, px.
+     */
+    private var pendingShiftX = 0
+    private var pendingShiftY = 0
+
+    /**
      * List 高度动态改变时, iOS系统会自动调整 contentOffset
      * Android 对齐iOS 的表现
      */
@@ -512,7 +519,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
     override fun call(method: String, params: String?, callback: KuiklyRenderCallback?): Any? {
         return when (method) {
-            METHOD_CONTENT_OFFSET -> setContentOffset(params)
+            METHOD_CONTENT_OFFSET -> {
+                // Ronaq fork (CHANGES.md §32): an absolute offset supersedes a pending shift.
+                pendingShiftX = 0
+                pendingShiftY = 0
+                setContentOffset(params)
+            }
+            METHOD_SHIFT_CONTENT_OFFSET -> shiftContentOffset(params)
             METHOD_CONTENT_INSET_WHEN_END_DRAG -> contentInsetWhenEndDrag(params)
             METHOD_CONTENT_INSET -> contentInset(params)
             METHOD_ABORT_CONTENT_OFFSET_ANIMATE -> {
@@ -580,6 +593,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         lastLayoutTop = t
 
         tryApplyPendingSetContentOffset()
+        tryApplyPendingShift()
         tryApplyPendingFireOnScroll()
     }
 
@@ -1227,6 +1241,41 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         }
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §32): move the content offset by "dx dy" dp from wherever the list
+     * is now. The Compose bridge re-anchors a mirrored lazy list this way mid-gesture: a
+     * relative [scrollBy] leaves a drag or a fling running, and keeps the motion the list made
+     * since the event Kotlin answered, where [setContentOffset] writes `target - current` and
+     * drops it. Like [setContentOffset], it waits for the next layout while the content view is
+     * not yet wide enough for the shifted offset (a content growth in the same batch).
+     */
+    private fun shiftContentOffset(value: String?) {
+        val splits = value?.split(KRCssConst.BLANK_SEPARATOR) ?: return
+        if (splits.size < 2) {
+            return
+        }
+        pendingShiftX += kuiklyRenderContext.toPxI(splits[0].toFloat())
+        pendingShiftY += kuiklyRenderContext.toPxI(splits[1].toFloat())
+        tryApplyPendingShift()
+    }
+
+    private fun tryApplyPendingShift() {
+        if (pendingShiftX == 0 && pendingShiftY == 0) {
+            return
+        }
+        if (layoutManager == null || !isContentViewAttached || pendingSetContentOffsetStr.isNotEmpty()) {
+            return
+        }
+        if (!canScrollImmediately(-contentView.left + pendingShiftX, -contentView.top + pendingShiftY)) {
+            return
+        }
+        val dx = pendingShiftX
+        val dy = pendingShiftY
+        pendingShiftX = 0
+        pendingShiftY = 0
+        scrollBy(dx, dy)
+    }
+
     private fun tryApplyPendingSetContentOffset() {
         if (!isContentViewAttached) {
             return
@@ -1516,6 +1565,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         private const val SCROLL_WITH_PARENT = "scrollWithParent"
 
         private const val METHOD_CONTENT_OFFSET = "contentOffset" // 设置内容的偏移量，会把List滚到对应的位置
+        private const val METHOD_SHIFT_CONTENT_OFFSET = "shiftContentOffset" // Ronaq fork (CHANGES.md §32)
         private const val METHOD_CONTENT_INSET_WHEN_END_DRAG =
             "contentInsetWhenEndDrag" // 结束拖拽时，设置的ContentInset
         private const val METHOD_CONTENT_INSET = "contentInset" // 设置内容边距

@@ -142,6 +142,8 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
 - (void)hrv_callWithMethod:(NSString *)method params:(NSString *)params callback:(KuiklyRenderCallback)callback {
     if ([method isEqualToString:@"contentOffset"]) {
         [self css_contentOffsetWithParams:params];
+    } else if ([method isEqualToString:@"shiftContentOffset"]) {
+        [self css_shiftContentOffsetWithParams:params];
     } else if ([method isEqualToString:@"contentInset"]) {
         [self css_contentInsetWithParams:params];
     } else if ([method isEqualToString:@"contentInsetWhenEndDrag"]) {
@@ -475,6 +477,39 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
         self.contentInset = newContentInsets;
     }
     [self setContentOffset:contentOffset animated:animated];
+}
+
+/// Ronaq fork (CHANGES.md §32): move the content offset by "dx dy" from wherever it is now,
+/// without ending a drag or a deceleration. The Compose bridge re-anchors a mirrored lazy
+/// list this way mid-gesture (§30); -setContentOffset:animated: (css_contentOffsetWithParams) would
+/// stop a deceleration dead, while the plain setter lets UIScrollView carry on from the new
+/// position.
+- (void)css_shiftContentOffsetWithParams:(NSString *)params {
+    NSArray<NSString *> *parts = [params componentsSeparatedByString:@" "];
+    if (parts.count < 2) {
+        return;
+    }
+    CGFloat dx = [parts[0] doubleValue];
+    CGFloat dy = [parts[1] doubleValue];
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+    // A fling longer than KRMaxAllowedDistance runs on _ku_coreAnimator towards an absolute
+    // target it cannot move; it ends here, as it would under an absolute write.
+    if ([_ku_coreAnimator isAnimating]) {
+        [_ku_coreAnimator stop];
+        _ku_coreAnimator = nil;
+    }
+    // The nested-scroll coordinator reads a scroll step as lContentOffset -> contentOffset. A
+    // shift is not a step (nothing moves on screen), so the record moves with it; unlike an
+    // absolute write, it leaves skipNestScrollLock alone.
+    self.lContentOffset = CGPointMake(self.lContentOffset.x + dx, self.lContentOffset.y + dy);
+    if (self.tempLastContentOffsetForMultiLayerNested) {
+        CGPoint last = [self.tempLastContentOffsetForMultiLayerNested CGPointValue];
+        self.tempLastContentOffsetForMultiLayerNested = @(CGPointMake(last.x + dx, last.y + dy));
+    }
+    CGPoint offset = self.contentOffset;
+    [self setContentOffset:CGPointMake(offset.x + dx, offset.y + dy)];
 }
 
 - (void)css_contentInsetWithParams:(NSString *)params {

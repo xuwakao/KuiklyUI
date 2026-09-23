@@ -115,6 +115,7 @@ class KRListView : IKuiklyRenderViewExport {
                 null
             }
             METHOD_CONTENT_OFFSET -> listEle.setContentOffset(params)
+            METHOD_SHIFT_CONTENT_OFFSET -> listEle.shiftContentOffset(params)
             METHOD_CONTENT_INSET -> listEle.setContentInset(params)
             METHOD_CONTENT_INSET_WHEN_END_DRAG -> listEle.setContentInsetWhenEndDrag(params)
             METHOD_PREPARE_FOR_COMPOSE_REUSE -> listEle.prepareForComposeReuse()
@@ -143,6 +144,9 @@ class KRListView : IKuiklyRenderViewExport {
 
         // Set content offset, will scroll List to corresponding position
         private const val METHOD_CONTENT_OFFSET = "contentOffset"
+
+        // Ronaq fork (CHANGES.md §32): move the offset by "dx dy" from where it is now
+        private const val METHOD_SHIFT_CONTENT_OFFSET = "shiftContentOffset"
 
         // ContentInset set when drag ends
         private const val METHOD_CONTENT_INSET_WHEN_END_DRAG =

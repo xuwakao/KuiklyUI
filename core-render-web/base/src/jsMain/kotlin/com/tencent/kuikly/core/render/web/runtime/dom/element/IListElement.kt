@@ -42,6 +42,13 @@ interface IListElement {
     fun setContentOffset(params: String?)
 
     /**
+     * Ronaq fork (CHANGES.md §32): move the scroll position by "dx dy" from wherever it is
+     * now, without stopping a drag or momentum. The Compose bridge sends it only to the web
+     * host (`H5ListView`); an element without it keeps this no-op and is never sent it.
+     */
+    fun shiftContentOffset(params: String?) {}
+
+    /**
      * Set content margin with animation
      */
     fun setContentInset(params: String?)

@@ -753,6 +753,36 @@ class H5ListView : IListElement {
     }
 
     /**
+     * Ronaq fork (CHANGES.md §32): move the scroll position by "dx dy" from wherever it is now.
+     * The Compose bridge re-anchors a mirrored lazy list this way mid-gesture; a relative
+     * scroll keeps the motion the browser made since the event Kotlin answered, which the
+     * absolute [setContentOffset] would drop.
+     */
+    override fun shiftContentOffset(params: String?) {
+        if (params === null) {
+            return
+        }
+        val splits = params.split(KRCssConst.BLANK_SEPARATOR)
+        if (splits.size < 2) {
+            return
+        }
+        val dx = splits[0].toFloat()
+        val dy = splits[1].toFloat()
+        if (dx.isNaN() || dy.isNaN() || (dx == 0f && dy == 0f)) {
+            return
+        }
+        if (pagingEnabled) {
+            listPagingHelper.setContentOffset(
+                abs(listPagingHelper.currentTranslateX) + dx,
+                abs(listPagingHelper.currentTranslateY) + dy,
+                false,
+            )
+            return
+        }
+        ele.scrollBy(ScrollToOptions(dx.toDouble(), dy.toDouble(), ScrollBehavior.AUTO))
+    }
+
+    /**
      * Clear transient state for Compose DSL reuse.
      *
      * The actual "reset" web side needs is much smaller than native (no native cell pool here);
