@@ -333,6 +333,14 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         overScrollMode = OVER_SCROLL_NEVER
         isFocusableInTouchMode = false
         isNestedScrollingEnabled = true
+        // Ronaq fork (CHANGES.md §31): the native scroller is physically left-to-right on
+        // every host; right-to-left is the Compose bridge's job (§26 places pages
+        // absolutely, §30 mirrors a horizontal lazy list's offset). A horizontal
+        // LinearLayoutManager reverses itself when the RecyclerView resolves Rtl
+        // (`resolveShouldLayoutReverse`), which happens under a right-to-left SYSTEM
+        // language when the host app declares supportsRtl. Pin it, or both contracts break
+        // on such a phone. A no-op wherever the system language is left-to-right.
+        layoutDirection = View.LAYOUT_DIRECTION_LTR
     }
 
     fun setContentInsert(contentInset: KRRecyclerContentViewContentInset?, immediately: Boolean = false) {

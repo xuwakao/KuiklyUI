@@ -2898,3 +2898,26 @@ OutputContentOffset` misses `dragEnd`, `scrollEnd`, `willDragEnd` and `curOffset
 General capability, no Ronaq types. Upstream would likely rather restore
 `scrollingContainer`'s reversal on hosts that can, but the bridge's virtual content size
 makes this Kotlin-side mapping the one place that serves every host.
+
+## 31. Android: the list renderer is pinned left-to-right
+
+**Files** · `core-render-android/.../list/KRRecyclerView.kt`
+**Driven by** · §26 and §30, which both assume a physically left-to-right native scroller
+**Date** · 2026-09-23
+
+**What.** `KRRecyclerView` sets `layoutDirection = LAYOUT_DIRECTION_LTR` in its `init`.
+
+**Why.** The Ronaq manifest sets `android:supportsRtl="true"`, so under a right-to-left
+SYSTEM language the RecyclerView resolves Rtl, and a horizontal `LinearLayoutManager`
+reverses itself (`resolveShouldLayoutReverse`). That would put the native scroller's origin
+on the right and break §26 (pages placed absolutely) and §30 (the mirror is the bridge's)
+at once. The app's own language switch never touches the Android locale (Ronaq
+`RonaqActivity.kt:200-216`), so the pin is a no-op on every phone whose system language is
+left-to-right — every run so far.
+
+**Verified.** Compiles (`:androidApp:compileApkDebugKotlin`). Not observed: it needs a phone
+whose system language is Arabic, which is the owner's decision to change and restore
+(PENDING in the Ronaq issue record). Children of the list inherit the pin; text direction
+is resolved per paragraph (first strong), so Arabic text still renders right-to-left.
+
+**Upstreamable.** Yes, for any renderer that keeps direction in the bridge.
