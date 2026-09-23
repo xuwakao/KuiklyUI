@@ -151,14 +151,26 @@ internal fun restoreScrollerViewOnReuse(
     kuiklyInfo.appleScrollViewOffsetJob = null
     kuiklyInfo.realContentSize = null
 
+    // Ronaq fork (CHANGES.md §30): a mirrored scroller is written from scratch here, so its
+    // nativeMax is re-based to the current content and viewport rather than re-anchored:
+    // nothing on the host is in the old mapping's coordinates worth keeping.
+    if (kuiklyInfo.axis.mirrored) {
+        kuiklyInfo.axis.rebase(kuiklyInfo.currentContentSize, kuiklyInfo.viewportSize)
+    }
+
     // Restore contentSize first (UIKit clamps contentOffset to contentSize bounds)
     kuiklyInfo.updateContentSizeToRender()
 
     // Restore contentOffset with ignoreScrollOffset protection.
     // Skip ignoreScrollOffset when oldSvOffset == restoreOffset, because setContentOffset
     // won't change the value and iOS won't fire a scroll callback to clear the flag.
+    //
+    // Ronaq fork (CHANGES.md §30): [oldSvOffset] and the value compared with it are NATIVE
+    // offsets. contentOffset is logical, and under the mirror one logical offset maps to a
+    // different native one whenever the content size or the viewport changed. Identity
+    // when not mirrored.
     val density = kuiklyInfo.getDensity()
-    val restoreOffset = kuiklyInfo.contentOffset
+    val restoreOffset = if (kuiklyInfo.isVertical()) kuiklyInfo.contentOffset else kuiklyInfo.axis.toNative(kuiklyInfo.contentOffset)
     val offsetInDp = restoreOffset / density
     val restoreOffsetX = if (kuiklyInfo.isVertical()) 0f else offsetInDp
     val restoreOffsetY = if (kuiklyInfo.isVertical()) offsetInDp else 0f
@@ -170,5 +182,9 @@ internal fun restoreScrollerViewOnReuse(
             y = (restoreOffsetY * density).toInt(),
         )
     }
-    sv.setContentOffset(restoreOffsetX, restoreOffsetY, animated = false)
+    if (kuiklyInfo.axis.mirrored) {
+        kuiklyInfo.writeMirroredNative(restoreOffset.toFloat())
+    } else {
+        sv.setContentOffset(restoreOffsetX, restoreOffsetY, animated = false)
+    }
 }

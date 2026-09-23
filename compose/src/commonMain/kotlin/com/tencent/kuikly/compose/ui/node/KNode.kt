@@ -310,6 +310,12 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
                 positionIsItsOwn = (if (vertical) pos.y else pos.x) >= 0f
                 pos = if (vertical) {
                     Offset(pos.x, pos.y + deltaOffset)
+                } else if (axis.mirrored) {
+                    // Ronaq fork (CHANGES.md §30): `pos.x` is already mirrored inside the
+                    // visible box, and the native offset is `nativeMax - composeOffset`, so
+                    // the item's native x is `pos.x + nativeMax - composeOffset` and it sits
+                    // at `pos.x` on screen. (The snap correction is pager-only.)
+                    Offset(pos.x + axis.frameOriginX(composeOffset), pos.y)
                 } else {
                     Offset(pos.x + deltaOffset, pos.y)
                 }
@@ -374,6 +380,10 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         // Get current scroll offset - convert to pixel units
         val currentOffset = if (kuiklyInfo.isVertical()) {
             (scrollerView.curOffsetY * kuiklyInfo.getDensity()).toInt()
+        } else if (kuiklyInfo.axis.mirrored) {
+            // Ronaq fork (CHANGES.md §30): the logical offset, from the native one Kotlin
+            // last wrote or accepted.
+            kuiklyInfo.axis.toLogical(kuiklyInfo.axis.lastNative)
         } else {
             (scrollerView.curOffsetX * kuiklyInfo.getDensity()).toInt()
         }
@@ -439,6 +449,12 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
 
             updateScrollViewOffset(curFrame, densityFrame)
             setFrameToRenderView(densityFrame)
+            // Ronaq fork (CHANGES.md §30): a mirrored scroller's nativeMax is C - W, so a new
+            // viewport size re-anchors its content and offset. A no-op for any other view.
+            if (curFrame.width != densityFrame.width || curFrame.height != densityFrame.height) {
+                ((this as? ScrollerView<*, *>)?.renderProperties as? RenderProperties)
+                    ?.kuiklyScrollInfo?.reanchorForViewport()
+            }
             getViewEvent().notifyLayoutFrameDidChange(newFrame)
         }
     }

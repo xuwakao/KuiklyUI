@@ -43,6 +43,9 @@ import com.tencent.kuikly.compose.extension.shouldWrapShadowView
 import com.tencent.kuikly.compose.foundation.gestures.Orientation
 import com.tencent.kuikly.compose.foundation.gestures.ScrollableState
 import com.tencent.kuikly.compose.foundation.drawer.DrawerInternalPagerState
+import com.tencent.kuikly.compose.foundation.lazy.LazyListState
+import com.tencent.kuikly.compose.foundation.lazy.grid.LazyGridState
+import com.tencent.kuikly.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridState
 import com.tencent.kuikly.compose.foundation.pager.PagerState
 import com.tencent.kuikly.compose.ui.ExperimentalComposeUiApi
 import com.tencent.kuikly.compose.ui.InternalComposeUiApi
@@ -62,6 +65,7 @@ import com.tencent.kuikly.compose.ui.node.requireOwner
 import com.tencent.kuikly.compose.ui.node.traverseDescendants
 import com.tencent.kuikly.compose.ui.platform.LocalConfiguration
 import com.tencent.kuikly.compose.ui.platform.LocalDensity
+import com.tencent.kuikly.compose.ui.platform.LocalLayoutDirection
 import com.tencent.kuikly.compose.ui.platform.PausedCompositionHandle
 import com.tencent.kuikly.compose.ui.platform.beginPausableContent
 import com.tencent.kuikly.compose.ui.platform.createPausableSubcompositionCompat
@@ -240,6 +244,29 @@ fun SubcomposeLayout(
     val isDrawerPager = scrollableState is DrawerInternalPagerState
     val coroutineScope = rememberCoroutineScope()
 
+    // Ronaq fork (CHANGES.md §30): a horizontal lazy list or grid under Rtl places its items
+    // mirrored (`placeRelativeWithLayer`) over a native scroller that is physically
+    // left-to-right on every host, so the bridge maps its offset through the mirror.
+    // Pagers place absolutely (§26), `ScrollState` places itself (`TabRow`), and vertical
+    // scrollers have nothing to mirror: for all of them the flag stays false and every
+    // conversion is the identity. Set here, before the node's update block restores the
+    // offset, so the first write already uses the right mapping.
+    val mirrored = !isVertical &&
+        LocalLayoutDirection.current == LayoutDirection.Rtl &&
+        (scrollableState is LazyListState ||
+            scrollableState is LazyGridState ||
+            scrollableState is LazyStaggeredGridState)
+    val mirrorAxis = scrollableState.kuiklyInfo.axis
+    if (mirrorAxis.mirrored != mirrored) {
+        mirrorAxis.mirrored = mirrored
+        // A flip on a scroller already bound to a native view (a layout-direction change at
+        // runtime): rewrite the host from the logical offset. A fresh scroller is written by
+        // the update block instead.
+        if (scrollableState.kuiklyInfo.scrollView != null) {
+            SideEffect { scrollableState.kuiklyInfo.resyncNative() }
+        }
+    }
+
     LaunchedEffect(scrollViewSize) {
         scrollableState.calculateAndUpdateContentSize()
     }
@@ -302,10 +329,14 @@ fun SubcomposeLayout(
             }
             scrollEnd {
                 val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
-                val offset = if (isVertical) scaleParams.offsetY.toInt() else scaleParams.offsetX.toInt()
-                kuiklyInfo.contentOffset = offset
-                (scrollableState as? PagerState)?.onNativeContentOffsetChanged(offset)
-                (scrollableState as? DrawerInternalPagerState)?.onNativeContentOffsetChanged(offset)
+                // Ronaq fork (CHANGES.md §30): a stale event of a mirrored scroller (pre
+                // re-anchor coordinates) must not move the offset; the gesture still ends.
+                if (kuiklyInfo.axis.accept(scaleParams.offsetX)) {
+                    val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
+                    kuiklyInfo.contentOffset = offset
+                    (scrollableState as? PagerState)?.onNativeContentOffsetChanged(offset)
+                    (scrollableState as? DrawerInternalPagerState)?.onNativeContentOffsetChanged(offset)
+                }
 
                 // 仅触摸滑动结束会回调，api调用和bounce回弹都不会触发
                 // / back是回滑,forward是前滑
@@ -316,13 +347,23 @@ fun SubcomposeLayout(
             }
             dragEnd {
                 val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
-                val offset = if (isVertical) scaleParams.offsetY.toInt() else scaleParams.offsetX.toInt()
-                kuiklyInfo.contentOffset = offset
+                // Ronaq fork (CHANGES.md §30): see scrollEnd.
+                if (kuiklyInfo.axis.accept(scaleParams.offsetX)) {
+                    val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
+                    kuiklyInfo.contentOffset = offset
+                }
                 kuiklyInfo.isDragging = kuiklyInfo.scrollView?.isDragging ?: false
             }
             scroll {
                 val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
-                val offset = if (isVertical) scaleParams.offsetY.toInt() else scaleParams.offsetX.toInt()
+                // Ronaq fork (CHANGES.md §30): a mirrored scroller drops an event the host
+                // produced before it applied a re-anchor, and reads the rest as the logical
+                // offset (`nativeMax - native`). Identity for every other scroller. The
+                // ignoreScrollOffset match below still compares raw native values.
+                if (!kuiklyInfo.axis.accept(scaleParams.offsetX)) {
+                    return@scroll
+                }
+                val offset = if (isVertical) scaleParams.offsetY.toInt() else kuiklyInfo.axis.toLogical(scaleParams.offsetX)
 
                 // Reject unexpected native offset jumps (e.g. HarmonyOS HandleCrashTop).
                 // Correct the native side back and skip this event entirely to prevent
@@ -450,7 +491,7 @@ fun SubcomposeLayout(
                 val oldKuiklyInfo = sv.extProps[KuiklyInfoKey] as? KuiklyScrollInfo
                 val kuiklyInfo = bindKuiklyInfo(sv, scrollableState, orientation)
                 transferScrollToTopCallback(oldKuiklyInfo, kuiklyInfo)
-                restoreScrollerViewOnReuse(sv, kuiklyInfo, isPagerView, orientation, oldKuiklyInfo?.contentOffset)
+                restoreScrollerViewOnReuse(sv, kuiklyInfo, isPagerView, orientation, oldKuiklyInfo?.nativeContentOffset)
 
                 scrollViewSize = Size(
                     width = sv.renderView?.currentFrame?.width ?: 0f,

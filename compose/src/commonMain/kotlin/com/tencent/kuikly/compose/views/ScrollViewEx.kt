@@ -25,6 +25,7 @@ import com.tencent.kuikly.core.views.ScrollerAttr
 import com.tencent.kuikly.core.views.ScrollerAttr.Companion.NESTED_SCROLL
 import com.tencent.kuikly.core.views.ScrollerEvent
 import com.tencent.kuikly.core.views.ScrollerView
+import kotlin.math.abs
 import kotlin.math.max
 
 internal val KuiklyInfoKey = "KuiklyInfoKey"
@@ -40,6 +41,9 @@ internal fun ScrollerView<ScrollerAttr, ScrollerEvent>.calNewOffset(curOffset: I
 }
 
 internal fun ScrollerView<ScrollerAttr, ScrollerEvent>.applyOffsetDelta(delta: Int, kuiklyInfo: KuiklyScrollInfo): IntOffset {
+    if (kuiklyInfo.axis.mirrored) {
+        return applyMirroredOffsetDelta(delta, kuiklyInfo)
+    }
     val density = kuiklyInfo.getDensity()
 
     val curOffset = IntOffset(
@@ -97,4 +101,67 @@ internal fun ScrollerView<ScrollerAttr, ScrollerEvent>.applyOffsetDelta(delta: I
     }
 
     return IntOffset(newOffset.x, newOffset.y)
+}
+
+/**
+ * Ronaq fork (CHANGES.md §30): [applyOffsetDelta] for a mirrored scroller (a horizontal
+ * lazy list or grid under Rtl). [delta] and the returned x are LOGICAL, like
+ * `composeOffset`; the native offset is `nativeMax - logical`.
+ *
+ * The same steps as the left-to-right path, converted where a value crosses to the host:
+ * 1. the current offset is read from the native one Kotlin last wrote or accepted
+ *    (`curOffsetX` still holds the pre-shift value between a re-anchor and its echo);
+ * 2. the content grows as before; `updateContentSizeToRender` now re-anchors, which moves
+ *    the native offset and `nativeMax` together;
+ * 3. the children move by `-delta`, because their native x is
+ *    `pos.x + nativeMax - composeOffset` and `composeOffset` grows by `delta`;
+ * 4. `nativeMax - newLogical` is written with the post-growth `nativeMax`, keeping the
+ *    Android `-0.01dp` end write, and its echo is ignored in native units.
+ */
+private fun ScrollerView<ScrollerAttr, ScrollerEvent>.applyMirroredOffsetDelta(delta: Int, kuiklyInfo: KuiklyScrollInfo): IntOffset {
+    val density = kuiklyInfo.getDensity()
+    val axis = kuiklyInfo.axis
+
+    val hostNative = axis.lastNative
+    val curLogical = axis.toLogical(hostNative)
+    val curY = (curOffsetY * density).toInt()
+    val newLogical = curLogical + delta
+
+    if (kuiklyInfo.composeOffset.toInt() == newLogical) {
+        return IntOffset(newLogical, curY)
+    }
+
+    // Grow the content (logical, as before); the re-anchor keeps the screen still.
+    renderView?.run {
+        val viewportSize = kuiklyInfo.viewportSize
+        if (newLogical + viewportSize > kuiklyInfo.currentContentSize) {
+            kuiklyInfo.currentContentSize += (2000 * density + delta).toInt()
+            kuiklyInfo.updateContentSizeToRender()
+        }
+    }
+
+    // Keep nested scrolling out of the programmatic move.
+    val originNestSetting = getViewAttr().getProp(NESTED_SCROLL)
+    if (originNestSetting != null) {
+        getViewAttr().run {
+            nestedScroll(KRNestedScrollMode.SELF_ONLY, KRNestedScrollMode.SELF_ONLY)
+        }
+    }
+
+    kuiklyInfo.shiftMirroredChildren(-delta / density)
+
+    val newNative = axis.toNative(newLogical)
+    if (abs(newNative - hostNative) >= 1f) {
+        // Only wait for an echo the host will send: an offset left where the host already
+        // is sends none.
+        kuiklyInfo.ignoreScrollOffset = IntOffset(newNative, curY)
+    }
+    kuiklyInfo.writeMirroredNative(newNative.toFloat())
+
+    // Restore the nested-scroll setting.
+    originNestSetting?.run {
+        getViewAttr().setProp(NESTED_SCROLL, originNestSetting)
+    }
+
+    return IntOffset(newLogical, curY)
 }

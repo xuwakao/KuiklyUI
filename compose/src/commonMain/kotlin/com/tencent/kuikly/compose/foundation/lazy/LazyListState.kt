@@ -754,7 +754,7 @@ class LazyListState
                             it.firstVisibleItemScrollOffset,    // [1]
                             it.kuiklyInfo.composeOffset.toInt(),// [2] bridge: Compose scroll offset
                             it.kuiklyInfo.currentContentSize,   // [3] bridge: virtual content size
-                            it.kuiklyInfo.contentOffset,        // [4] bridge: native scrollView offset
+                            it.kuiklyInfo.contentOffset,        // [4] bridge: logical scroll offset (the native one unless mirrored, CHANGES.md §30)
                             if (it.kuiklyInfo.offsetDirty) 1 else 0, // [5] bridge: offset dirty flag
                         )
                         saved

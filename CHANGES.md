@@ -2474,6 +2474,10 @@ same asymmetry. They are left alone because no measurement has been taken of the
 horizontal `LazyRow` scrolled in Arabic is the case to check — and a blind sweep would be a
 change without evidence.
 
+*Later (2026-09-23):* that measurement was taken, and the lazy lists got a different fix
+from this one — §30 keeps their placement mirrored and maps the offset instead, because
+reversing a list's order would put its scroll origin on the last item.
+
 ## 27. The Compose `Canvas` batches its frame's draw commands, and web learns to receive them
 
 **Why.** Unbatched, every canvas primitive is its own bridge crossing. `CanvasContext`
@@ -2760,3 +2764,137 @@ view is never created, and its later removal fails the assertion.
   report in the assertion message, which the crash buffer keeps.
 No behaviour changes: the same assertion fires in the same place.
 
+## 30. Horizontal lazy lists and grids scroll with the finger under RTL — RTL
+
+**Files** · `compose/.../gestures/MirroredScrollAxis.kt` (new) · `gestures/KuiklyScrollInfo.kt` ·
+`ui/layout/SubcomposeLayout.kt` · `ui/node/KNode.kt` · `views/ScrollViewEx.kt` ·
+`layout/SubcomposeLayoutEx.kt` · a comment in `foundation/lazy/LazyListState.kt` ·
+test `compose/src/commonTest/.../gestures/MirroredScrollAxisTest.kt` (new)
+**Driven by** · Charter C-5; the owner's ruling 「要修」 (2026-09-23) on the Ronaq issue
+`docs/issue/rtl-horizontal-list-drags-backwards.md`
+**Date** · 2026-09-23
+
+### What upstream Compose does
+
+A horizontal lazy item is placed with `placeRelativeWithLayer`
+(`LazyListMeasuredItem.kt:247`, `LazyGridMeasuredItem.kt:219`,
+`LazyStaggeredGridMeasure.kt:1477`), which mirrors it inside the list's visible box under
+Rtl. Upstream then reverses the gesture to match through
+`scrollingContainer(reverseDirection = …)`, so placement and gesture agree.
+
+### What goes wrong here
+
+`scrollingContainer` is commented out (`LazyList.kt:150-157`); the gesture belongs to the
+host's native scroller, which is physically left-to-right on every host, and the bridge
+copied its offset straight across in both directions (`SubcomposeLayout` scroll handler
+native → Compose; `KNode.updateKuiklyViewFrame` item frame = placed x + `composeOffset`).
+One mirror, no reversal: a finger moving d scrolled Compose forward by d, which moved the
+mirrored items by +d and their native frames by +2d, so on screen the content moved +d —
+against the finger — and at rest (native offset 0) the later items sat at negative x where
+no offset could reach them. Measured: Pixel, Home's tag strip, a finger 900 → 200 moved the
+chips −886 in English and +889 in Arabic; headless Chromium (whose DOM scroller has no RTL
+at all) shifted every Arabic chip +243 for `scrollLeft` 0 → 243, each chip's own `left`
++2× that. The old "two layers each mirror" explanation in the issue record was wrong:
+`LinearLayoutManager`'s own reversal only switches on under an RTL SYSTEM language (§31).
+
+### The change
+
+The bridge owns right-to-left; every native scroller stays physically left-to-right. For a
+**mirrored** scroller — horizontal, `LocalLayoutDirection` Rtl, state `LazyListState`,
+`LazyGridState` or `LazyStaggeredGridState` — the native offset is the mirror image of the
+LOGICAL one (the offset the list would have in left-to-right, where 0 is the first item):
+
+```
+nativeMax = max(0, C - W)          C: content size pushed to native, W: viewport (px)
+native    = nativeMax - logical    (its own inverse)
+frame.x   = pos.x + nativeMax - composeOffset
+```
+
+An item then sits on screen at `frame.x - native = pos.x`, where Compose placed and
+hit-tests it, and a finger that lowers the native offset raises the logical one.
+
+- `MirroredScrollAxis` holds the arithmetic and bookkeeping, host-free: `toNative`,
+  `toLogical` (rounds when mirrored, so a host reporting 899.99994 for 900 still reads as
+  the first item; truncates as before otherwise), `frameOriginX`, the re-anchor planner and
+  a stale-event filter. `KuiklyScrollInfo.axis` carries one per scroller.
+- Every Kotlin quantity the bridge keeps — `composeOffset`, `contentOffset`,
+  `currentContentSize`, `realContentSize`, the `isAtTop` / `tryExpandStartSize*` logic, the
+  `+2000dp` growth, the `LazyListState.Saver` — stays as it was and is now read as logical.
+  Only values crossing to or from the host are converted: the `scroll`, `dragEnd` and
+  `scrollEnd` handlers, `applyOffsetDelta` (reads and writes), `restoreScrollerViewOnReuse`,
+  `KNode.updateKuiklyViewFrame` / `updateScrollViewOffset`. The `ignoreScrollOffset` match
+  still compares raw native values.
+- **Re-anchoring.** A mirrored list's logical start is the host's physical END, so a change
+  of `C - W` (the 3000 dp default growing by 1500 dp, the collapse to the real size once the
+  last item is visible, a new viewport) moves every item's native x and the native offset
+  by the same Δ. `updateContentSizeToRender` is the one place that happens: it shifts the
+  content children (from their Kotlin-side frames, as `applyOffsetDelta` does) and the
+  offset by Δ in one batch — frame first when growing, offset first when shrinking, so a
+  browser's `scrollLeft` clamp and Android's deferred write (`canScrollImmediately`) never
+  see an out-of-range pair. `KNode.updateFrame` calls it when a mirrored scroller's own size
+  changes. The logical offset does not change across a re-anchor.
+- **Stale events.** Hosts deliver scroll events through the Kotlin context queue, so events
+  produced before the host applied a re-anchor arrive in pre-shift coordinates. They are
+  dropped when nearer the host's pre-write position than the value Kotlin wrote last; the
+  first event nearer the written value disarms the filter; at most 8 are dropped. A
+  misjudged event costs at most the distance between the two positions.
+- **Short strips** (I6): mirrored content is never narrower than its viewport — the content
+  frame is `max(C, W)` wide — or a strip of three chips would sit outside a content view
+  only C wide (Android's `FrameLayout` clips).
+- A direction flip at runtime rewrites the content frame and offset from the logical value
+  (`KuiklyScrollInfo.resyncNative`, from a `SideEffect`).
+
+For every other scroller — vertical ones, pagers (§26 places them absolutely), `ScrollState`
+(`ScrollableTabRow` places `left - scrollState.value` itself, `TabRow.kt:1093`) — the flag is
+false, every conversion is the identity and the code path is the one it was.
+
+### Verification
+
+- **JVM** — `./gradlew :KuiklyUI:compose:testDebugUnitTest --tests '*MirroredScrollAxisTest'`
+  (from the Ronaq client's `mobile/`): 19 tests, 0 failures. Eleven cover the arithmetic
+  (identity when not mirrored, the inverse, rest rounding, growth / shrink / viewport
+  re-anchors and their write order, the stale filter and its budget); eight drive a model —
+  a physically left-to-right host scroller, a row that mirrors its placement, and the
+  bridge steps expressed through `MirroredScrollAxis` — with a finger: every chip moves with
+  it in both directions and both languages, chip 0 opens at the start edge, a backward
+  finger at the start moves nothing, repeated forward fingers reach the last chip and stop,
+  the collapse at the last item moves nothing on screen, a stale event across a re-anchor
+  does not jump, `scrollToItem` + the 150 ms realignment keeps the screen still. The same
+  model with the pre-fix bridge (no mirror) fails six of the eight model tests.
+- **Build** — `:shared:compileDebugKotlinAndroid :shared:compileKotlinJs
+  :shared:compileKotlinIosSimulatorArm64 :shared:testDebugUnitTest` (1793 tests, 0
+  failures), `:KuiklyUI:compose:testDebugUnitTest`, `:androidApp:compileApkDebugKotlin`.
+  HarmonyOS: no toolchain here; the change is common Kotlin only, nothing under
+  `core-render-ohos`, no new expect/actual.
+- **Web, headless** — Ronaq `scripts/lazyrow-direction-web.mjs`, Chromium (CDP touch) and
+  WebKit (stepped `scrollLeft`), Arabic and English, before and after; results in the issue
+  record.
+- **Devices** — not run in this change (no phone was free); the Android and iPhone checks
+  are recorded as PENDING, with commands, in the issue record.
+
+### Known limits
+
+- A horizontal `stickyHeader` under Rtl is unsupported: `StickyHeaderCacheManager` stores
+  native positions and is not shifted by a re-anchor. No call site.
+- `ScrollableTabRow` / a horizontal `ScrollState` under Rtl is untouched (another model, no
+  call site).
+- Horizontal grids and staggered grids are in the mirrored set on the strength of the same
+  placement code and the unit tests; no product screen uses one.
+- HarmonyOS behaviour is unverified. `ContentSizeExtensions.kt:330-332` waits 25 ms after a
+  size change before writing an offset on OHOS; if OHOS ships, the re-anchor may need the
+  same delay.
+
+### Rejected
+
+§26's contract (place absolutely, callers reverse the order) puts logical offset 0 on the
+LAST item, so every Arabic strip would open at its end, and asks 11 call sites to reverse
+server order. Native RTL per host is three or four implementations, and web `scrollLeft`
+under `direction: rtl` means different things per engine. A `scaleX(-1)` flip breaks
+Compose hit testing and Android's nested hand-off. Core `ScrollerView.transformInput/
+OutputContentOffset` misses `dragEnd`, `scrollEnd`, `willDragEnd` and `curOffsetX`.
+
+### Upstreaming
+
+General capability, no Ronaq types. Upstream would likely rather restore
+`scrollingContainer`'s reversal on hosts that can, but the bridge's virtual content size
+makes this Kotlin-side mapping the one place that serves every host.
