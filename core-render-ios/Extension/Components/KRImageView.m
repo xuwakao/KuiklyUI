@@ -23,11 +23,18 @@
 #import "NSObject+KR.h"
 #import "KRBlurView.h"
 #import "KuiklyRenderThreadManager.h"
+#import "UIView+KRVisibility.h"
 
 NSString *const KRImageAssetsPrefix = @"assets://";
 NSString *const KRImageLocalPathPrefix = @"file://";
 
 NSString *const KRImageBase64Prefix = @"data:image";
+
+/// A view that is on screen and still has no size well after it arrived is sized BY its
+/// picture (a wrap-content image reports its resolution, and only then gets a frame), so it
+/// loads without a size rather than never. Kuikly sets a view's frame in the same render flush
+/// that attaches it, so the grace is far longer than any view waits for its frame.
+static const NSTimeInterval KRImageSizelessGrace = 0.25;
 
 
 
@@ -40,6 +47,10 @@ NSString *const KRImageBase64Prefix = @"data:image";
 + (instancetype)sharedInstance;
 - (void)cacheWithKey:(NSString *)key image:(UIImage *)image;
 - (UIImage *_Nullable)imageWithKey:(NSString *)key;
+/// The same entry, with the pixel size its image was loaded for (CGSizeZero when unknown or
+/// loaded without a size), so a recycled view keeps its upgrade rule.
+- (void)cacheWithKey:(NSString *)key image:(UIImage *)image pixelSize:(CGSize)pixelSize;
+- (UIImage *_Nullable)imageWithKey:(NSString *)key pixelSize:(CGSize *_Nullable)pixelSize;
 - (void)removeAllCache;
 
 
@@ -49,7 +60,7 @@ typedef void (^KRSetImageBlock) (UIImage *_Nullable image);
 /*
  * @brief 暴露给Kotlin侧调用的Image组件
  */
-@interface KRImageView()
+@interface KRImageView() <KRViewTreeObserver>
 /** 图片url */
 @property (nonatomic, copy) NSString *KUIKLY_PROP(src);
 /** 图片适应模式 */
@@ -119,6 +130,13 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 
 @implementation KRImageView {
     UIImage *_originImage;
+    /// A source whose load waits for the view's first layout with a size.
+    NSString *_pendingSrc;
+    CGSize _requestedPixelSize;
+    /// Registered for the view-tree notices (in a window, with a source).
+    BOOL _observingTree;
+    /// Set for the one load a view with no size is allowed (-kr_loadIfStillSizeless:).
+    BOOL _loadingWithoutSize;
 }
 
 @synthesize hr_rootView;
@@ -144,10 +162,13 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 
 - (void)hrv_prepareForeReuse {
     if (self.image && self.css_src && _originImage) {
-        [[KRImageRefreshCache sharedInstance] cacheWithKey:self.css_src image:_originImage];
+        [[KRImageRefreshCache sharedInstance] cacheWithKey:self.css_src image:_originImage
+                                                 pixelSize:_requestedPixelSize];
     }
     KUIKLY_RESET_CSS_COMMON_PROP;
     _originImage = nil;
+    _pendingSrc = nil;
+    _requestedPixelSize = CGSizeZero;
     self.css_src = nil;
     self.css_tintColor = nil;
     self.css_colorFilter = nil;
@@ -195,25 +216,44 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_src:(NSString *)css_src {
     if (self.css_src != css_src) {
         _css_src = css_src;
+        _pendingSrc = nil;
+        _requestedPixelSize = CGSizeZero;
         [self bindImageToView:nil]; // clear current image 清除缓存
         if (css_src) {
-            UIImage *image = [[KRImageRefreshCache sharedInstance] imageWithKey:css_src];
+            CGSize cachedPixelSize = CGSizeZero;
+            UIImage *image = [[KRImageRefreshCache sharedInstance] imageWithKey:css_src
+                                                                      pixelSize:&cachedPixelSize];
             if (image) {
+                _requestedPixelSize = cachedPixelSize;
                 self.image = image;
+                [self kr_updateViewTreeObservation];
                 return;
             }
             // 缓存中不存在当前src对应的图片，则再执行加载
             [self setImageWithSrc:css_src];
         }
+        [self kr_updateViewTreeObservation];
     }
 }
 
 /*
  * 根据src加载原始图片 + 原始图片染色
  * @param css_src：图片路径
+ *
+ * Every loader of this view comes through here — `src`, and the tint, colour-filter, blur
+ * and cap-inset setters while no image is held — so the size gate lives here: a sized view
+ * with no size yet records the source and loads it from its first layout with one
+ * (-layoutSubviews), at the pixel size it will cover.
  */
 - (void)setImageWithSrc:(NSString *)css_src {
     if (css_src) {
+        if (!self.kr_loadsWithoutSize && !_loadingWithoutSize && CGRectIsEmpty(self.bounds)) {
+            _pendingSrc = [css_src copy];
+            [self kr_scheduleSizelessGrace];
+            return;
+        }
+        _pendingSrc = nil;
+        _requestedPixelSize = [self kr_pixelSizeForLoad];
         [self bindImageToView:nil]; // clear current image
         if ([css_src hasPrefix:KRImageAssetsPrefix]) {
             [self setAssetsImage:css_src];
@@ -321,6 +361,11 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     } else {
         NSAssert(0, @"should expand hr_setImageWithUrl:forImageView:");
     }
+    if (!handled) {
+        // Decoded by this view itself (a bundled or local file), which sizes nothing: there is
+        // no loader to ask again when the view grows.
+        _requestedPixelSize = CGSizeZero;
+    }
     return handled;
 }
 
@@ -398,6 +443,138 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     [self p_syncMaskLinearGradientIfNeed];
+    // Here rather than in a frame setter: Kuikly's frame setter resets the transform, sets the
+    // frame and applies the transform again (UIView+CSS.m setCss_frame:), so only layout sees
+    // the view's final size and scale. Layout runs in the same transaction as the frame
+    // change, before anything is drawn, so a picture the loader has in memory still appears
+    // in the same pass.
+    [self kr_loadPendingOrUpgrade];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self kr_updateViewTreeObservation];
+    if (self.window) {
+        // Ancestors attached after this view's own layout can enlarge it (a scaled parent).
+        [self kr_loadPendingOrUpgrade];
+        [self kr_scheduleSizelessGrace];
+    }
+}
+
+/// Starts the grace for a source waiting on a size while the view is on screen.
+- (void)kr_scheduleSizelessGrace {
+    if (!self.window || !_pendingSrc || !CGRectIsEmpty(self.bounds)) {
+        return;
+    }
+    NSString *src = _pendingSrc;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(KRImageSizelessGrace * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf kr_loadIfStillSizeless:src];
+    });
+}
+
+- (void)kr_loadIfStillSizeless:(NSString *)src {
+    if (!self.window || !CGRectIsEmpty(self.bounds) || ![_pendingSrc isEqualToString:src]) {
+        return;
+    }
+    _pendingSrc = nil;
+    _loadingWithoutSize = YES;
+    [self setImageWithSrc:src];
+    _loadingWithoutSize = NO;
+}
+
+#pragma mark - Size
+
+- (BOOL)kr_needsSourcePixels {
+    if ([self.css_dotNineImage boolValue]) {
+        return YES;
+    }
+    if (self.css_capInsets.length) {
+        // Parsed exactly as -p_updateWithImage: applies them.
+        NSArray *items = [self.css_capInsets componentsSeparatedByString:@" "];
+        if (items.count >= 4) {
+            for (NSUInteger i = 0; i < 4; i++) {
+                if ([items[i] floatValue] > 0) {
+                    return YES;
+                }
+            }
+        }
+    }
+    return NO;
+}
+
+- (CGSize)kr_requestedPixelSize {
+    return _requestedPixelSize;
+}
+
+/// The size to ask the loader for now: the on-screen pixels, or none for a view that has no
+/// size to give or must keep its source's pixels.
+- (CGSize)kr_pixelSizeForLoad {
+    if (self.kr_loadsWithoutSize || self.kr_needsSourcePixels || _loadingWithoutSize) {
+        return CGSizeZero;
+    }
+    return self.kr_displayPixelSize;
+}
+
+- (void)kr_loadPendingOrUpgrade {
+    if (CGRectIsEmpty(self.bounds)) {
+        return;
+    }
+    if (_pendingSrc) {
+        NSString *src = _pendingSrc;
+        _pendingSrc = nil;
+        if ([src isEqualToString:self.css_src] && _originImage == nil) {
+            [self setImageWithSrc:src];
+        }
+        return;
+    }
+    [self kr_upgradeIfGrown];
+}
+
+/// Ask again, keeping the current picture, when the view now covers more than an eighth more
+/// pixels than its load was issued for on either axis — one step of a loader's size ladder,
+/// so layout noise does not reload.
+- (void)kr_upgradeIfGrown {
+    if (self.css_src.length == 0 || _requestedPixelSize.width <= 0 || _requestedPixelSize.height <= 0) {
+        return;
+    }
+    CGSize now = [self kr_pixelSizeForLoad];
+    if (now.width <= _requestedPixelSize.width * 1.125 && now.height <= _requestedPixelSize.height * 1.125) {
+        return;
+    }
+    _requestedPixelSize = now;
+    NSString *src = self.css_src;
+    if ([src hasPrefix:KRImageAssetsPrefix]) {
+        [self setAssetsImage:src];
+    } else if ([src hasPrefix:KRImageLocalPathPrefix]) {
+        [self setImageWithLocalUrl:src];
+    } else if (![src hasPrefix:KRImageBase64Prefix]) {
+        [self setImageWithUrl:src];
+    }
+}
+
+#pragma mark - View-tree notices
+
+/// Observed while the view is in a window with a source: the only time an ancestor's change
+/// can matter to it.
+- (void)kr_updateViewTreeObservation {
+    BOOL wanted = self.window != nil && self.css_src.length > 0;
+    if (wanted == _observingTree) {
+        return;
+    }
+    _observingTree = wanted;
+    if (wanted) {
+        [UIView kr_addViewTreeObserver:self];
+    } else {
+        [UIView kr_removeViewTreeObserver:self];
+    }
+}
+
+- (void)kr_viewTreeDidChange:(KRViewTreeChange)changes {
+    if (changes & KRViewTreeChangeGeometry) {
+        [self kr_upgradeIfGrown];
+    }
 }
 
 #pragma mark - private
@@ -925,6 +1102,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 
 @implementation KRImageRefreshCache {
     NSMutableDictionary *_imageCache;
+    NSMutableDictionary<NSString *, NSValue *> *_pixelSizes;
 }
 
 + (instancetype)sharedInstance {
@@ -940,13 +1118,19 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     self = [super init];
     if (self) {
         _imageCache = [NSMutableDictionary new];
+        _pixelSizes = [NSMutableDictionary new];
     }
     return self;
 }
 
 - (void)cacheWithKey:(NSString *)key image:(UIImage *)image {
+    [self cacheWithKey:key image:image pixelSize:CGSizeZero];
+}
+
+- (void)cacheWithKey:(NSString *)key image:(UIImage *)image pixelSize:(CGSize)pixelSize {
     if (key && image) {
         [_imageCache setObject:image forKey:key];
+        [_pixelSizes setObject:[NSValue valueWithCGSize:pixelSize] forKey:key];
         // 等2s后释放
         NSUInteger flag = ++self.delayBatchFlag;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -958,7 +1142,14 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 }
 
 - (UIImage *_Nullable)imageWithKey:(NSString *)key {
+    return [self imageWithKey:key pixelSize:NULL];
+}
+
+- (UIImage *_Nullable)imageWithKey:(NSString *)key pixelSize:(CGSize *)pixelSize {
     if (key) {
+        if (pixelSize) {
+            *pixelSize = [_pixelSizes[key] CGSizeValue];
+        }
         return _imageCache[key];
     }
     return nil;
@@ -967,11 +1158,13 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)removeCacheWithKey:(NSString *)key {
     if (key) {
         [_imageCache removeObjectForKey:key];
+        [_pixelSizes removeObjectForKey:key];
     }
 }
 
 - (void)removeAllCache {
     [_imageCache removeAllObjects];
+    [_pixelSizes removeAllObjects];
 }
 
 
