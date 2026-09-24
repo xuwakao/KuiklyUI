@@ -176,7 +176,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      * current touch gesture from the lists it is nested in. Decided at the gesture's first nested
      * move ([keepsHorizontalTouchGesture]), forgotten at the next ACTION_DOWN.
      */
-    private var touchGestureClaim = TOUCH_GESTURE_UNDECIDED
+    private val touchGestureClaim = NestedTouchGestureClaim()
 
     private var lastScrollParentX = 0
 
@@ -636,7 +636,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 nestedScrollVelocityTracker?.addMovement(ev)
                 nestedScrollLastMoveTime = ev.eventTime
                 // Ronaq fork (CHANGES.md §33): a new gesture decides afresh.
-                touchGestureClaim = TOUCH_GESTURE_UNDECIDED
+                touchGestureClaim.reset()
             }
             MotionEvent.ACTION_MOVE -> {
                 nestedScrollVelocityTracker?.addMovement(ev)
@@ -1573,11 +1573,6 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         private const val VELOCITY_DECAY_THRESHOLD_MS = 150L
         private const val SCROLL_WITH_PARENT = "scrollWithParent"
 
-        // Ronaq fork (CHANGES.md §33): the values of [touchGestureClaim].
-        private const val TOUCH_GESTURE_UNDECIDED = 0
-        private const val TOUCH_GESTURE_KEPT = 1
-        private const val TOUCH_GESTURE_RELEASED = 2
-
         private const val METHOD_CONTENT_OFFSET = "contentOffset" // 设置内容的偏移量，会把List滚到对应的位置
         private const val METHOD_SHIFT_CONTENT_OFFSET = "shiftContentOffset" // Ronaq fork (CHANGES.md §32)
         private const val METHOD_CONTENT_INSET_WHEN_END_DRAG =
@@ -1861,27 +1856,20 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
     /**
      * Ronaq fork (CHANGES.md §33): whether this list keeps the current touch gesture's horizontal
-     * motion from the lists it is nested in. Decided once per gesture, at its first nested move
-     * [dx] (RecyclerView's sign: positive scrolls towards the right end). A list that could
-     * scroll that way then keeps the whole gesture: the finger past its end does not move the
-     * list around it. A list that could not lets the parent have the gesture, as before.
-     *
-     * That is what a scrollable child gets inside androidx `ViewPager`: the first move a nested
-     * view can scroll sets `mIsUnableToDrag` for the rest of the gesture (`ViewPager.java:2080-
-     * 2085`, `:2046-2050`, viewpager 1.0.0), and the reference client's tag strips sit in one
-     * (lingoandroid `fragment_party.xml:56`; `fragment_hot.xml:123-136`,
-     * `fragment_mine.xml:83-100`). A pager (no fling, as Compose pagers are; or paging) never
-     * keeps a gesture, so a pager nested in a pager hands over exactly as it did (§26).
+     * motion [dx] (RecyclerView's sign: positive scrolls towards the right end) from the lists it
+     * is nested in. Decided once per gesture, at its first nested move this list does not give
+     * its parent first; see [NestedTouchGestureClaim] for the rule and the reference it follows.
+     * A pager (no fling, as Compose pagers are; or paging) never keeps a gesture, so a pager
+     * nested in a pager hands over exactly as it did (§26). A direction declared PARENT_FIRST
+     * stays the parent's on every move, as `scrollParentIfNeeded` has it.
      */
-    internal fun keepsHorizontalTouchGesture(dx: Int): Boolean {
-        if (!supportFling || pageEnable) {
-            return false
-        }
-        if (touchGestureClaim == TOUCH_GESTURE_UNDECIDED && dx != 0) {
-            touchGestureClaim = if (canScrollHorizontally(dx)) TOUCH_GESTURE_KEPT else TOUCH_GESTURE_RELEASED
-        }
-        return touchGestureClaim == TOUCH_GESTURE_KEPT
-    }
+    internal fun keepsHorizontalTouchGesture(dx: Int): Boolean =
+        touchGestureClaim.keeps(
+            dx = dx,
+            isPager = !supportFling || pageEnable,
+            parentFirst = (if (dx > 0) scrollForwardMode else scrollBackwardMode) == KRNestedScrollMode.PARENT_FIRST,
+            canScroll = ::canScrollHorizontally,
+        )
 
     /**
      * 在满足条件的情况下尝试滚动父亲

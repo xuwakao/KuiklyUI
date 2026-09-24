@@ -79,4 +79,6 @@ dependencies {
     compileOnly(project(":core"))
     implementation("androidx.appcompat:appcompat:1.2.0")
     implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
+    // Ronaq fork (CHANGES.md §33): JVM tests of the renderer's view-free decisions.
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:${Version.getKotlinVersion()}")
 }
