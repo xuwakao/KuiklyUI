@@ -3025,10 +3025,10 @@ defects in the stale filter. Both are fixed in `MirroredScrollAxis`; Ronaq issue
    coordinates, and the following kept it true event after event. With the budget at 32, a
    fling that ended inside the run lost its last event too, and Compose rested away from the
    host with nothing to correct it. The trigger is real on Android: `calculateContentSize`
-   reads the content frame back as Float dp times density, truncated, and at 2.625 px/dp
-   (also 2.75 and 3.5) about one width in twenty reads a pixel short, so mid-strip, with no
-   growth due, the content size steps down a pixel and the list re-anchors by -1; a fling back
-   towards the first chip then goes against it. Now an event is stale only within half of Δ of
+   reads the content frame back as Float dp times density, truncated, and some widths read a
+   pixel short (5.3% of widths 1000..39999 at 2.625 px/dp, 4.6% at 2.75, 2.9% at 3.5, none at
+   2.0, 2.25 or 3.0), so mid-strip, with no growth due, the content size steps down a pixel and
+   the list re-anchors by -1; a fling back towards the first chip then goes against it. Now an event is stale only within half of Δ of
    the pre-write reference. That is strictly narrower than the old rule, so nothing the old rule
    took is dropped now; what it no longer drops is an event that has moved further than half
    of Δ, which is off by at most Δ if it was in the old coordinates.
