@@ -2957,9 +2957,10 @@ bridge. The evidence is in Ronaq `docs/evidence/regression-2026-09-23/rtl-langua
 record is the issue's "Regression edge cases 2026-09-23" section.
 
 1. **A re-anchor shifted from an offset the host never reached.** Seen on the Mine sub-tabs in
-   Arabic (751 px of content in 720): at rest the first tab sat 31 px from the right edge
-   (`superseded/android-mine-ar`) or 5 px from it (`android/mine-ar`, `FOLLOWING@461`),
-   instead of 36 px, and a forward finger moved the strip 0 or 26 px.
+   Arabic (751 px of content in 720). At rest the first tab should sit 36 px from the right
+   edge. It sat 5 px from it, 31 px out of place (`superseded/android-mine-ar`,
+   `FOLLOWING@487`), or 31 px from it, 5 px out of place (`android/mine-ar`, `FOLLOWING@461`).
+   A forward finger then moved the strip 0 px.
    - *Why.* Every Android write the laid-out content has no room for waits for the next
      layout pass, and is dropped there if it still does not fit
      (`KRRecyclerView.tryApplyPendingSetContentOffset`). A shift waits behind it
@@ -2998,7 +2999,9 @@ Tests (`MirroredScrollAxisTest`, now 32):
   - `aStripThatBarelyOverflowsOpensAtItsStartOnAndroid`: the first tab at 487 px instead of
     456, the device's number;
   - `aReanchorShiftsOnlyFromAnOffsetTheHostReported`;
-  - `aFlingHeardLateNeverRunsBackwards`: lag 12, Compose taken from 7934 back to 1853;
+  - `aFlingHeardLateNeverRunsBackwards`: at lag 12 Compose was taken from 7934 back to
+    1853. At lag 16 the fling settled with Compose at the end and the host 3754 px short of
+    it, with no event left to correct it: the model's blank strip;
   - `aLongLagOfStaleEventsIsFollowedNotCountedOut`.
 - **Also added**: `anAbsoluteWriteIsNotDraggedAlongByTheHost` and `onlyTheHostSaysWhereItIs`.
 - **Mutations.** Each of these, applied alone, fails at least one test:

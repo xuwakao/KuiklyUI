@@ -427,8 +427,11 @@ class MirroredScrollAxisTest {
         // fling Compose had composed the first chips while the host showed the last ones. One
         // way there: a Kotlin thread busy for many frames at a re-anchor, so that more host
         // events in the old coordinates reach it than the stale filter allowed for, and the
-        // rest read as a jump of the whole re-anchor.
-        for (lag in listOf(1, 4, 12)) {
+        // rest read as a jump of the whole re-anchor. With the filter as it was, lag 12 ran
+        // Compose back from 7934 to 1853 and the fling stopped short; lag 16 settled with
+        // Compose at the end and the host 3754 px short of it, nothing left to correct it: the
+        // chips Compose composes then sit off screen.
+        for (lag in listOf(1, 4, 12, 16)) {
             for (rtl in listOf(false, true)) {
                 val what = "lag $lag rtl=$rtl"
                 val m = Model(rtl, host = FakeScroller(canShiftOffset = true, absoluteWriteStopsFling = false))
