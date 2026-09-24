@@ -137,6 +137,8 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     BOOL _observingTree;
     /// Set for the one load a view with no size is allowed (-kr_loadIfStillSizeless:).
     BOOL _loadingWithoutSize;
+    /// Content a loader animates itself (-kr_presentContentView:posterImage:).
+    UIView *_contentView;
 }
 
 @synthesize hr_rootView;
@@ -161,11 +163,14 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 }
 
 - (void)hrv_prepareForeReuse {
-    if (self.image && self.css_src && _originImage) {
+    // A picture shown through a content view is not kept for the next occupant: its content
+    // is live, and the loader answers a repeat from its own memory in the same pass.
+    if (self.image && self.css_src && _originImage && _contentView == nil) {
         [[KRImageRefreshCache sharedInstance] cacheWithKey:self.css_src image:_originImage
                                                  pixelSize:_requestedPixelSize];
     }
     KUIKLY_RESET_CSS_COMMON_PROP;
+    [self kr_removeContentView];
     _originImage = nil;
     _pendingSrc = nil;
     _requestedPixelSize = CGSizeZero;
@@ -374,6 +379,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     if (self.css_resize != css_resize) {
         _css_resize = css_resize;
         self.contentMode = [KRConvertUtil UIViewContentMode:css_resize];
+        _contentView.contentMode = self.contentMode;
     }
 }
 
@@ -392,8 +398,9 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_loadSuccess:(KuiklyRenderCallback)css_loadSuccess {
     if (_css_loadSuccess != css_loadSuccess) {
         _css_loadSuccess = css_loadSuccess;
-        if (css_loadSuccess && self.image) {
-            [self p_fireLoadSuccessEventWithImage:self.image];
+        UIImage *shown = self.image ?: (_contentView ? _originImage : nil);
+        if (css_loadSuccess && shown) {
+            [self p_fireLoadSuccessEventWithImage:shown];
         }
     }
 }
@@ -401,8 +408,9 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_loadResolution:(KuiklyRenderCallback)css_loadResolution {
     if (_css_loadResolution != css_loadResolution) {
         _css_loadResolution = css_loadResolution;
-        if (css_loadResolution && self.image) {
-            [self p_fireLoadResolutionEventWithImage:self.image];
+        UIImage *shown = self.image ?: (_contentView ? _originImage : nil);
+        if (css_loadResolution && shown) {
+            [self p_fireLoadResolutionEventWithImage:shown];
         }
     }
 }
@@ -427,8 +435,43 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 }
 
 - (void)bindImageToView:(UIImage *)image {
+    // Any image bound through here — or none — replaces content a loader was animating.
+    [self kr_removeContentView];
     _originImage = image;
     [self p_updateWithImage:image];
+}
+
+#pragma mark - Content view
+
+- (UIView *)kr_contentView {
+    return _contentView;
+}
+
+- (BOOL)kr_presentContentView:(UIView *)view posterImage:(UIImage *)poster {
+    if (view == nil || poster == nil || self.kr_loadsWithoutSize || self.kr_needsSourcePixels ||
+        self.css_tintColor.length || self.css_colorFilter.length || [self.css_blurRadius floatValue]) {
+        return NO;
+    }
+    [self kr_removeContentView];
+    _originImage = poster;
+    [super setImage:nil];
+    _contentView = view;
+    view.frame = self.bounds;
+    view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    view.contentMode = self.contentMode;
+    view.userInteractionEnabled = NO;
+    [self addSubview:view];
+    [self p_syncMaskLinearGradientIfNeed];
+    [self p_fireLoadSuccessEventWithImage:poster];
+    [self p_fireLoadResolutionEventWithImage:poster];
+    return YES;
+}
+
+- (void)kr_removeContentView {
+    if (_contentView) {
+        [_contentView removeFromSuperview];
+        _contentView = nil;
+    }
 }
 
 - (void)superSetImage:(UIImage *)image {
@@ -640,7 +683,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         hasClipPathMask = YES;
     }
     
-    if (self.image && _css_maskLinearGradient.length) {
+    if ((self.image || _contentView) && _css_maskLinearGradient.length) {
         // 清空 mask
         self.layer.mask = nil;
         

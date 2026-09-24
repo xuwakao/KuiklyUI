@@ -40,6 +40,20 @@ NS_ASSUME_NONNULL_BEGIN
 /// an eighth beyond it.
 @property (nonatomic, readonly) CGSize kr_requestedPixelSize;
 
+/// Shows `view` as this image view's content instead of an image: an animated picture whose
+/// frames a loader advances itself, so that no frame goes through -setImage: (which fires
+/// `loadSuccess`/`loadResolution` and redoes tint, filter and blur). `view` fills the bounds
+/// as the only content subview, under the corner clip and the gradient mask, and follows the
+/// content mode; `poster` stands for the picture — `loadSuccess` and `loadResolution` fire
+/// once, with its size. Returns NO and changes nothing when the view applies processing only
+/// an image can carry (tint, colour filter, blur, cap insets, nine-patch) or loads without a
+/// size; the caller then sets the poster as a still. The view goes on a new `src`, on an image
+/// set through -setImage:, and on reuse.
+- (BOOL)kr_presentContentView:(UIView *)view posterImage:(UIImage *)poster;
+
+/// The view -kr_presentContentView:posterImage: is showing, or nil.
+@property (nonatomic, readonly, nullable) UIView *kr_contentView;
+
 @end
 
 
