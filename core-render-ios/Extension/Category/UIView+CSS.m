@@ -20,6 +20,7 @@
 #import "KRView.h"
 #import "KuiklyRenderBridge.h"
 #import "KuiklyRenderViewExportProtocol.h"
+#import "UIView+KRVisibility.h"
 
 #define LAZY_ANIMATION_KEY @"lazyAnimationKey"
 #define ANIMATION_KEY @"animation"
@@ -221,6 +222,13 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
        
         self.css_transformImp = css_transform.length ? [[CSSTransform alloc] initWithCSSTransform:css_transform] : nil;
         [self.css_transformImp applyToView:self animation:self.css_animationImp oldTransform:oldTransform];
+        // Ronaq: a transform that enlarges its view can make the image views under it cover
+        // more pixels than their loads were sized for; they re-check on this notice
+        // (CHANGES.md §34). The model value is read, so an animated scale counts at its end.
+        CATransform3D t = self.layer.transform;
+        if (sqrt(t.m11 * t.m11 + t.m12 * t.m12) > 1.001 || sqrt(t.m21 * t.m21 + t.m22 * t.m22) > 1.001) {
+            [UIView kr_noteViewTreeChange:KRViewTreeChangeGeometry];
+        }
     }
 }
 
