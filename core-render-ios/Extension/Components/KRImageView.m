@@ -140,6 +140,10 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     BOOL _loadingWithoutSize;
     /// Content a loader animates itself (-kr_presentContentView:posterImage:).
     UIView *_contentView;
+    /// A loader accepted a source for this view and has not delivered a picture for it yet.
+    BOOL _loaderPending;
+    /// The loader abandoned that load when the view left its window; ask again on return.
+    BOOL _reaskOnWindow;
 }
 
 @synthesize hr_rootView;
@@ -189,6 +193,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     self.errorCode = 0;
     self.imageLoadingCount = 0;
     self.css_imageParams = nil;
+    _reaskOnWindow = NO;
 }
 
 #pragma mark - setter
@@ -221,6 +226,12 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 
 - (void)setCss_src:(NSString *)css_src {
     if (self.css_src != css_src) {
+        if (![css_src isEqualToString:_css_src]) {
+            // The old source's load would otherwise still arrive — over a picture the refresh
+            // cache supplies below, or after the view was cleared for reuse.
+            [self kr_abandonOutstandingLoad];
+        }
+        _reaskOnWindow = NO;
         _css_src = css_src;
         _pendingSrc = nil;
         _requestedPixelSize = CGSizeZero;
@@ -327,6 +338,8 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 
 - (BOOL)setImageWithUrl:(NSString *)url {
     BOOL handled = false;
+    // Before the call: a loader may deliver from its memory before it returns.
+    _loaderPending = url.length > 0;
     
     if ([[KuiklyRenderBridge componentExpandHandler] respondsToSelector:@selector(hr_setImageWithUrl:imageParams:complete:)]) {
         self.kr_reuseDisable = YES;     // 先关闭ImageView的复用能力
@@ -371,6 +384,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         // Decoded by this view itself (a bundled or local file), which sizes nothing: there is
         // no loader to ask again when the view grows.
         _requestedPixelSize = CGSizeZero;
+        _loaderPending = NO;
     }
     return handled;
 }
@@ -438,6 +452,9 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)bindImageToView:(UIImage *)image {
     // Any image bound through here — or none — replaces content a loader was animating.
     [self kr_removeContentView];
+    if (image) {
+        _loaderPending = NO;
+    }
     _originImage = image;
     [self p_updateWithImage:image];
 }
@@ -454,6 +471,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         return NO;
     }
     [self kr_removeContentView];
+    _loaderPending = NO;
     _originImage = poster;
     [super setImage:nil];
     _contentView = view;
@@ -499,10 +517,63 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     [super didMoveToWindow];
     [self kr_updateViewTreeObservation];
     if (self.window) {
+        if (_reaskOnWindow) {
+            _reaskOnWindow = NO;
+            [self kr_askAgainAfterAbandon];
+        }
         // Ancestors attached after this view's own layout can enlarge it (a scaled parent).
         [self kr_loadPendingOrUpgrade];
         [self kr_scheduleSizelessGrace];
+    } else if (_loaderPending) {
+        // A turn later, so a view moved between parents in one pass keeps its load.
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf kr_abandonLoadIfOffScreen];
+        });
     }
+}
+
+#pragma mark - Abandoning a load
+
+/// Asks the loader to drop the load this view waits for, keeping what the view shows. YES when
+/// the loader had one outstanding and dropped it. Never called from -dealloc: a loader's hold
+/// on a freed view goes with the view (KuiklyRenderBridge.h).
+- (BOOL)kr_abandonOutstandingLoad {
+    if (!_loaderPending) {
+        return NO;
+    }
+    _loaderPending = NO;
+    id<KuiklyRenderComponentExpandProtocol> handler = [KuiklyRenderBridge componentExpandHandler];
+    if (![handler respondsToSelector:@selector(hr_cancelImageLoadForImageView:)]) {
+        return NO;
+    }
+    return [handler hr_cancelImageLoadForImageView:self];
+}
+
+- (void)kr_abandonLoadIfOffScreen {
+    if (self.window == nil && [self kr_abandonOutstandingLoad]) {
+        _reaskOnWindow = YES;
+    }
+}
+
+/// The view is back in a window and the load it left behind was dropped: ask for the source
+/// again at the size the view covers now, keeping a picture it already shows.
+- (void)kr_askAgainAfterAbandon {
+    NSString *src = self.css_src;
+    if (src.length == 0 || _pendingSrc) {
+        return;
+    }
+    if (_originImage == nil) {
+        [self setImageWithSrc:src];  // the size gate included
+        return;
+    }
+    if (CGRectIsEmpty(self.bounds)) {
+        // No size to ask at yet: the first layout with one asks through the upgrade check.
+        _requestedPixelSize = CGSizeMake(1, 1);
+        return;
+    }
+    _requestedPixelSize = [self kr_pixelSizeForLoad];
+    [self kr_reloadKeepingPicture:src];
 }
 
 /// Starts the grace for a source waiting on a size while the view is on screen.
@@ -588,7 +659,11 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         return;
     }
     _requestedPixelSize = now;
-    NSString *src = self.css_src;
+    [self kr_reloadKeepingPicture:self.css_src];
+}
+
+/// Asks for `src` again without clearing the picture on screen.
+- (void)kr_reloadKeepingPicture:(NSString *)src {
     if ([src hasPrefix:KRImageAssetsPrefix]) {
         [self setAssetsImage:src];
     } else if ([src hasPrefix:KRImageLocalPathPrefix]) {
@@ -1036,6 +1111,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     if (![self p_srcMatch:url imageURL:imageURL]) {
         return NO;
     }
+    _loaderPending = NO;
     // 错误处理
     if (error) {
         if (self.css_loadFailure) {
