@@ -175,6 +175,9 @@ static NSString *const kCacheStateInProgress = @"InProgress";
     KR_WEAK_SELF
     dispatch_async(dispatch_get_main_queue(), ^{
         KRImageView* imageView = [[KRImageView alloc] init];
+        // Never given a frame or a window: it loads at once, without a size (Ronaq,
+        // CHANGES.md §34 — sized image views otherwise wait for their first layout).
+        imageView.kr_loadsWithoutSize = YES;
         imageView.hr_rootView = self.hr_rootView;
         KR_STRONG_SELF_RETURN_IF_NIL
         
