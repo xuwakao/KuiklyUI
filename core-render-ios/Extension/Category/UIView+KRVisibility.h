@@ -27,6 +27,17 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 
 @interface UIView (KRVisibility)
 
+/// The generic `occluded` prop (1/0): this subtree is laid out and attached but not on the
+/// glass — a page under an overlay, a tab that is not in front. Setting it posts a
+/// visibility notice. Reset on reuse like every common prop.
+@property (nonatomic, strong, nullable) NSNumber *css_occluded;
+
+/// Whether anything of this view can be seen: it is in a window, its bounds in window
+/// coordinates intersect the window's, and neither it nor any ancestor (the window included)
+/// is hidden, at alpha 0.01 or less, or marked occluded. The same predicate the Android
+/// renderer uses (Ronaq design image-pipeline INV-6).
+@property (nonatomic, readonly) BOOL kr_isEffectivelyVisible;
+
 /// How many pixels this view covers on the screen: its bounds, times the screen scale,
 /// times the scale of its own transform and of every ancestor's. Each axis's transform
 /// product is clamped to at least 1, so a view momentarily shrunk (the first frame of an
