@@ -23,6 +23,7 @@
 #import "KRScrollView+NestedScroll.h"
 #import "NSObject+KR.h"
 #import "KRContentOffsetAnimator.h"
+#import "UIView+KRVisibility.h"
 
 /// Ronaq: pull-to-refresh timing trace, off unless the app was launched with `-ptrTrace YES`
 /// (the argument domain, read once). It prints the native half of the pull: where the finger
@@ -256,6 +257,9 @@ KUIKLY_NESTEDSCROLL_PROTOCOL_PROPERTY_IMP
     }
     [super setContentOffset:contentOffset];
     [self p_dispatchScrollEventIfNeed];
+    // Ronaq: what is inside the window's bounds changes with every scroll; the notice is
+    // coalesced to one per run-loop turn (CHANGES.md §35).
+    [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
 }
 
 - (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
