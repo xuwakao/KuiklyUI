@@ -171,6 +171,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      */
     private var scrollWithParent = true
 
+    /**
+     * Ronaq fork (CHANGES.md §33): as the target of a nested scroll, whether this list keeps the
+     * current touch gesture from the lists it is nested in. Decided at the gesture's first nested
+     * move ([keepsHorizontalTouchGesture]), forgotten at the next ACTION_DOWN.
+     */
+    private var touchGestureClaim = TOUCH_GESTURE_UNDECIDED
+
     private var lastScrollParentX = 0
 
     private var lastScrollParentY = 0
@@ -628,6 +635,8 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 nestedScrollVelocityTracker = VelocityTracker.obtain()
                 nestedScrollVelocityTracker?.addMovement(ev)
                 nestedScrollLastMoveTime = ev.eventTime
+                // Ronaq fork (CHANGES.md §33): a new gesture decides afresh.
+                touchGestureClaim = TOUCH_GESTURE_UNDECIDED
             }
             MotionEvent.ACTION_MOVE -> {
                 nestedScrollVelocityTracker?.addMovement(ev)
@@ -1564,6 +1573,11 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         private const val VELOCITY_DECAY_THRESHOLD_MS = 150L
         private const val SCROLL_WITH_PARENT = "scrollWithParent"
 
+        // Ronaq fork (CHANGES.md §33): the values of [touchGestureClaim].
+        private const val TOUCH_GESTURE_UNDECIDED = 0
+        private const val TOUCH_GESTURE_KEPT = 1
+        private const val TOUCH_GESTURE_RELEASED = 2
+
         private const val METHOD_CONTENT_OFFSET = "contentOffset" // 设置内容的偏移量，会把List滚到对应的位置
         private const val METHOD_SHIFT_CONTENT_OFFSET = "shiftContentOffset" // Ronaq fork (CHANGES.md §32)
         private const val METHOD_CONTENT_INSET_WHEN_END_DRAG =
@@ -1753,10 +1767,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         dxUnconsumed: Int,
         dyUnconsumed: Int, type: Int
     ) {
+        // Ronaq fork (CHANGES.md §33): what a list that keeps the gesture could not use past its
+        // end is not this list's, nor its parents'.
+        val targetKeepsX = nestedTargetKeepsGesture(target, dxUnconsumed, type)
         // Process the current View first
         var dxConsumed = dxConsumed
         var dyConsumed = dyConsumed
-        var dxUnconsumed = dxUnconsumed
+        var dxUnconsumed = if (targetKeepsX) 0 else dxUnconsumed
         var dyUnconsumed = dyUnconsumed
         val myDx = if (dxUnconsumed != 0) computeHorizontallyScrollDistance(dxUnconsumed) else 0
         val myDy = if (dyUnconsumed != 0) computeVerticallyScrollDistance(dyUnconsumed) else 0
@@ -1781,8 +1798,9 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
         // 在整个嵌套滚动没法继续消费距离时 停止滚动和FLing
         // FIX: 修复竖向滑动后横向没法立即滑动的问题
+        // Ronaq fork (CHANGES.md §33): not a list that keeps the gesture; its drag goes on.
         if (directionRow) {
-            if (dxConsumed == 0) {
+            if (dxConsumed == 0 && !targetKeepsX) {
                 if(target is KRRecyclerView) {
                     target.stopScroll()
                 }
@@ -1804,19 +1822,22 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         target: View, dx: Int, dy: Int, consumed: IntArray,
         type: Int
     ) {
+        // Ronaq fork (CHANGES.md §33): a nested list that keeps the gesture gets all of its x;
+        // neither this list nor its parents take any of it first.
+        val ownDx = if (nestedTargetKeepsGesture(target, dx, type)) 0 else dx
         // Dispatch to the parent for processing first
-        if (dx != 0 || dy != 0) {
+        if (ownDx != 0 || dy != 0) {
             // Temporarily store `consumed` to reuse the Array
             val consumedX = consumed[0]
             val consumedY = consumed[1]
             consumed[0] = 0
             consumed[1] = 0
             if (target is KRRecyclerView) {
-                scrollParentIfNeeded(target, dx, dy, consumed, type)
+                scrollParentIfNeeded(target, ownDx, dy, consumed, type)
             }
             // 传递给父容器时，需要减去已经被补偿消耗的值
             // 这样父容器收到的是实际需要处理的滚动距离
-            val remainingDx = dx - consumed[0]
+            val remainingDx = ownDx - consumed[0]
             val remainingDy = dy - consumed[1]
             if (remainingDx != 0 || remainingDy != 0) {
                 val parentConsumed = intArrayOf(0, 0)
@@ -1827,6 +1848,39 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             consumed[0] += consumedX
             consumed[1] += consumedY
         }
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §33): whether [target], a list nested in this horizontal one, keeps
+     * the horizontal motion [dx] of the current touch gesture to itself, so that neither this
+     * list nor the lists it is nested in move for it. Flings are not touch and are left alone.
+     */
+    private fun nestedTargetKeepsGesture(target: View, dx: Int, type: Int): Boolean =
+        directionRow && type == ViewCompat.TYPE_TOUCH && target is KRRecyclerView &&
+            target.keepsHorizontalTouchGesture(dx)
+
+    /**
+     * Ronaq fork (CHANGES.md §33): whether this list keeps the current touch gesture's horizontal
+     * motion from the lists it is nested in. Decided once per gesture, at its first nested move
+     * [dx] (RecyclerView's sign: positive scrolls towards the right end). A list that could
+     * scroll that way then keeps the whole gesture: the finger past its end does not move the
+     * list around it. A list that could not lets the parent have the gesture, as before.
+     *
+     * That is what a scrollable child gets inside androidx `ViewPager`: the first move a nested
+     * view can scroll sets `mIsUnableToDrag` for the rest of the gesture (`ViewPager.java:2080-
+     * 2085`, `:2046-2050`, viewpager 1.0.0), and the reference client's tag strips sit in one
+     * (lingoandroid `fragment_party.xml:56`; `fragment_hot.xml:123-136`,
+     * `fragment_mine.xml:83-100`). A pager (no fling, as Compose pagers are; or paging) never
+     * keeps a gesture, so a pager nested in a pager hands over exactly as it did (§26).
+     */
+    internal fun keepsHorizontalTouchGesture(dx: Int): Boolean {
+        if (!supportFling || pageEnable) {
+            return false
+        }
+        if (touchGestureClaim == TOUCH_GESTURE_UNDECIDED && dx != 0) {
+            touchGestureClaim = if (canScrollHorizontally(dx)) TOUCH_GESTURE_KEPT else TOUCH_GESTURE_RELEASED
+        }
+        return touchGestureClaim == TOUCH_GESTURE_KEPT
     }
 
     /**

@@ -3079,3 +3079,62 @@ untouched (`core-render-ohos` not changed, and it is never sent the method).
 
 **Upstreamable.** Yes: a relative offset move is a general list capability.
 
+## 33. Android: a nested list that starts a gesture keeps it
+
+**Files** · `core-render-android/.../list/KRRecyclerView.kt`
+**Driven by** · Ronaq's 2026-09-23 device regression (`docs/evidence/regression-2026-09-23/rtl-language/`,
+`home-ar-blank-strip/run.log` `end-13`, `android/mine-ar/run.log`); the reference client's pager;
+Ronaq issue `docs/issue/rtl-horizontal-list-drags-backwards.md`, "Regression edge cases 2026-09-23"
+**Date** · 2026-09-23
+
+**What.** A horizontal list nested in a horizontal list decides at the first nested move of
+each touch gesture whether it keeps the gesture (`keepsHorizontalTouchGesture`).
+
+- **Can scroll the gesture's way.** It keeps the gesture to its end. For the rest of that
+  gesture its parent neither scrolls itself nor passes the motion on to its own parents, in
+  `onNestedPreScroll` and `onNestedScroll`. The parent does not stop the list's drag when
+  nothing was consumed past its end.
+- **Cannot scroll that way.** It is at that edge, or it fits. The parent takes the gesture,
+  as before.
+- **Unchanged.** Flings (`TYPE_NON_TOUCH`), vertical nesting and explicit PARENT_FIRST modes.
+  A pager as the nested list is unchanged too, whether a Compose pager (no fling) or a paging
+  list: it never keeps a gesture, so a pager in a pager hands over as §26 left it.
+
+**Why.** Kuikly's default nested mode is SELF_FIRST, and `scrollParentIfNeeded` asks on every
+move whether the target can still scroll. So a drag that begins in the middle of a tag strip
+and runs past its end hands the rest of the finger to the Home pager mid-gesture, and can
+flip Home's sub-page. The regression saw this in Arabic, on the Home tag strip
+(`android/home-ar/run.log`, `home-ar-blank-strip/run.log`, `end-13`) and the Mine sub-tabs
+(`android/mine-ar/run.log`, `end-1` and `fling-back`). The English runs of the same steps did
+not hand over at all: `android/home-en/run.log` `end-12` ran 114 px past the end, and the
+page stayed put. Why the two directions differ on Android is not established here.
+
+`NestedHorizontalChildInterceptor` is not the path. Once the child has scrolled a move,
+RecyclerView asks its parents not to intercept for the rest of the gesture. While a nested
+scroll is running, the parent's `onInterceptTouchEvent` returns before it consults the
+interceptors anyway.
+
+**Reference.** The reference client (lingoandroid; `origin/main` has the same lines) puts these
+strips in an androidx `ViewPager`: the Hot page's scrollable `TabLayout` (`fragment_hot.xml:123-136`)
+and the Mine page's (`fragment_mine.xml:83-100`), both pages of `vp_party`
+(`fragment_party.xml:56`, `PartyFragment.kt:185-186`). `ViewPager.onInterceptTouchEvent`
+(viewpager 1.0.0, `ViewPager.java:2080-2085`) sets `mIsUnableToDrag` on the first move that a
+nested view under the finger can scroll. `:2046-2050` then keeps the pager out for the rest of
+the gesture, and `HorizontalScrollView` asks for the gesture once it drags. A gesture that
+starts with the strip at its edge (or fitting) is the pager's.
+
+Nothing here reads the layout direction: `canScrollHorizontally` is physical. It changes
+left-to-right strips the same way, which is also what the reference does.
+
+**Verified.** Compiles (`:KuiklyUI:core-render-android:compileDebugKotlin`, and
+`:androidApp:compileApkDebugKotlin` in the Ronaq gate). `core-render-android` has no JVM test
+harness, so this is not unit-tested. The device check (Ronaq
+`scripts/lazyrow-direction-android.mjs`, check `keeps-its-gesture`) is PENDING in the issue
+record. iOS and web were not changed and not measured for this. The regression saw the
+hand-over on Android only. On iOS, a list with no `nestedScroll` modifier is outside Kuikly's
+coordinator, which acts only on a declared priority
+(`KRScrollView+NestedScroll.m:97-122` creates it only when a priority is set;
+`NestedScrollCoordinator.mm:448-455`), so what happens mid-gesture there is UIKit's own. On
+the web, browsers latch a scroll gesture to the element it began on.
+
+**Upstreamable.** Yes, as an option; upstream may prefer SELF_FIRST's hand-over by default.
