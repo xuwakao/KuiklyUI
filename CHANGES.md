@@ -3203,3 +3203,63 @@ coordinator, which acts only on a declared priority
 the web, browsers latch a scroll gesture to the element it began on.
 
 **Upstreamable.** Yes, as an option; upstream may prefer SELF_FIRST's hand-over by default.
+
+## 34. Image views load at their on-screen pixel size — iOS
+
+**Files** · `core-render-ios/Extension/Category/UIView+KRVisibility.{h,m}` (new) ·
+`Extension/Components/KRImageView.{h,m}` · `Extension/Category/UIView+CSS.m`
+(`setCss_transform:`) · `Extension/Modules/KRMemoryCacheModule.m`
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24: 「上面提到的那些都要解决」);
+Ronaq `docs/design/image-pipeline.md` §4.2.1, gap G-1 of `docs/research/image-pipeline-gap-2026-09-24.md`
+**Date** · 2026-09-24
+
+**What upstream does.** `KRImageView` asks the host's image handler for a picture the moment
+`src` is set — usually before the view has a frame — and every other image setter (tint,
+colour filter, blur, cap insets) asks again while no picture is held
+(`KRImageView.m` `setCss_*`). A handler cannot know how large the picture will be drawn, so a
+host that wants to decode at display size has nothing to size by; and `bounds` would not be
+enough anyway, because an ancestor's scale transform (Compose `Modifier.scale` is a
+`graphicsLayer` transform) enlarges the pixels a view covers without changing its bounds.
+
+**The change.**
+
+- **Load when sized.** `-setImageWithSrc:`, the one path every loader of the view goes
+  through, records the source while the view's bounds are empty and loads it from
+  `-layoutSubviews` once they are not. Layout runs after Kuikly's frame setter has restored
+  the view's transform (`setCss_frame:` resets it, sets the frame, applies it again) and in
+  the same Core Animation transaction, so a picture the handler has in memory still appears
+  in the pass the view was bound. Android's renderer already waits for a frame
+  (`KRImageView.kt` `setSrcLazyTask`).
+- **`kr_requestedPixelSize`**: the pixels the current load was issued for — the new
+  `-[UIView kr_displayPixelSize]` (bounds × screen scale × the scale of the view's own and
+  every ancestor's transform, each axis clamped to at least 1 so a view that mounts shrunk
+  for an entrance is not sized at its smallest) — or zero for a load without a size. A
+  handler reads it; the view keeps it with a `KRImageRefreshCache` entry.
+- **Upgrade, never downgrade.** The view asks again, keeping its current picture, when it
+  now covers more than an eighth more pixels than its load was issued for: on a size change
+  (layout), on `didMoveToWindow`, and on a new coalesced *geometry* notice that
+  `setCss_transform:` posts whenever it sets an enlarging transform.
+- **Loads without a size.** `kr_loadsWithoutSize` exempts a view that never gets a frame —
+  `KRMemoryCacheModule` sets it on its off-screen loader, which Compose `imageResource` and
+  Canvas `drawImage` read. `kr_needsSourcePixels` is YES while the image is stretched by cap
+  insets or drawn as a nine-patch, whose insets are measured in the image's own pixels
+  (Android's renderer excludes the same views from resizing, `needResize`). And a view that is
+  in a window but still has no size 0.25 s after its source arrived — a wrap-content image,
+  sized by the resolution its picture reports — loads without one rather than never.
+- **`UIView (KRVisibility)`**: `kr_displayPixelSize`, and a weak observer registry with
+  coalesced notices (`kr_addViewTreeObserver:`, `kr_noteViewTreeChange:`, delivered at most
+  once per main run-loop turn). This section adds the geometry notice; the visibility notice
+  and predicate follow in the next section.
+
+Nothing here names an image library: the handler still decides what to load and how.
+
+**Verified.** Ronaq's hosted iOS unit bundle, `KRImageViewSizingTests` (10 tests: src before a
+frame waits; `src` + `capInsets` and `src` + `tintColor` before a frame issue one load after
+layout; an exempt view loads at once; an enlarging ancestor scale is counted and a shrinking
+one is not; growth past a step re-asks and small growth and shrinking do not; an enlarging
+`transform` prop re-asks on the next turn; a view with no size loads after the grace; a
+recycled view keeps its issued size). All 10 fail on `bb4c2251` and pass here
+(`scripts/ios-unit-tests.sh`, iPhone 17 simulator). No device run yet.
+
+**Upstreamable.** Yes: load-when-sized and the display size are general; the geometry notice
+could become a documented hook.
