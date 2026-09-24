@@ -115,6 +115,19 @@ typedef void(^ImageCompletionBlock)(UIImage * _Nullable image, NSError * _Nullab
 - (BOOL)hr_setImageWithUrl:(nonnull NSString *)loadURL imageParams:(NSDictionary* _Nullable)imageParams complete:(ImageCompletionBlock)completeBlock;
 
 /*
+ * Abandon the load this image view asked for and has not received, keeping whatever the view
+ * shows now. KRImageView calls it when the view leaves its window with a load outstanding, so a
+ * picture nobody can see is not downloaded or decoded for it; a download other views wait for
+ * continues for them. It is never called from the view's -dealloc: a loader that must let go
+ * of a freed view ties its hold to the view's lifetime (an associated object) instead.
+ * @param imageView the view that asked
+ * @return YES when a load was outstanding and is now abandoned; the view then asks again for
+ *         its source when it returns to a window. NO when nothing was outstanding (delivered,
+ *         failed, never asked), and the view asks nothing on its return.
+ */
+- (BOOL)hr_cancelImageLoadForImageView:(UIImageView *)imageView;
+
+/*
  * 自定义实现设置颜值
  * @param value 设置的颜色值
  * @return 完成自定义处理的颜色对象
