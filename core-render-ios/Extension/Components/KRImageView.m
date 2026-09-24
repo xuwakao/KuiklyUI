@@ -24,6 +24,7 @@
 #import "KRBlurView.h"
 #import "KuiklyRenderThreadManager.h"
 #import "UIView+KRVisibility.h"
+#import <ImageIO/ImageIO.h>
 
 NSString *const KRImageAssetsPrefix = @"assets://";
 NSString *const KRImageLocalPathPrefix = @"file://";
@@ -592,7 +593,9 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         [self setAssetsImage:src];
     } else if ([src hasPrefix:KRImageLocalPathPrefix]) {
         [self setImageWithLocalUrl:src];
-    } else if (![src hasPrefix:KRImageBase64Prefix]) {
+    } else if ([src hasPrefix:KRImageBase64Prefix]) {
+        [self p_setBase64Image:src];
+    } else {
         [self setImageWithUrl:src];
     }
 }
@@ -630,21 +633,41 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         return;
     }
     NSString *md5Key = base64Str;
+    // Ronaq (CHANGES.md §36): decoded at the pixels this view covers, cached under the key
+    // AND that size, so a later, larger view never gets a smaller picture; the base64 text
+    // stays under its own key. An unsized view (cap insets, no frame) decodes it whole.
+    CGSize pixels = _requestedPixelSize;
+    BOOL fill = self.contentMode == UIViewContentModeScaleAspectFill || self.contentMode == UIViewContentModeScaleToFill;
+    BOOL sized = pixels.width > 0 && pixels.height > 0 &&
+        (fill || self.contentMode == UIViewContentModeScaleAspectFit);
+    NSString *imageKey = sized ? [NSString stringWithFormat:@"%@#%.0fx%.0f%@", md5Key, pixels.width, pixels.height,
+                                  fill ? @"f" : @""] : md5Key;
+    id cached = [module memoryObjectForKey:imageKey];
+    if ([cached isKindOfClass:[UIImage class]]) {
+        weakSelf.image = (UIImage *)cached;
+        return ;
+    }
     base64Str = [module memoryObjectForKey:md5Key];
     if ([base64Str isKindOfClass:[UIImage class]]) {
+        // Decoded whole by an earlier unsized view.
         weakSelf.image = (UIImage *)base64Str;
         return ;
     }
     NSAssert(base64Str, @"base64Str is nil");
+    if (![base64Str isKindOfClass:[NSString class]]) {
+        return;
+    }
     [rootView performWhenViewDidLoadWithTask:^{
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSRange range = [base64Str rangeOfString:@";base64,"];
             if (range.length) {
                 NSString * base64 = [base64Str substringFromIndex:NSMaxRange(range)];
                 NSData * imageData =[[NSData alloc] initWithBase64EncodedString:base64 options:NSDataBase64DecodingIgnoreUnknownCharacters];
-                UIImage *image = [UIImage imageWithData:imageData];
+                UIImage *image = [KRImageView kr_decodeImageData:imageData pixelSize:sized ? pixels : CGSizeZero fill:fill];
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [module setMemoryObjectWithKey:md5Key value:image];
+                    if (image) {
+                        [module setMemoryObjectWithKey:imageKey value:image];
+                    }
                     if (weakSelf.css_src == md5Key) {
                         weakSelf.image = image;
                     }
@@ -652,8 +675,45 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
             }
         });
     }];
-    
+}
 
++ (UIImage *)kr_decodeImageData:(NSData *)data pixelSize:(CGSize)pixelSize fill:(BOOL)fill {
+    if (data.length == 0) {
+        return nil;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (source == NULL) {
+        return nil;
+    }
+    NSDictionary *properties = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(source, 0, NULL);
+    CGFloat width = [properties[(id)kCGImagePropertyPixelWidth] doubleValue];
+    CGFloat height = [properties[(id)kCGImagePropertyPixelHeight] doubleValue];
+    NSUInteger orientation = [properties[(id)kCGImagePropertyOrientation] unsignedIntegerValue];
+    if (orientation >= 5 && orientation <= 8) {
+        CGFloat swap = width;
+        width = height;
+        height = swap;
+    }
+    CGFloat longest = MAX(width, height);
+    if (pixelSize.width > 0 && pixelSize.height > 0 && width > 0 && height > 0) {
+        CGFloat scale = fill ? MAX(pixelSize.width / width, pixelSize.height / height)
+                             : MIN(pixelSize.width / width, pixelSize.height / height);
+        longest = ceil(MAX(width, height) * MIN(scale, 1) - 0.001);
+    }
+    NSDictionary *options = @{
+        (id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform : @YES,
+        (id)kCGImageSourceShouldCacheImmediately : @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize : @(MAX(longest, 1)),
+    };
+    CGImageRef decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (decoded == NULL) {
+        return nil;
+    }
+    UIImage *image = [UIImage imageWithCGImage:decoded];
+    CGImageRelease(decoded);
+    return image;
 }
 
 // 同步渐变遮罩

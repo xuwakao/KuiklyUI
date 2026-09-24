@@ -54,6 +54,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// The view -kr_presentContentView:posterImage: is showing, or nil.
 @property (nonatomic, readonly, nullable) UIView *kr_contentView;
 
+/// Decodes encoded image `data` (PNG, JPEG, …) to at most the pixels a view covers: the
+/// largest size that fits `pixelSize` (fill NO) or the smallest that covers it (fill YES),
+/// aspect and EXIF orientation kept, never larger than the source, decoded now rather than at
+/// first draw. `pixelSize` CGSizeZero decodes the whole image. Used for base64 sources.
++ (nullable UIImage *)kr_decodeImageData:(NSData *)data pixelSize:(CGSize)pixelSize fill:(BOOL)fill;
+
 @end
 
 
