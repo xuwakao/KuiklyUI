@@ -3263,3 +3263,65 @@ recycled view keeps its issued size). All 10 fail on `bb4c2251` and pass here
 
 **Upstreamable.** Yes: load-when-sized and the display size are general; the geometry notice
 could become a documented hook.
+
+## 35. Effective visibility, the `occluded` prop, and a content-view hook for image views — iOS, Android, Compose
+
+**Files** · iOS `Extension/Category/UIView+KRVisibility.{h,m}` (predicate, `css_occluded`) ·
+`Extension/Category/UIView+CSS.m` (`setCss_visibility:`, `setCss_opacity:`) ·
+`Extension/Components/KRScrollView.m` (`setContentOffset:`) · `Extension/Components/KRImageView.{h,m}`
+(`kr_presentContentView:posterImage:`, `kr_contentView`) · Android
+`expand/visibility/KRVisibility.kt` (new) + test `expand/visibility/KRVisibilityTest.kt` (new) ·
+`const/KRConst.kt` (`OCCLUDED`) · `css/ktx/KRCSSViewExtension.kt` (`occluded`, notices on
+`visibility`/`opacity`) · `expand/component/list/KRRecyclerView.kt` (notice on scroll) · Compose
+`extension/ModifierOccluded.kt` (new)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq
+`docs/design/image-pipeline.md` §4.2.5, §4.4; gaps G-3, G-6, G-25 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** Nothing tells a component whether it can be seen. Kuikly hides a lazy
+list's reused slot on the slot's ROOT (`SubcomposeLayoutEx.kt:62-93`), composes items beyond the
+viewport without hiding them (`LazyDsl.kt:338,395`), and an app that keeps several pages composed
+has no way to say which of them are covered. An animated component checking only itself (UIKit's
+`hidden`, Android's `visibility`) keeps playing in all those places. And `KRImageView` can only
+show a `UIImage`: a loader that advances frames itself must go through `-setImage:`, which fires
+`loadSuccess`/`loadResolution` and redoes tint, filter and blur for every frame.
+
+**The change.**
+
+- **One predicate, both platforms.** A view is effectively visible when it is in a window (iOS) /
+  attached (Android), part of it lies inside the window (iOS: its bounds converted to the window;
+  Android: `getGlobalVisibleRect`), and neither it nor any ancestor is hidden / not `VISIBLE`, at
+  alpha 0.01 or less, or `occluded`. iOS `-[UIView kr_isEffectivelyVisible]`, Android
+  `KRVisibility.isEffectivelyVisible(view)` over a view-free `isEffectivelyVisible(attached,
+  insideWindow, chain)` that the JVM test exercises.
+- **`occluded`**, a generic common prop (1/0): the subtree is laid out and attached but not on
+  the glass. Nothing about layout or drawing changes; it is reset on reuse like every common prop.
+  Compose: `Modifier.occluded(Boolean)` over `setProp`. The web renderer ignores unknown common
+  props (`KuiklyRenderCSSKTX.kt` `setCommonProp` looks the key up in `propHandlers` and returns
+  false; nothing reaches the DOM), so it needs no change.
+- **Notices.** The `visibility`, `opacity` (when it crosses 0.01) and `occluded` props and a list
+  scroll post a *visibility* notice, coalesced to one delivery per main-looper / run-loop turn
+  (iOS `UIView kr_noteViewTreeChange:`, §34; Android `KRVisibility.noteChange`). A component that
+  animates re-evaluates the predicate when it hears one; window changes need none (UIKit sends
+  `didMoveToWindow`, Android `onAttachedToWindow`/`onDetachedFromWindow`).
+- **iOS content-view hook.** `-[KRImageView kr_presentContentView:posterImage:]` shows a view the
+  loader animates as the image view's only content subview, under its corner clip and gradient
+  mask, following its content mode; `loadSuccess` and `loadResolution` fire once with the poster.
+  It answers NO, changing nothing, when the view applies processing only an image can carry
+  (tint, colour filter, blur, cap insets, nine-patch) or loads without a size. The content goes on
+  a new `src`, on any image bound through the view, and on reuse; it is never put in the refresh
+  cache, so a recycled row asks its loader again rather than showing a frozen poster.
+
+No image library is named: which views animate, and how, is the host's.
+
+**Verified.** Ronaq's iOS unit bundle: `KRVisibilityTests` (7: on screen, not in a window, hidden,
+transparent and occluded ancestors, reset on reuse, outside the window's bounds, one coalesced
+notice, no notice for an opacity change that stays visible, a scroll's notice) and
+`KRImageViewContentHookTests` (5: events once with the poster's size, refusals, removal on a new
+source, a still and reuse, reuse asks the loader again, content mode followed), plus Ronaq's host
+tests that play animated content through the hook. Android: `:KuiklyUI:core-render-android:testDebugUnitTest`,
+`KRVisibilityTest` (5). The Android wiring into image and animation views is Ronaq's TASK-A4 and
+is not in this section. No device run yet.
+
+**Upstreamable.** Yes: the predicate, the notices and `occluded` are general; the content-view hook
+is a small, optional extension of the image component.
