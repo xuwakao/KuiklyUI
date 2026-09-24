@@ -27,6 +27,9 @@ open class KRImageView(
         imageElement.style.width = "100%"
         imageElement.style.height = "100%"
         imageElement.style.display = "block"
+        // Decode off the main thread: the picture appears when its pixels are ready instead of
+        // a large one stalling a scroll or a pager swipe while it decodes. Set before any src.
+        imageElement.setAttribute("decoding", "async")
         // Set default image content
         imageElement.src = DEFAULT_SRC
         // Set load success callback, bind only once
