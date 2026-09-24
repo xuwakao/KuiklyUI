@@ -15,6 +15,9 @@
 
 package com.tencent.kuikly.core.render.android.css.ktx
 
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
+import com.tencent.kuikly.core.render.android.expand.visibility.isOccluded
+
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
@@ -74,8 +77,13 @@ fun View.setCommonProp(key: String, value: Any): Boolean {
 
     return when (key) {
         KRCssConst.OPACITY -> {
+            val wasVisible = opacity > 0.01f
             opacity = (value as Number).toFloat()
             tryPropagatePendingOverBounds()
+            // Ronaq: crossing zero opacity changes what can be seen below here (CHANGES.md §35).
+            if (wasVisible != (opacity > 0.01f)) {
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+            }
             true
         }
         KRCssConst.PREVENT_TOUCH -> {
@@ -87,8 +95,22 @@ fun View.setCommonProp(key: String, value: Any): Boolean {
             true
         }
         KRCssConst.VISIBILITY -> {
+            val was = visibility
             visibility = if ((value as Int) == 0) View.GONE else View.VISIBLE
             tryPropagatePendingOverBounds()
+            // Ronaq (CHANGES.md §35).
+            if (was != visibility) {
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+            }
+            true
+        }
+        KRCssConst.OCCLUDED -> {
+            // Ronaq (CHANGES.md §35): a page under an overlay, a tab that is not in front.
+            val occluded = (value as? Number)?.toInt() == 1 || value == true
+            if (occluded != isOccluded) {
+                putViewData(KRCssConst.OCCLUDED, occluded)
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+            }
             true
         }
         KRCssConst.OVERFLOW -> {
@@ -255,6 +277,14 @@ fun View.resetCommonProp(propKey: String): Boolean {
         }
         KRCssConst.VISIBILITY -> {
             visibility = View.VISIBLE
+            return true
+        }
+        KRCssConst.OCCLUDED -> {
+            // Ronaq (CHANGES.md §35).
+            if (isOccluded) {
+                putViewData(KRCssConst.OCCLUDED, false)
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+            }
             return true
         }
         KRCssConst.OVERFLOW -> {
