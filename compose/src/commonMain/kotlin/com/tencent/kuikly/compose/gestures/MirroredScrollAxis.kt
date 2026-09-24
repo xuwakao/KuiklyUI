@@ -149,11 +149,16 @@ internal class MirroredScrollAxis {
         lastNative = plan.toNative
         if (!staleArmed) {
             staleFrom = plan.fromNative
+            staleTo = plan.toNative
             staleRelative = relative
         } else {
+            // The filter is following a run of stale events, so [staleTo] is where the host will
+            // land from where it has got to. A relative move adds to that; [lastNative] has not
+            // followed the run, and `plan.toNative` would throw the run away (review of 2026-09-23,
+            // fork finding F3). An absolute write lands where it says.
+            staleTo = if (relative) staleTo + plan.delta else plan.toNative
             staleRelative = staleRelative && relative
         }
-        staleTo = plan.toNative
         staleArmed = true
         staleBudget = STALE_EVENT_BUDGET
         if (!relative) hostReported = false
@@ -186,14 +191,24 @@ internal class MirroredScrollAxis {
      *
      * After a re-anchor, events the host produced before applying the batch arrive in
      * pre-shift coordinates; converted with the new `nativeMax` they would read as a jump
-     * of Δ. An event is dropped when it is nearer the host's position before Kotlin's
-     * writes ([Reanchor.fromNative]) than the position Kotlin wrote last. The first event
-     * nearer the written position disarms the filter, since events arrive in order.
+     * of Δ. An event is dropped when it lies within half the distance between the host's
+     * position before Kotlin's writes ([Reanchor.fromNative]) and the position Kotlin wrote
+     * last, measured from the former. The first event outside that disarms the filter,
+     * since events arrive in order.
+     *
+     * Half the distance, not "nearer the one than the other": a host moving AWAY from the
+     * written position further in one event than half of Δ (a fling back across a -1 px
+     * re-anchor, which Android makes when it reads a content frame back a pixel short) is
+     * nearer the old position on every event, in either coordinates, and every event was
+     * dropped until the budget ran out, the fling's last event with it (review of 2026-09-23,
+     * fork finding F1). Now such an event is taken: read in the wrong coordinates it is off
+     * by Δ, so taking one wrongly costs at most |Δ| px, and only until the events the host
+     * sends after the shift arrive.
      *
      * Unlike an exact-match `ignoreScrollOffset`, this never waits for one particular
      * value, which a host may never report once it coalesces the echo with finger motion.
      * The budget bounds it further: a host that lost the write stops being filtered after
-     * [STALE_EVENT_BUDGET] events. When Δ is small a wrong call costs at most |Δ| px.
+     * [STALE_EVENT_BUDGET] events.
      *
      * The comparison follows the host. A dropped event is where the host had got to in the old
      * coordinates, so it becomes the reference for the next one; after a relative move the
@@ -206,7 +221,7 @@ internal class MirroredScrollAxis {
     fun accept(nativePx: Float): Boolean {
         if (!mirrored) return true
         if (staleArmed) {
-            val stale = abs(nativePx - staleFrom) < abs(nativePx - staleTo)
+            val stale = abs(nativePx - staleFrom) < abs(staleTo - staleFrom) / 2f
             if (stale && staleBudget > 0) {
                 staleBudget -= 1
                 if (staleRelative) staleTo += nativePx - staleFrom

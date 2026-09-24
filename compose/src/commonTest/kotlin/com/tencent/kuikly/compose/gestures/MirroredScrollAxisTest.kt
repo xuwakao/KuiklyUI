@@ -208,6 +208,54 @@ class MirroredScrollAxisTest {
         assertTrue(axis.accept(9000f), "the written value")
     }
 
+    @Test fun aSmallReanchorAgainstTheHostsMotionIsNotHeldBack() {
+        // A backward fling in mid-strip (the native offset growing) meets a -1 px re-anchor: an
+        // Android host reads a 3001 px content frame back as 3000 at 2.625 px/dp (Float dp times
+        // density, truncated, `calculateContentSize`). After the shift every event lies nearer
+        // the reference before it than the written one, only because the host moves further in
+        // one event than the re-anchor moved it; judged by that alone, the whole run was dropped
+        // until the budget ran out, the fling's last event with it; in the review's run Compose
+        // rested 173 px from the host (review of 2026-09-23, fork finding F1).
+        val axis = mirroredAxis(contentSize = 20000, viewport = 720)
+        var host = 12000f
+        assertTrue(axis.accept(host))
+        axis.commitReanchor(assertNotNull(axis.planReanchor(19999, 720)), relative = true)
+        // One event produced before the shift landed, in the old coordinates: a 1 px error at
+        // most, whichever way it is judged.
+        host += 150f
+        axis.accept(host)
+        // The shift lands; the fling goes on from there and settles.
+        host -= 1f
+        var v = 135f
+        while (v >= 1f) {
+            host += v
+            v *= 0.9f
+            assertTrue(axis.accept(host), "the event at $host, after the shift landed, was dropped")
+        }
+        assertEquals(host, axis.lastNative, "Kotlin rests where the host rests")
+    }
+
+    @Test fun aSecondReanchorDuringARunOfStaleEventsKeepsWhereTheHostGotTo() {
+        // A +4500 re-anchor heard 30 events late, then a +10 one from outside the scroll handler
+        // (the viewport's `LaunchedEffect`, or growth inside `applyMirroredOffsetDelta`) while the
+        // filter is still dropping. The host will land on where it got to plus both shifts, not
+        // on where Kotlin last wrote plus the second (review of 2026-09-23, fork finding F3).
+        val axis = mirroredAxis(contentSize = 9000, viewport = 1290)
+        assertTrue(axis.accept(2000f))
+        axis.commitReanchor(assertNotNull(axis.planReanchor(13500, 1290)), relative = true)
+        var host = 2000f
+        repeat(30) {
+            host += 150f
+            assertFalse(axis.accept(host), "the pre-shift event at $host was taken")
+        }
+        axis.commitReanchor(assertNotNull(axis.planReanchor(13510, 1290)), relative = true)
+        host += 150f
+        assertFalse(axis.accept(host), "the pre-shift event at $host, after the second re-anchor, was taken")
+        // Both shifts land; the next event is in the new coordinates.
+        assertTrue(axis.accept(host + 150f + 4510f))
+        assertEquals(host + 4660f, axis.lastNative)
+    }
+
     @Test fun onlyTheHostSaysWhereItIs() {
         val axis = mirroredAxis(contentSize = 9000, viewport = 1290)
         assertFalse(axis.hostReported)
@@ -448,6 +496,35 @@ class MirroredScrollAxisTest {
         }
     }
 
+    @Test fun aFlingBackAcrossAOnePixelReanchorIsFollowedAllTheWay() {
+        // At 2.625 px/dp a 32-bit Float host reads some content frames back a pixel short
+        // (Float dp times density, truncated, `calculateContentSize`): a 10765 px frame reads as
+        // 10764. Mid-strip, with no growth due, the content size then steps down a pixel and the
+        // list re-anchors by -1. A fling back towards the first chip moves the native offset the
+        // other way, many pixels an event, so every event after the shift lay nearer the
+        // reference before it than the written one: all of them were dropped until the budget
+        // ran out, and Compose stood still while the host flung on (fork finding F1 of the
+        // 2026-09-23 review). Compose must follow every event, within the re-anchor's pixel.
+        val strip = Strip(WIDTHS, GAP, pad = 0, viewport = 1080, density = 2.625f)
+        for (lag in listOf(1, 4)) {
+            val what = "lag $lag"
+            val host = FakeScroller(canShiftOffset = true, absoluteWriteStopsFling = false, density = 2.625f, readsFrameInDp = true)
+            val m = Model(rtl = true, host = host, strip = strip).also { it.settle() }
+            repeat(12) { m.drag(FINGER) }
+            // A content frame that reads back a pixel short, far enough ahead that no growth is due.
+            m.info.currentContentSize = 10765
+            m.updateContentSizeToRender()
+            assertEquals(10764, host.frameWidthPx, "$what: the frame reads back a pixel short")
+            m.fling(60f, lag, backward = true)
+            assertTrue(m.onePixelShrinks > 0, "$what: the fling met no one-pixel re-anchor")
+            m.behindHost.forEachIndexed { i, behind ->
+                assertTrue(abs(behind) <= 1, "$what: after event ${i + 1} Compose stood $behind px from the host")
+            }
+            val hostLogical = m.info.axis.renderedNativeMax - host.offset.roundToInt()
+            assertEquals(hostLogical, m.logical, "$what: Compose ends where the host ends")
+        }
+    }
+
     // ---- a host that applies writes at its next layout pass (Android) -----------------
 
     @Test fun aStripThatBarelyOverflowsOpensAtItsStartOnAndroid() {
@@ -608,7 +685,14 @@ class MirroredScrollAxisTest {
         override val canShiftOffset: Boolean = true,
         /** UIKit: `-setContentOffset:animated:NO` ends a running deceleration. */
         val absoluteWriteStopsFling: Boolean = true,
-    ) : TestHost(DENSITY) {
+        density: Float = DENSITY,
+        /**
+         * The content frame reads back as `calculateContentSize` reads it: the Float dp width
+         * as written, times density, truncated. At some densities (2.625, 2.75, 3.5) that is a
+         * pixel short for some widths on a 32-bit Float host.
+         */
+        val readsFrameInDp: Boolean = false,
+    ) : TestHost(density) {
         override var viewport = VIEWPORT
             set(value) {
                 field = value
@@ -616,14 +700,16 @@ class MirroredScrollAxisTest {
             }
 
         var contentWidth = 0
+        private var writtenWidthDp = 0f
 
         override val maxOffset get() = max(0, contentWidth - viewport)
-        override val frameWidthPx get() = contentWidth
+        override val frameWidthPx get() = if (readsFrameInDp) (writtenWidthDp * density).toInt() else contentWidth
         private fun clamp(x: Float) = x.coerceIn(0f, maxOffset.toFloat())
 
         override val contentWidthDp: Float get() = contentWidth / density
 
         override fun setContentWidth(widthDp: Float) {
+            writtenWidthDp = widthDp
             contentWidth = (widthDp * density).roundToInt()
             offset = clamp(offset)
         }
@@ -738,9 +824,13 @@ class MirroredScrollAxisTest {
         var logical = 0
         var grew = 0
         var shrank = 0
+        /** Re-anchors of exactly -1 px: a content frame read back a pixel short. */
+        var onePixelShrinks = 0
         var preShiftOffset = 0f
         /** [logical] after each host event a fling delivered. */
         val trace = mutableListOf<Int>()
+        /** After each host event a fling delivered: [logical] less that event's own logical offset. */
+        val behindHost = mutableListOf<Int>()
         val maxLogical get() = strip.maxLogical
         private val viewport get() = strip.viewport
 
@@ -778,6 +868,7 @@ class MirroredScrollAxisTest {
             val after = info.axis.renderedNativeMax
             if (after != before) preShiftOffset = offsetBefore
             if (after > before) grew += 1 else if (after < before) shrank += 1
+            if (after == before - 1) onePixelShrinks += 1
         }
 
         /** restoreScrollerViewOnReuse before the scroller has a frame (W = 0). */
@@ -852,14 +943,15 @@ class MirroredScrollAxisTest {
         }
 
         /**
-         * A forward fling: the host decelerates on its own, one frame at a time, and Kotlin
-         * hears of each frame [lag] frames late (one, through the context queue; more when the
-         * Kotlin thread is busy). What Kotlin writes lands before the next frame is drawn.
-         * Returns every chip's screen x on every frame drawn, the settled state last.
+         * A forward fling ([backward]: towards the first chip): the host decelerates on its
+         * own, one frame at a time, and Kotlin hears of each frame [lag] frames late (one,
+         * through the context queue; more when the Kotlin thread is busy). What Kotlin writes
+         * lands before the next frame is drawn. Returns every chip's screen x on every frame
+         * drawn, the settled state last.
          */
-        fun fling(v0: Float, lag: Int = 1): List<List<Int>> {
+        fun fling(v0: Float, lag: Int = 1, backward: Boolean = false): List<List<Int>> {
             val frames = mutableListOf<List<Int>>()
-            val sign = if (rtl) 1 else -1
+            val sign = (if (rtl) 1 else -1) * (if (backward) -1 else 1)
             var v = v0
             val heard = ArrayDeque<Float>()
             host.flinging = true
@@ -883,6 +975,7 @@ class MirroredScrollAxisTest {
         private fun hear(native: Float) {
             onScroll(native)
             trace += logical
+            behindHost += logical - (info.axis.renderedNativeMax - native.roundToInt())
         }
 
         /** SubcomposeLayout's scroll handler, list path, with the production conversion. */

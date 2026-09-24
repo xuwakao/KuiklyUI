@@ -2844,11 +2844,13 @@ hit-tests it, and a finger that lowers the native offset raises the logical one.
   with nested scrolling on SELF_ONLY, as `applyOffsetDelta` guards its own moves.
 - **Stale events.** Hosts deliver scroll events through the Kotlin context queue, so events
   produced before the host applied a re-anchor arrive in pre-shift coordinates. They are
-  dropped when nearer the host's pre-write position than the value Kotlin wrote last; the
-  first event nearer the written value disarms the filter; at most 32 are dropped (8 until
-  the device regression below). Each dropped event moves the pre-write reference to itself,
-  and after a relative move the written one with it. A misjudged event costs at most the
-  distance between the two positions.
+  dropped when they lie within half the distance between the host's pre-write position and
+  the value Kotlin wrote last, measured from the former ("nearer the one than the other"
+  until the review of the fixes below); the first event outside that disarms the filter; at
+  most 32 are dropped (8 until the device regression below). Each dropped event moves the
+  pre-write reference to itself, and after a relative move the written one with it; a second
+  relative re-anchor during such a run adds its Δ to where the host has got to. Taking an
+  event wrongly costs at most |Δ|, until the events sent after the shift arrive.
 - **Short strips** (I6): mirrored content is never narrower than its viewport — the content
   frame is `max(C, W)` wide — or a strip of three chips would sit outside a content view
   only C wide (Android's `FrameLayout` clips).
@@ -3010,6 +3012,49 @@ Tests (`MirroredScrollAxisTest`, now 32):
   - a budget of 8;
   - tracking after an absolute write;
   - `accept` not setting `hostReported`, which also fails two of §32's fling tests.
+
+### Review of the fixes, 2026-09-23
+
+An adversarial review of the device-regression fixes above (`2e2fac75..53735858`) reported two
+defects in the stale filter. Both are fixed in `MirroredScrollAxis`; Ronaq issue record,
+"Review of the regression fixes 2026-09-23".
+
+1. **A small re-anchor against the host's motion held Kotlin back for the whole budget** (F1).
+   "Nearer the pre-write position than the written one" is true of every event when the host
+   moves AWAY from the written position further in one event than half of Δ, in either
+   coordinates, and the following kept it true event after event. With the budget at 32, a
+   fling that ended inside the run lost its last event too, and Compose rested away from the
+   host with nothing to correct it. The trigger is real on Android: `calculateContentSize`
+   reads the content frame back as Float dp times density, truncated, and at 2.625 px/dp
+   (also 2.75 and 3.5) about one width in twenty reads a pixel short, so mid-strip, with no
+   growth due, the content size steps down a pixel and the list re-anchors by -1; a fling back
+   towards the first chip then goes against it. Now an event is stale only within half of Δ of
+   the pre-write reference. That is strictly narrower than the old rule, so nothing the old rule
+   took is dropped now; what it no longer drops is an event that has moved further than half
+   of Δ, which is off by at most Δ if it was in the old coordinates.
+2. **A second relative re-anchor during a run of dropped events threw the run away** (F3,
+   latent). `commitReanchor` reset the written reference to `lastNative + Δ`, and `lastNative`
+   does not follow dropped events, so the next old-coordinate event read as a jump of the whole
+   first re-anchor. Now a relative re-anchor during a run adds its Δ to the followed reference;
+   an absolute one still lands where it says. It needs a relative re-anchor from outside the
+   scroll handler during a drop run (the viewport's `LaunchedEffect`, growth inside
+   `applyMirroredOffsetDelta`); none was observed.
+
+Tests (`MirroredScrollAxisTest`, now 35). Three new ones failed before the fix and pass after:
+
+- `aSmallReanchorAgainstTheHostsMotionIsNotHeldBack`: the axis alone, a backward fling across
+  a -1 px re-anchor; the first event after the shift was dropped.
+- `aFlingBackAcrossAOnePixelReanchorIsFollowedAllTheWay`: the bridge, at 2.625 px/dp, on a
+  host that reads its frame back as `calculateContentSize` does (`FakeScroller.readsFrameInDp`;
+  a 10765 px frame reads as 10764); Compose stood 60 px from the host after the second event.
+  It relies on 32-bit Float arithmetic, as the JVM and Android have, and asserts that the
+  one-pixel re-anchor happened.
+- `aSecondReanchorDuringARunOfStaleEventsKeepsWhereTheHostGotTo`: the old-coordinate event
+  after the second re-anchor was taken.
+
+Mutations, each applied alone: the old comparison fails the two F1 tests; resetting the
+written reference fails the F3 test; a budget of 8 and no following each still fail the tests
+that pinned them.
 
 ## 31. Android: the list renderer is pinned left-to-right
 
