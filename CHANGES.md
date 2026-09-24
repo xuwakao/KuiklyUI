@@ -3129,7 +3129,9 @@ untouched (`core-render-ohos` not changed, and it is never sent the method).
 
 ## 33. Android: a nested list that starts a gesture keeps it
 
-**Files** · `core-render-android/.../list/KRRecyclerView.kt`
+**Files** · `core-render-android/.../list/KRRecyclerView.kt` · `list/NestedTouchGestureClaim.kt`
+(new, review) · test `core-render-android/src/test/.../list/NestedTouchGestureClaimTest.kt` (new,
+review) · `core-render-android/build.2.1.21.gradle.kts` (a `testImplementation`, review)
 **Driven by** · Ronaq's 2026-09-23 device regression (`docs/evidence/regression-2026-09-23/rtl-language/`,
 `home-ar-blank-strip/run.log` `end-13`, `android/mine-ar/run.log`); the reference client's pager;
 Ronaq issue `docs/issue/rtl-horizontal-list-drags-backwards.md`, "Regression edge cases 2026-09-23"
@@ -3144,9 +3146,12 @@ each touch gesture whether it keeps the gesture (`keepsHorizontalTouchGesture`).
   nothing was consumed past its end.
 - **Cannot scroll that way.** It is at that edge, or it fits. The parent takes the gesture,
   as before.
-- **Unchanged.** Flings (`TYPE_NON_TOUCH`), vertical nesting and explicit PARENT_FIRST modes.
-  A pager as the nested list is unchanged too, whether a Compose pager (no fling) or a paging
-  list: it never keeps a gesture, so a pager in a pager hands over as §26 left it.
+- **Unchanged.** Flings (`TYPE_NON_TOUCH`), vertical nesting and explicit PARENT_FIRST modes:
+  a move in a direction the list declared PARENT_FIRST is the parent's first, on every move,
+  and decides nothing (so the decision falls at the first move the list does not give its
+  parent first). A pager as the nested list is unchanged too, whether a Compose pager (no
+  fling) or a paging list: it never keeps a gesture, so a pager in a pager hands over as §26
+  left it.
 
 **Why.** Kuikly's default nested mode is SELF_FIRST, and `scrollParentIfNeeded` asks on every
 move whether the target can still scroll. So a drag that begins in the middle of a tag strip
@@ -3174,9 +3179,21 @@ starts with the strip at its edge (or fitting) is the pager's.
 Nothing here reads the layout direction: `canScrollHorizontally` is physical. It changes
 left-to-right strips the same way, which is also what the reference does.
 
+**Review, 2026-09-23.** An adversarial review found that the first version overrode an
+explicit PARENT_FIRST (fork finding F2): a list that could scroll kept the gesture at its first
+move, so `onNestedPreScroll` handed the parent nothing and `scrollParentIfNeeded`'s PARENT_FIRST
+branches were never reached, although this section said they were unchanged. No Ronaq list
+declares PARENT_FIRST, so nothing was broken yet. The decision moved into
+`NestedTouchGestureClaim`, which holds no view, and a PARENT_FIRST direction is now never kept
+and decides nothing. `core-render-android` gained a JVM test source set for it
+(`kotlin-test-junit`, the build's Kotlin version).
+
 **Verified.** Compiles (`:KuiklyUI:core-render-android:compileDebugKotlin`, and
-`:androidApp:compileApkDebugKotlin` in the Ronaq gate). `core-render-android` has no JVM test
-harness, so this is not unit-tested. The device check (Ronaq
+`:androidApp:compileApkDebugKotlin` in the Ronaq gate). The decision is unit-tested:
+`:KuiklyUI:core-render-android:testDebugUnitTest`, `NestedTouchGestureClaimTest`, 6 tests, of
+which `aParentFirstDirectionIsTheParentsOnEveryMove` failed on the decision as first written
+and passes now. The wiring in `onNestedPreScroll` / `onNestedScroll` has no JVM seam. The
+device check (Ronaq
 `scripts/lazyrow-direction-android.mjs`, check `keeps-its-gesture`) is PENDING in the issue
 record. iOS and web were not changed and not measured for this. The regression saw the
 hand-over on Android only. On iOS, a list with no `nestedScroll` modifier is outside Kuikly's
