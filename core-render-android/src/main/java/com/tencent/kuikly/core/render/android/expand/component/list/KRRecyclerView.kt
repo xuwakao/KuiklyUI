@@ -15,6 +15,8 @@
 
 package com.tencent.kuikly.core.render.android.expand.component.list
 
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
+
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
@@ -776,6 +778,9 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         scrollListener = object : OnScrollListener() {
             override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                 super.onScrolled(recyclerView, dx, dy)
+                // Ronaq: what is inside the window changes with every scroll; coalesced to one
+                // notice per turn (CHANGES.md §35).
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
                 val offset = if (directionRow) {
                     dx
                 } else {
