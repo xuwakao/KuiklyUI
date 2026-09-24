@@ -3325,3 +3325,32 @@ is not in this section. No device run yet.
 
 **Upstreamable.** Yes: the predicate, the notices and `occluded` are general; the content-view hook
 is a small, optional extension of the image component.
+
+## 36. base64 images decode at the size their view covers — iOS
+
+**Files** · `core-render-ios/Extension/Components/KRImageView.{h,m}` (`p_setBase64Image:`,
+`+kr_decodeImageData:pixelSize:fill:`, the upgrade path)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.2.7, gap G-12 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** A base64 source is decoded whole with `+[UIImage imageWithData:]` —
+lazily, so the pixels are produced at first draw on the main thread — and the decoded image
+replaces the base64 text in the memory-cache module under the same key, so every later view
+of it gets that one picture whatever its size.
+
+**The change.** With §34's load-when-sized, the view knows the pixels it covers when the base64
+branch runs. It decodes with `CGImageSourceCreateThumbnailAtIndex` on the existing background
+queue — the largest size that fits (aspect fit) or the smallest that covers (aspect fill,
+stretch), EXIF orientation applied, never larger than the source, decoded immediately — and
+caches the result under the base64 key plus that size (`<key>#<w>x<h>`, `f` for fill), so a
+later, larger view decodes its own; the base64 text stays under its own key. A view with no
+size (the memory-cache module's, a cap-inset view) or a natural-size content mode decodes the
+whole image, as before, under the plain key. A view that grows past a step asks again (§34's
+upgrade now covers base64). The decode is public as `+kr_decodeImageData:pixelSize:fill:`.
+
+**Verified.** Ronaq's iOS unit bundle, `RonaqLocalImageTests` `testBase64IsDecodedToTheBox`
+(cover, fit, whole, never upscaled, EXIF-rotated). The module path itself needs a render view
+with its memory-cache module and is checked on the device. No device run yet.
+
+**Upstreamable.** Yes.
