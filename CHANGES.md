@@ -2837,14 +2837,18 @@ hit-tests it, and a finger that lowers the native offset raises the logical one.
   see an out-of-range pair. `KNode.updateFrame` calls it when a mirrored scroller's own size
   changes. The logical offset does not change across a re-anchor. A content-size re-anchor
   (which fires from the scroll handler, mid-drag and mid-fling) moves the host's offset
-  RELATIVE to wherever the host is (`shiftContentOffset`, §32) on iOS, Android and web; a
-  viewport re-anchor, and every host without §32, writes it absolutely. Either way the move
-  runs with nested scrolling on SELF_ONLY, as `applyOffsetDelta` guards its own moves.
+  RELATIVE to wherever the host is (`shiftContentOffset`, §32) on iOS, Android and web, as
+  long as the host has reported its offset since Kotlin last wrote it absolutely; a viewport
+  re-anchor, a re-anchor from an offset only Kotlin has written, and every host without §32
+  write it absolutely (see "Device regression, 2026-09-23" below). Either way the move runs
+  with nested scrolling on SELF_ONLY, as `applyOffsetDelta` guards its own moves.
 - **Stale events.** Hosts deliver scroll events through the Kotlin context queue, so events
   produced before the host applied a re-anchor arrive in pre-shift coordinates. They are
   dropped when nearer the host's pre-write position than the value Kotlin wrote last; the
-  first event nearer the written value disarms the filter; at most 8 are dropped. A
-  misjudged event costs at most the distance between the two positions.
+  first event nearer the written value disarms the filter; at most 32 are dropped (8 until
+  the device regression below). Each dropped event moves the pre-write reference to itself,
+  and after a relative move the written one with it. A misjudged event costs at most the
+  distance between the two positions.
 - **Short strips** (I6): mirrored content is never narrower than its viewport — the content
   frame is `max(C, W)` wide — or a strip of three chips would sit outside a content view
   only C wide (Android's `FrameLayout` clips).
@@ -2945,6 +2949,64 @@ record, "Review 2026-09-23".
 
 Tests: `MirroredScrollAxisTest` 26/26. With the refactor alone, before the fixes, 5 of them
 failed, one per finding; the issue record lists them and the mutations.
+
+### Device regression, 2026-09-23
+
+The owner's device regression on the OPPO (720 px at 2.25 px/dp) found two defects in this
+bridge. The evidence is in Ronaq `docs/evidence/regression-2026-09-23/rtl-language/`, and the
+record is the issue's "Regression edge cases 2026-09-23" section.
+
+1. **A re-anchor shifted from an offset the host never reached.** Seen on the Mine sub-tabs in
+   Arabic (751 px of content in 720): at rest the first tab sat 31 px from the right edge
+   (`superseded/android-mine-ar`) or 5 px from it (`android/mine-ar`, `FOLLOWING@461`),
+   instead of 36 px, and a forward finger moved the strip 0 or 26 px.
+   - *Why.* Every Android write the laid-out content has no room for waits for the next
+     layout pass, and is dropped there if it still does not fit
+     (`KRRecyclerView.tryApplyPendingSetContentOffset`). A shift waits behind it
+     (`tryApplyPendingShift`), then lands clamped on wherever the host really is.
+   - *The sequence.* The binding and the first frame write the start absolutely before the
+     host has laid anything out: 6750, then 6030. The real size then arrives at rest, from
+     `LaunchedEffect(scrollViewSize)`, and the collapse to 751 px shifts by −5999. At the
+     layout pass the 6030 write no longer fits and is dropped. The shift runs from 0 and
+     clamps at 0. Kotlin believes 31. Every tab sits 31 px right of where Compose placed it,
+     and the host cannot move forward at all.
+   - *Fix.* `MirroredScrollAxis.hostReported` is true only when `lastNative` is an offset the
+     host itself reported, or one reached from it by relative moves. A content-size re-anchor
+     shifts only then. Otherwise it writes absolutely, and that write replaces the one the
+     host is holding. A reported offset comes from every event a fling or a drag sends, so
+     §32's mid-fling shift is unchanged.
+2. **The stale filter let a long lag through as a jump.** Seen on the Home tag strip in
+   Arabic, 1 in 18 forward flings (`home-ar-blank-strip`): after a fling, Compose had
+   composed chips 0..14 at x 3599..5274 while the host showed the strip's end.
+   - *Why.* A Kotlin thread that falls behind a fling at a re-anchor hears a run of events
+     in the old coordinates. The 9th was taken whatever it was. A host that had moved more
+     than half of Δ since Kotlin's last event was also taken, since the references did not
+     move. Read with the new `nativeMax`, such an event is a jump of the whole re-anchor:
+     after the collapse, back towards the first chip.
+   - *Fix.* A dropped event becomes the pre-write reference, and after a relative move the
+     written reference moves with it. The budget is 32 events.
+   - *Uncertainty.* This is one way to reach the dump; the device did not show which one
+     happened. The first defect is another, whenever a re-anchor at rest follows a write the
+     host dropped. Device check PENDING.
+
+Tests (`MirroredScrollAxisTest`, now 32):
+
+- **New model host.** `AndroidListHost` models `KRRecyclerView`'s write semantics: a frame
+  takes effect at the layout pass, a write that does not fit is held and then dropped, a
+  shift waits behind a held write, and dp become px through `toPxI`.
+- **Before the fix**, four new tests failed:
+  - `aStripThatBarelyOverflowsOpensAtItsStartOnAndroid`: the first tab at 487 px instead of
+    456, the device's number;
+  - `aReanchorShiftsOnlyFromAnOffsetTheHostReported`;
+  - `aFlingHeardLateNeverRunsBackwards`: lag 12, Compose taken from 7934 back to 1853;
+  - `aLongLagOfStaleEventsIsFollowedNotCountedOut`.
+- **Also added**: `anAbsoluteWriteIsNotDraggedAlongByTheHost` and `onlyTheHostSaysWhereItIs`.
+- **Mutations.** Each of these, applied alone, fails at least one test:
+  - shifting whatever `hostReported` says;
+  - no tracking;
+  - a budget of 8;
+  - tracking after an absolute write;
+  - `accept` not setting `hostReported`, which also fails two of §32's fling tests.
 
 ## 31. Android: the list renderer is pinned left-to-right
 

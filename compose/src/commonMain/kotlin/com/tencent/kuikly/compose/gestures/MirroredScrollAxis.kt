@@ -74,10 +74,24 @@ internal class MirroredScrollAxis {
     var lastNative: Float = 0f
         private set
 
+    /**
+     * Whether [lastNative] is an offset the host itself reported ([accept]), or one Kotlin
+     * reached from such an offset by relative moves only. False after Kotlin's own absolute
+     * write until the host reports again: Android holds a write its laid-out content has no
+     * room for until its next layout pass and drops it there if it still does not fit
+     * (`KRRecyclerView.tryApplyPendingSetContentOffset`), so an absolute write is Kotlin's
+     * intention, not the host's position. A relative move from an intention lands on wherever
+     * the host really is (the Mine sub-tabs of the 2026-09-23 regression rested 31 px off),
+     * so a re-anchor shifts only when this is true.
+     */
+    var hostReported: Boolean = false
+        private set
+
     // Stale-event filter state, armed by a re-anchor (see [accept]).
     private var staleArmed = false
     private var staleFrom = 0f
     private var staleTo = 0f
+    private var staleRelative = false
     private var staleBudget = 0
 
     /** Logical px to native px. Identity unless [mirrored]. */
@@ -127,17 +141,22 @@ internal class MirroredScrollAxis {
     /**
      * Record that [plan] was written to the host (content frame, children and offset), and
      * arm the stale-event filter: events the host produced before it applied the batch are
-     * still in pre-shift coordinates.
+     * still in pre-shift coordinates. [relative]: the offset moved by `plan.delta` from wherever
+     * the host was (`shiftContentOffset`), rather than to `plan.toNative`.
      */
-    fun commitReanchor(plan: Reanchor) {
+    fun commitReanchor(plan: Reanchor, relative: Boolean = true) {
         renderedNativeMax = plan.newNativeMax
         lastNative = plan.toNative
         if (!staleArmed) {
             staleFrom = plan.fromNative
+            staleRelative = relative
+        } else {
+            staleRelative = staleRelative && relative
         }
         staleTo = plan.toNative
         staleArmed = true
         staleBudget = STALE_EVENT_BUDGET
+        if (!relative) hostReported = false
     }
 
     /**
@@ -147,14 +166,18 @@ internal class MirroredScrollAxis {
      */
     fun rebase(contentSize: Int, viewport: Int) {
         renderedNativeMax = if (mirrored) nativeMaxFor(contentSize, viewport) else 0
+        hostReported = false
         clearStale()
     }
 
-    /** Record a native offset Kotlin has just written to the host. */
+    /** Record a native offset Kotlin has just written to the host, absolutely. */
     fun noteWrite(nativePx: Float) {
         lastNative = nativePx
+        hostReported = false
         if (staleArmed) {
             staleTo = nativePx
+            // The host lands on this value, not on "wherever it was, plus Δ".
+            staleRelative = false
         }
     }
 
@@ -171,6 +194,14 @@ internal class MirroredScrollAxis {
      * value, which a host may never report once it coalesces the echo with finger motion.
      * The budget bounds it further: a host that lost the write stops being filtered after
      * [STALE_EVENT_BUDGET] events. When Δ is small a wrong call costs at most |Δ| px.
+     *
+     * The comparison follows the host. A dropped event is where the host had got to in the old
+     * coordinates, so it becomes the reference for the next one; after a relative move the
+     * host lands Δ from wherever it then is, so the other reference moves with it. A Kotlin
+     * thread that falls many frames behind in a fling (the blank Home strip of the 2026-09-23
+     * regression, `rtl-language/home-ar-blank-strip`) then hears a long run of old-coordinate
+     * events, and neither the run's length nor the distance the host covered in it lets one
+     * through as a jump of the whole re-anchor.
      */
     fun accept(nativePx: Float): Boolean {
         if (!mirrored) return true
@@ -178,11 +209,14 @@ internal class MirroredScrollAxis {
             val stale = abs(nativePx - staleFrom) < abs(nativePx - staleTo)
             if (stale && staleBudget > 0) {
                 staleBudget -= 1
+                if (staleRelative) staleTo += nativePx - staleFrom
+                staleFrom = nativePx
                 return false
             }
             clearStale()
         }
         lastNative = nativePx
+        hostReported = true
         return true
     }
 
@@ -199,6 +233,7 @@ internal class MirroredScrollAxis {
     fun reset() {
         renderedNativeMax = 0
         lastNative = 0f
+        hostReported = false
         clearStale()
     }
 
@@ -231,8 +266,13 @@ internal class MirroredScrollAxis {
     }
 
     companion object {
-        /** How many events the stale filter may drop after one re-anchor. */
-        const val STALE_EVENT_BUDGET = 8
+        /**
+         * How many events the stale filter may drop after one re-anchor: about a quarter to half
+         * a second of a fling's events at 120 to 60 Hz. It only has to outlast the frames a busy
+         * Kotlin thread falls behind by (8 did not, `accept`); a host that lost the write is
+         * followed again after this many.
+         */
+        const val STALE_EVENT_BUDGET = 32
 
         fun nativeMaxFor(contentSize: Int, viewport: Int): Int = max(0, contentSize - viewport)
     }

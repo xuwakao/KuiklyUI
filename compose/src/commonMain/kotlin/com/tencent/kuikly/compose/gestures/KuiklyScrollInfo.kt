@@ -222,16 +222,17 @@ class KuiklyScrollInfo {
             return
         }
         val deltaDp = plan.delta / host.density
+        val relative: Boolean
         if (plan.frameFirst) {
             host.setContentWidth(width)
             host.shiftChildren(deltaDp)
-            moveMirroredNative(plan, viewportChanged)
+            relative = moveMirroredNative(plan, viewportChanged)
         } else {
-            moveMirroredNative(plan, viewportChanged)
+            relative = moveMirroredNative(plan, viewportChanged)
             host.shiftChildren(deltaDp)
             host.setContentWidth(width)
         }
-        axis.commitReanchor(plan)
+        axis.commitReanchor(plan, relative)
         // A pending echo of an earlier write moved with the host's coordinates.
         ignoreScrollOffset?.let { ignoreScrollOffset = IntOffset(it.x + plan.delta, it.y) }
     }
@@ -251,25 +252,37 @@ class KuiklyScrollInfo {
      * already have clamped its offset to the new range, so a relative shift would count
      * that clamp twice.
      *
+     * So does a re-anchor made while Kotlin's idea of the offset is its own last absolute
+     * write rather than something the host reported (`MirroredScrollAxis.hostReported`): the
+     * binding's write and the first frame's, before the host has laid out or said anything.
+     * Android may still be holding that write for its next layout pass and drop it there, and
+     * a shift queued behind it would then land on the host's old offset. That is how the Mine
+     * sub-tabs of the 2026-09-23 regression (751 px of content in 720) came to rest 31 px off:
+     * the real size arrived at rest, before the host's first layout. An absolute write replaces
+     * the one the host is holding. The host is at rest then, or has been written absolutely,
+     * so there is no deceleration to keep. The regression is in Ronaq
+     * `docs/evidence/regression-2026-09-23/rtl-language/android/mine-ar`.
+     *
      * Either way the move runs with nested scrolling on SELF_ONLY, as `applyOffsetDelta`
-     * has always guarded its programmatic moves.
+     * has always guarded its programmatic moves. Returns whether the move was relative.
      */
-    private fun moveMirroredNative(plan: MirroredScrollAxis.Reanchor, viewportChanged: Boolean) {
+    private fun moveMirroredNative(plan: MirroredScrollAxis.Reanchor, viewportChanged: Boolean): Boolean {
         val host = mirroredHost
         val restoreNested = host.holdNestedScrollSelfOnly()
-        if (!viewportChanged && host.canShiftOffset) {
+        val relative = !viewportChanged && host.canShiftOffset && axis.hostReported
+        if (relative) {
             host.shiftOffset(plan.delta / host.density)
-            axis.noteWrite(plan.toNative)
         } else {
             writeMirroredNative(plan.toNative)
         }
         restoreNested?.invoke()
+        return relative
     }
 
     /**
-     * Write a native x offset (px) to the host, and record it. Android keeps the bridge's
-     * `-0.01dp` end write (`ScrollViewEx.applyOffsetDelta`): a mirrored list rests at its
-     * physical end.
+     * Write a native x offset (px) to the host, absolutely, and record it. Android keeps the
+     * bridge's `-0.01dp` end write (`ScrollViewEx.applyOffsetDelta`): a mirrored list rests at
+     * its physical end.
      */
     internal fun writeMirroredNative(nativePx: Float) {
         val host = mirroredHost
