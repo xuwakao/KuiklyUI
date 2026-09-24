@@ -158,7 +158,12 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 - (void)setCss_opacity:(NSNumber *)css_opacity {
     if (self.css_opacity != css_opacity) {
         objc_setAssociatedObject(self, @selector(css_opacity), css_opacity, OBJC_ASSOCIATION_RETAIN);
+        BOOL wasVisible = self.alpha > 0.01;
         self.alpha = !css_opacity ? 1 :  [KRConvertUtil CGFloat:css_opacity];
+        // Ronaq: crossing zero opacity changes what can be seen below here (CHANGES.md §35).
+        if (wasVisible != (self.alpha > 0.01)) {
+            [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+        }
     }
 }
 
@@ -169,7 +174,12 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 - (void)setCss_visibility:(NSNumber *)css_visibility {
     if (self.css_visibility != css_visibility) {
         objc_setAssociatedObject(self, @selector(css_visibility), css_visibility, OBJC_ASSOCIATION_RETAIN);
+        BOOL wasHidden = self.hidden;
         self.hidden = !css_visibility ? NO : ( [css_visibility boolValue] ? NO : YES );
+        // Ronaq: a hidden subtree cannot be seen (CHANGES.md §35).
+        if (wasHidden != self.hidden) {
+            [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+        }
     }
 }
 
