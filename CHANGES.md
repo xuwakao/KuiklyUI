@@ -3354,3 +3354,54 @@ upgrade now covers base64). The decode is public as `+kr_decodeImageData:pixelSi
 with its memory-cache module and is checked on the device. No device run yet.
 
 **Upstreamable.** Yes.
+
+## 37. Image views give back a load nobody can see; web images decode off the main thread — iOS, web
+
+**Files** · `core-render-ios/Extension/BridgeProtocol/KuiklyRenderBridge.h`
+(`-hr_cancelImageLoadForImageView:`), `core-render-ios/Extension/Components/KRImageView.m`
+(`-didMoveToWindow`, `-setCss_src:`, the abandon and re-ask methods),
+`core-render-web/base/src/jsMain/kotlin/com/tencent/kuikly/core/render/web/expand/components/KRImageView.kt`
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.2.8 and §4.14, gaps G-10 and G-29 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** On iOS, an image view hands its URL to the expand handler and never
+speaks to it again unless the source changes; the only cancel in the protocol is a nil URL,
+which also clears the picture. A view that scrolls out of a list, or a page that closes,
+leaves its loads running: they download and decode into the handler's cache for a view that
+is gone. A view cleared for reuse (source set to nil) says nothing either, so its old load
+can still arrive — over a picture the refresh cache has since supplied. On the web, the
+`<img>` decodes on the main thread at first paint.
+
+**The change.**
+- A new optional expand-protocol method, `- (BOOL)hr_cancelImageLoadForImageView:`, asks the
+  handler to drop the load a view is waiting for without touching what it shows; it answers
+  YES when a load was outstanding. It is never called from `-dealloc` — a handler that must
+  let go of a freed view ties its hold to the view's lifetime instead (an associated object),
+  because forming a weak reference to a deallocating view crashes.
+- `KRImageView` tracks whether a handler accepted a source and has not delivered a picture
+  for it (cleared by any picture bound, by animated content presented through §35's hook,
+  and by a matched completion of the block forms). When it leaves its window with such a
+  load, it gives the load back a main-queue turn later — a view moved between parents in
+  one pass is back in a window by then and keeps it. When the handler answers YES, the view
+  asks again for its source on its return, at the size it covers then, keeping any picture
+  it already shows (an upgrade in flight is asked for again the same way). When the handler
+  answers NO (the load failed, say), nothing is re-asked: moving a view is not a retry.
+- Changing the source to a different one (including nil, as reuse does) gives the old
+  source's load back first.
+- The web `KRImageView` sets `decoding="async"` on its `<img>`, before any `src`.
+  `loading="lazy"` is deliberately not set: a pager composes neighbouring pages off screen,
+  and lazy loading would make their pictures pop in during a swipe.
+
+Handlers that do not implement the new method behave as before: loads run to completion.
+On macOS the compat layer delivers `didMoveToWindow`, so the same path applies there.
+
+**Verified.** Ronaq's iOS unit bundle, `KRImageViewAbandonTests` (11 cases): leaving the
+window gives the load back; returning asks again at the current size; a move between parents
+in one pass keeps it; a delivered picture, or a handler with nothing outstanding, means no
+cancel and no re-ask; an upgrade given back keeps the picture and is asked for again;
+clearing the source gives its load back; and end to end with Ronaq's handler, a detached
+view's download is cancelled and a returning view's picture arrives. Web: Ronaq's Playwright
+suite (`e2e/img-decoding.spec.ts`) on Chromium and WebKit. No device run yet.
+
+**Upstreamable.** Yes.
