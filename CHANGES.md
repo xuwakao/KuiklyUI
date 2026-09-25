@@ -3621,3 +3621,109 @@ notice and a new largest scale posts another (both red before: 0 notices, and 6)
 its page on and stops when it leaves, and one moved by layout stops and plays again (red before).
 
 **Upstreamable.** Yes, with §34/§35.
+
+## 43. Android: moved content is re-checked for visibility, a pulse posts geometry once, and an image view keeps what it shows
+
+**Files** · `core-render-android/.../expand/visibility/KRVisibility.kt` (§35's file: `noteTransform`,
+`forgetTransform`) · `core-render-android/.../expand/component/image/KRImageSizing.kt` (new) + tests
+`KRImageSizingTest.kt`, `css/animation/KRCSSTransformNoticeTest.kt` (new) · upstream
+`css/animation/KRCSSAnimation.kt` (`KRCSSTransform.applyTransform`, `resetTransform`) · upstream
+`css/ktx/KRCSSViewExtension.kt` (the `frame` prop) · upstream `expand/component/KRImageView.kt` (the
+upgrade, the failure report, the cancel) · upstream `build.2.1.21.gradle.kts` (`testOptions`)
+**Driven by** · Ronaq's image pipeline, review 2 of the Android tasks (owner, 2026-09-24 and
+2026-09-25: 「上面提到的那些都要解决」); Ronaq `docs/design/image-pipeline.md` §4.4, §4.10, INV-6, INV-13,
+INV-23, AC-2, AC-21 — the Android twin of §42
+**Date** · 2026-09-25
+
+**What §35/§40/§41 did.** The coalesced notice carried *visibility* for `visibility`, `opacity`,
+`occluded` and a list's scroll, and *geometry* for every transform whose scale is above 1. An image
+view asked again whenever it covered an eighth more pixels than its last request, and reported any
+failed load.
+
+**What was wrong.**
+
+- A view moved by its transform's translation — a pager page slid by `graphicsLayer.translationX`
+  (Ronaq's VIP centre), an entrance — or by a frame the renderer sets went on or off the glass with
+  no notice. An animated picture bound while off screen was paused by §41 and stayed frozen on its
+  first frame after the swipe brought it on; a looping VAP there was released and stayed blank.
+  Before §41 nothing paused, so this was new.
+- A pulse to the same scale above 1 (a gift panel's beat, a heart) posted a geometry notice on every
+  frame, and every image view with a sized load walked its ancestors on each.
+- An animated picture was upgraded like a still: the larger request is a new cache entry whose
+  frames are the file's size again (an image library does not resize animated frames), so the clip
+  restarted from its first frame — a one-shot replayed — and its frames were held twice.
+- A failed upgrade or re-ask fired `loadFailure` over the picture of the same source the view
+  already showed; Ronaq's VIP tiles then swap a good picture for ⊘.
+- An upgrade cancelled because the view left its window kept its larger size as "asked for", so on
+  its return the view compared against a size it never got and never asked again.
+
+**The change.**
+
+- `KRCSSTransform.applyTransform` posts *visibility* for every transform it applies, and *geometry*
+  only when the view's scale exceeds the largest it has had since its transform was reset
+  (`KRVisibility.noteTransform`, kept per view in a weak map, cleared by `resetTransform` through
+  `forgetTransform`).
+- The `frame` prop posts *visibility* when the frame it sets differs from the one before.
+- `KRImageView` keeps what it asked for against what it shows in `KRImageSizing` (view-free): it never
+  upgrades an animated picture; a failed load over a picture of the same source keeps the picture
+  and reports nothing; a load cancelled before it arrived puts the view back on the size it shows.
+- The module's JVM tests run over the mockable android.jar with default values
+  (`unitTests.isReturnDefaultValues`), so a test can drive `KRCSSTransform` on a plain `View`.
+
+Every notice still coalesces to one delivery per main-looper turn.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRCSSTransformNoticeTest` (4) — a
+page slid off and back by a translation posts a visibility notice each time, six beats to 1.3 post one
+geometry notice and a new largest scale another, a reset starts the history again, a shrink is never
+geometry; red before the change (no visibility notice; six geometry notices). `KRImageSizingTest` (8)
+— the growth step, never for an animated picture, a cancelled upgrade re-asked, a first load cancelled
+leaves nothing to upgrade, a failed upgrade not retried until the view grows further, unsized loads
+never upgrade, a failure over a picture not reported, a reset. The swipe on a device (a preview that
+moves after it lands) is Ronaq's device phase.
+
+**Upstreamable.** Yes, with §35/§40/§41.
+
+## 44. iOS: an image view keeps the picture a re-ask fails over, and processing set over content shows
+
+**Files** · upstream `core-render-ios/Extension/Components/KRImageView.m`
+(`p_handleImageLoadCompletion:`, `setCss_tintColor:`, `setCss_colorFilter:`, `setCss_blurRadius:`,
+`setCss_capInsets:`, a `setCss_dotNineImage:` setter)
+**Driven by** · Ronaq's image pipeline, review 2 of the iOS tasks (owner, 2026-09-25:
+「ios imagepipeline也要继续研究和实现啊」); Ronaq `docs/design/image-pipeline.md` §4.2.1, §4.2.5, AC-22,
+INV-24 — the iOS twin of §43's failure rule
+**Date** · 2026-09-25
+
+**What §34/§35/§37 did.** A view asks its loader again, keeping its picture, when it grows past a
+step or returns to a window after giving its load back; a loader may show an animated picture as
+content over the view (`-kr_presentContentView:posterImage:`), refused when the view carries a tint,
+a colour filter, a blur, cap insets or a nine-patch at that moment. Since Ronaq's loader reports
+failures (its §17 D5), a failed load fires `loadFailure`.
+
+**What was wrong.**
+
+- A re-ask that failed — an upgrade whose larger picture could not be fetched — fired `loadFailure`
+  over the picture of the same source the view still showed; Ronaq's VIP tiles then replace a good
+  tile with ⊘.
+- A tint, a colour filter or a blur set AFTER content was presented was applied to the view's image
+  under the content, whose frames are not processed: invisible. Cap insets or a nine-patch set after
+  a sized load stretched a picture decoded at display size by insets in the source's pixels (and
+  content cannot be stretched at all).
+
+**The change.**
+
+- A failed load while the view shows a picture of its source (`_originImage`) is not reported and the
+  picture stays. A first load (no picture yet) is reported as before.
+- Setting a tint, a colour filter or a blur while content is shown removes the content; the poster,
+  already the view's `_originImage`, shows processed as a still — what the loader shows a view that
+  has the processing from the start.
+- Setting cap insets or `dotNineImage` on a view that holds a sized picture or content asks the loader
+  again at the source's pixels (no size), keeping what it shows until they arrive. `dotNineImage`
+  gains a setter for it (it had none, so a late change applied only to the next picture).
+
+**Verified.** Ronaq's hosted iOS unit bundle: `RonaqImageFailureTests` — an upgrade whose larger
+picture fails keeps the picture and fires no `loadFailure` (red before: 1); `KRImageViewContentHookTests`
+— a tint, a colour filter and a blur set over presented content remove it and show the processed
+poster, cap insets set after a sized load ask again without a size (red before: the content stayed,
+no second request).
+
+**Upstreamable.** Yes, with §34/§35/§37.
