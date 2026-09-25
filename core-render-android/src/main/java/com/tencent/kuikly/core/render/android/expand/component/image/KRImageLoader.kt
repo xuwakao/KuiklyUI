@@ -18,6 +18,7 @@ package com.tencent.kuikly.core.render.android.expand.component.image
 import android.graphics.drawable.Drawable
 import com.tencent.kuikly.core.render.android.KuiklyRenderViewContext
 import com.tencent.kuikly.core.render.android.adapter.HRImageLoadOption
+import com.tencent.kuikly.core.render.android.adapter.KRImageRequest
 import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderAdapterManager
 import com.tencent.kuikly.core.render.android.context.KuiklyRenderCoreExecuteModeBase
 import org.json.JSONObject
@@ -43,6 +44,21 @@ class KRImageLoader(
     fun fetchImageAsync(options: HRImageLoadOption, imageParams: JSONObject?, callback: FetchImageCallback) {
         convertAssetsPathIfNeed(options)
         KuiklyRenderAdapterManager.krImageAdapter?.fetchDrawable(options, imageParams, callback)
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §39): the image view's load, which it can cancel, and whose
+     * drawable it gives back through [releaseDrawable]. Assets paths are converted as for
+     * [fetchImageAsync].
+     */
+    fun fetchImageForView(options: HRImageLoadOption, imageParams: JSONObject?, callback: FetchImageCallback): KRImageRequest? {
+        convertAssetsPathIfNeed(options)
+        return KuiklyRenderAdapterManager.krImageAdapter?.fetchDrawableForView(options, imageParams, callback)
+    }
+
+    /** Ronaq fork (CHANGES.md §39): gives back a drawable [fetchImageForView] delivered. */
+    fun releaseDrawable(drawable: Drawable) {
+        KuiklyRenderAdapterManager.krImageAdapter?.releaseDrawable(drawable)
     }
 
     fun getImageWidth(drawable: Drawable): Float {
