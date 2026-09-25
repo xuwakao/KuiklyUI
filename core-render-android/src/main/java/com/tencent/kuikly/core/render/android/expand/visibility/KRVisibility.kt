@@ -94,6 +94,17 @@ object KRVisibility {
         return insideWindow
     }
 
+    /**
+     * [isEffectivelyVisible], or null while the answer is not known yet: an attached view that
+     * has not been laid out, or has no area, cannot be placed against the window (CHANGES.md §41).
+     * A detached view is not visible.
+     */
+    fun visibleOrUnknown(view: View): Boolean? {
+        if (!view.isAttachedToWindow) return false
+        if (!view.isLaidOut || view.width <= 0 || view.height <= 0) return null
+        return isEffectivelyVisible(view)
+    }
+
     fun isEffectivelyVisible(view: View): Boolean {
         val chain = generateSequence(view) { it.parent as? View }.map {
             Layer(it.visibility == View.VISIBLE, it.alpha, it.isOccluded)
