@@ -3492,3 +3492,50 @@ Fresco (TASK-A2); the device checks (fast scroll with logcat free of recycled-bi
 blurred room background entered and left repeatedly) are Ronaq's device phase.
 
 **Upstreamable.** Yes: both entries are defaulted and vendor-neutral.
+
+## 40. Android: an image view asks for the pixels it covers, and for the source's only when it must
+
+**Files** · `core-render-android/.../expand/component/image/KRImagePixelSize.kt` (new) + test
+`KRImagePixelSizeTest.kt` (new) · upstream `css/animation/KRCSSAnimation.kt`
+(`KRCSSTransform.applyTransform` posts a geometry notice) · upstream
+`expand/component/KRImageView.kt` (`createImageLoadOption`, the upgrade, base64 keys)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.10 and §4.2.1's rule, gaps G-18 and G-27 of the 2026-09-24 audit, design review 1 findings 7
+and 8
+**Date** · 2026-09-25
+
+**What upstream does.** `createImageLoadOption` asks for the view's frame in pixels. A frame
+excludes the scale of an ancestor's transform (`Modifier.scale` is a view's `scaleX`/`scaleY`), so
+a picture under an enlarging ancestor is decoded smaller than it is drawn — the seat headwear under
+`scale(1/0.7)` got 168 px for 240 on screen. The request is never re-asked when the view grows.
+`needResize` is false for a nine-patch or cap-inset view — whose insets are in source pixels — but
+also whenever a `loadResolution` listener is set, which every Compose image sets, so an adapter
+honouring it decoded every Compose picture whole. A base64 picture decoded for one view replaces
+the base64 text in the memory-cache module, so every later view of it gets that one decode.
+
+**The change.**
+
+- The request size is the frame times the product of the scale magnitudes of the view and every
+  ancestor, **held at 1 or more per axis** (`KRImagePixelSize`): a transform that shrinks is usually
+  the first frame of an entrance, and a decode taken then would be drawn upscaled afterwards.
+- A view whose covered size grows by **more than one eighth** in either dimension asks again,
+  keeping its picture until the larger one arrives — checked when its frame is set, when it is
+  attached (ancestors attached late), and on the coalesced *geometry* notice
+  (`KRVisibility.CHANGE_GEOMETRY`, §35) that `KRCSSTransform.applyTransform` now posts whenever it
+  applies an enlarging scale. Only views with a sized load listen, and only while attached. Never
+  smaller.
+- `needResize` is false only for a nine-patch or cap-inset view. A view that turns into one after a
+  sized load (its `capInsets`, `dotNineImage` or `resize` arrived after its frame) reloads at the
+  source's pixels. The `loadResolution` term is gone: the resolution reported is the decoded
+  picture's, proportional to the source — what Ronaq's iOS renderer reports as well (§34).
+- A base64 picture decoded at a size is kept under its key plus that size (`<key>#<w>x<h>`); the
+  base64 text stays under the key, so a larger view decodes its own (the iOS twin is §36).
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRImagePixelSizeTest` (5): an
+enlarging ancestor counted (168 → 240), scales multiply along the chain and a mirror is not a
+shrink, a shrinking transform held at 1, the covered size rounded up and never below the frame, an
+eighth as the step and never downwards. The wiring into the view and the transform notice are
+checked on a device (Ronaq TASK-A3: seat headwear sharper at 1/0.7, bundled art at request size).
+
+**Upstreamable.** Yes; the `loadResolution` change is a behaviour change an upstream reviewer should
+weigh (it favours memory over reporting the source's resolution).
