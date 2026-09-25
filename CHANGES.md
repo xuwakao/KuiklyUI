@@ -3203,3 +3203,56 @@ coordinator, which acts only on a declared priority
 the web, browsers latch a scroll gesture to the element it began on.
 
 **Upstreamable.** Yes, as an option; upstream may prefer SELF_FIRST's hand-over by default.
+
+## 34. Pagers say where a released drag is going, and images can wait for their page
+
+**Files** · `compose/.../foundation/pager/PagerState.kt` (`settleTargetPage`) ·
+`compose/.../coil3/AsyncImagePainter.kt` (`LocalAsyncImageLoading`, `deferredImageSource`) · tests
+`compose/src/commonTest/.../foundation/pager/SettleTargetPageTest.kt`,
+`compose/src/commonTest/.../coil3/DeferredImageSourceTest.kt` (new)
+**Driven by** · the Ronaq owner's pager ruling of 2026-09-25 (「好的，按建议做」: a pager keeps its
+neighbour pages built, as the native ViewPager's default `offscreenPageLimit` does, and a neighbour
+makes no data request, starts no animation and loads no heavy image until it is the current page);
+Ronaq `docs/design/load-more.md` Part B, `docs/issue/pager-neighbour-pages.md`
+**Date** · 2026-09-25
+
+**What.** Two read-only capabilities. Neither changes what any existing caller sees.
+
+- **`PagerState.settleTargetPage: Int`.** The page a released drag is settling to, from the moment
+  the finger lifts until the snap state is cleared; -1 otherwise. `kuiklyWillDragEnd` already
+  decided that page and kept it in `snapTargetRelocatedPage`, an internal plain field (relocated
+  by key when the item set moves under a settle). The field is now snapshot state and the getter
+  is public, so a composition, a `derivedStateOf` or a `snapshotFlow` can follow it. An animated
+  programmatic scroll (`animateScrollToPage`) starts its snap without a target and leaves it at -1,
+  as before.
+- **`LocalAsyncImageLoading: ProvidableCompositionLocal<Boolean>`**, default `true`. While a
+  subtree provides `false`, `rememberAsyncImagePainter` gives the painter a null source for an
+  `http(s)` model (`deferredImageSource`), so no request goes out and the painter shows its
+  fallback, as a null model always has. Bundled (`assets://`) and inline (`data:`) sources are
+  untouched. When the local turns `true` the painter's `remember` key changes and the load starts.
+
+**Why.** Ronaq's Home and Moments pagers keep their neighbour pages built so the first swipe does
+not wait for a page to be composed (Android's Compose root handles MOVE synchronously). A
+ViewPager's window is centred on `mCurItem`, which is the release target from the finger's lift
+(`ViewPager.setCurrentItemInternal`), and a drag that catches a settle populates at once
+(`ViewPager.java:2125-2130`). This pager has the same fact but did not publish it: upstream
+Compose's `targetPage` answers it, yet reads `isScrollInProgress`, which this renderer can leave
+set after a native settle (Ronaq `HomeScreen.kt`'s banner ticker note, measured 2026-09-02), and
+`settledPage` reads the same flag. Without the release target, a second swipe caught before the
+first settle ends dragged in a page that had not been built (Ronaq design review finding F2).
+
+The image local is the "no heavy image" half of the ruling at the one place every image passes,
+instead of at each call site, where the next image added would miss it.
+
+**Reference.** androidx `ViewPager` 1.0.0: `setCurrentItemInternal`, `populate()` deferred to the
+settle's end (`:1106-1114`), and populated when a drag catches the settle (`:2125-2130`); the
+Ronaq reference client `lingoandroid` `PartyFragment.kt:104-107` (`BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT`).
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `SettleTargetPageTest` (no target at rest; set
+at the snap's start and cleared with the snap; a read registers a snapshot read, which failed with
+the field left a plain `var`), `DeferredImageSourceTest` (remote held while off, bundled and inline
+kept, everything passes when on). The Ronaq gate compiles the module for Android, JS and iOS. The
+device behaviour is measured by Ronaq's `scripts/moments-swipe-probe.mjs` in its verification phase.
+
+**Upstreamable.** Yes. `settleTargetPage` is a narrower `targetPage` that does not depend on
+`isScrollInProgress`; the local is a general deferral hook for lazily shown content.
