@@ -3581,3 +3581,43 @@ nothing, repeated notices pause and resume once, new content forgets the pause. 
 Ronaq's device phase.
 
 **Upstreamable.** Yes.
+
+## 42. iOS: content the renderer moves is re-checked for visibility; a pulse posts geometry once
+
+**Files** · upstream `core-render-ios/Extension/Category/UIView+CSS.m` (`setCss_transform:`,
+`setCss_frame:`)
+**Driven by** · Ronaq's iOS image pipeline re-audit (owner, 2026-09-25: 「ios imagepipeline也要继续研究和实现啊」);
+Ronaq `docs/design/image-pipeline.md` §17 (re-audit D4, D6), INV-23
+**Date** · 2026-09-25
+
+**What §34/§35 did.** The coalesced view-tree notice carried *visibility* for `visibility`,
+`opacity` crossing 0.01, `occluded` and a scroll, and *geometry* for every transform whose scale
+is above 1.
+
+**What was wrong.**
+
+- A view moved by its layer's translation — a pager page slid by `graphicsLayer.translationX`, an
+  entrance banner — or by a frame the renderer sets goes on or off the glass with no notice, so a
+  host's player that paused while it was off screen stayed paused after it arrived (and one that
+  left kept playing), until some unrelated notice came.
+- A pulse that returns to the same scale above 1 every beat (a gift panel's beat, a heart) posted a
+  geometry notice on every frame of every beat, and every image view under any composed page
+  re-measured itself on each.
+
+**The change.**
+
+- `setCss_transform:` posts *visibility* whenever it sets a transform, and *geometry* only when the
+  view's scale is larger than any it has had since its transform was last reset (kept per view,
+  cleared with the transform).
+- `setCss_frame:` posts *visibility* when the frame it sets differs from the one before.
+
+Both still coalesce to one delivery per main run-loop turn. An observer that only cares about
+geometry (the image view's upgrade check) ignores the visibility bit at the cost of one call.
+
+**Verified.** Ronaq's hosted iOS unit bundle: `KRVisibilityTests` — a transform and a changed frame
+post a visibility notice, the same frame again posts nothing, six 1.3 beats post one geometry
+notice and a new largest scale posts another (both red before: 0 notices, and 6); Ronaq's
+`RonaqMovedContentTests` — a looping picture presented off the glass plays when a translation brings
+its page on and stops when it leaves, and one moved by layout stops and plays again (red before).
+
+**Upstreamable.** Yes, with §34/§35.
