@@ -87,6 +87,7 @@ import com.tencent.kuikly.compose.scroller.handleScrollToTopCallback
 import com.tencent.kuikly.compose.scroller.isAtTop
 import com.tencent.kuikly.compose.scroller.lastItemVisible
 import com.tencent.kuikly.compose.scroller.kuiklyInfo
+import com.tencent.kuikly.compose.scroller.kuiklyOnDragBegin
 import com.tencent.kuikly.compose.scroller.kuiklyOnScroll
 import com.tencent.kuikly.compose.scroller.kuiklyOnScrollEnd
 import com.tencent.kuikly.compose.scroller.kuiklyWillDragEnd
@@ -299,10 +300,16 @@ fun SubcomposeLayout(
                 scrollViewSize = Size(it.width, it.height)
             }
 
-            if (scrollableState is PagerState || scrollableState is DrawerInternalPagerState) {
-                dragBegin {
+            // Ronaq fork (CHANGES.md §35): every scroller counts the drags its native view begins
+            // (`ScrollableState.dragsBegun`); a pager also drops the offset it was told to ignore,
+            // as it always did here.
+            dragBegin {
+                if (scrollableState is PagerState || scrollableState is DrawerInternalPagerState) {
                     kuiklyInfo.ignoreScrollOffset = null
                 }
+                scrollableState.kuiklyOnDragBegin()
+            }
+            if (scrollableState is PagerState || scrollableState is DrawerInternalPagerState) {
                 willDragEndBySync(isSync = scrollableState is PagerState && !isAndroid, handler = {
                     val viewportSize = kuiklyInfo.viewportSize
                     val scaleParams = it.scaleWithDensity(kuiklyInfo.getDensity())
