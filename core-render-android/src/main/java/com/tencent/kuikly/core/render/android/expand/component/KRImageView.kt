@@ -56,6 +56,7 @@ import com.tencent.kuikly.core.render.android.expand.component.blur.RenderScript
 import com.tencent.kuikly.core.render.android.expand.component.image.Insets
 import com.tencent.kuikly.core.render.android.expand.component.image.KRDrawableHolds
 import com.tencent.kuikly.core.render.android.expand.component.image.KRImagePixelSize
+import com.tencent.kuikly.core.render.android.expand.component.image.KRImageSizing
 import com.tencent.kuikly.core.render.android.expand.component.image.NinePatchHelper
 import com.tencent.kuikly.core.render.android.expand.module.KRMemoryCacheModule
 import com.tencent.kuikly.core.render.android.expand.visibility.KRUnseenPause
@@ -162,13 +163,12 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     private var originRoot: Drawable? = null
 
     /*
-     * Ronaq fork (CHANGES.md §40): the pixel size the last sized load asked for (0×0 for a load
-     * without a size), and the observer that hears an ancestor's transform grow — a view whose
-     * covered size grows by more than an eighth asks again, keeping its picture until the larger
-     * one arrives.
+     * Ronaq fork (CHANGES.md §40, §43): the pixel size the last load asked for against the size of
+     * the picture shown (KRImageSizing), and the observer that hears an ancestor's transform grow —
+     * a view whose covered size grows by more than an eighth asks again, keeping its picture until
+     * the larger one arrives.
      */
-    private var issuedWidth = 0
-    private var issuedHeight = 0
+    private val sizing = KRImageSizing()
     private var observingTree = false
     private val treeChangeObserver = KRVisibility.Observer { changes ->
         if (changes and KRVisibility.CHANGE_GEOMETRY != 0) upgradeIfGrown()
@@ -320,8 +320,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         stopAnimatable()
         cancelLoad()
         reaskOnAttach = false
-        issuedWidth = 0
-        issuedHeight = 0
+        sizing.reset()
         updateTreeObservation()
         // Ronaq fork (CHANGES.md §39): draw nothing lent from here on, then give it back.
         setImageDrawable(null)
@@ -439,8 +438,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         src = KRCssConst.EMPTY_STRING
         cancelLoad()
         reaskOnAttach = false
-        issuedWidth = 0
-        issuedHeight = 0
+        sizing.reset()
         updateTreeObservation()
         stopAnimatable()
         setImageDrawable(null)
@@ -558,6 +556,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         stopAnimatable() // 停止当前动画，防止GIF切换时卡住
         cancelLoad()
         reaskOnAttach = false
+        sizing.reset()
         src = url
         setImageDrawable(null) // 重置drawable，防止动态更新src时, Drawable错乱
 
@@ -585,8 +584,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             loadOutstanding = true
             val option = createImageLoadOption(tempSrc)
             val sized = option.needResize && option.requestWidth > 0 && option.requestHeight > 0
-            issuedWidth = if (sized) option.requestWidth else 0
-            issuedHeight = if (sized) option.requestHeight else 0
+            sizing.issue(if (sized) option.requestWidth else 0, if (sized) option.requestHeight else 0)
             updateTreeObservation()
             fetchDrawableForView(option, generation) { drawable ->
                 if (Thread.currentThread() == Looper.getMainLooper().thread) {
@@ -607,21 +605,23 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         }
         loadRequest = null
         loadOutstanding = false
+        // Ronaq fork (CHANGES.md §43): what is shown now, or a failure that keeps the picture.
+        if (drawable != null) sizing.delivered() else sizing.failed()
         setResultImageDrawable(requestSrc, drawable)
         drawable?.let { holds.settle(it) }
     }
 
     /**
-     * Ronaq fork (CHANGES.md §40): asks again when the view now covers more than an eighth more
-     * pixels than its last sized load asked for — its frame grew, an ancestor's transform grew,
-     * or it was attached under a scaled ancestor. Never smaller; the current picture stays until
-     * the larger one arrives.
+     * Ronaq fork (CHANGES.md §40, §43): asks again when the view now covers more than an eighth
+     * more pixels than its last sized load asked for — its frame grew, an ancestor's transform
+     * grew, or it was attached under a scaled ancestor. Never smaller; the current picture stays
+     * until the larger one arrives. Never for an animated picture (KRImageSizing): it would restart.
      */
     private fun upgradeIfGrown() {
         if (!inWindow || src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
-        if (issuedWidth <= 0 || issuedHeight <= 0 || needsSourcePixels()) return
+        if (!sizing.sized || needsSourcePixels()) return
         val (width, height) = coveredPixels()
-        if (KRImagePixelSize.grewBeyondStep(issuedWidth, issuedHeight, width, height)) {
+        if (sizing.shouldUpgrade(width, height, animated = originDrawable is Animatable)) {
             startLoadImage()
         }
     }
@@ -632,7 +632,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
      * source pixels, and a smaller decode would move the stretch lines.
      */
     private fun reloadIfSourcePixelsNeeded() {
-        if (issuedWidth <= 0 || !needsSourcePixels()) return
+        if (!sizing.sized || !needsSourcePixels()) return
         if (src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
         startLoadImage()
     }
@@ -652,15 +652,17 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     }
 
     private fun updateTreeObservation() {
-        val want = inWindow && (issuedWidth > 0 || drawable is Animatable)
+        val want = inWindow && (sizing.sized || drawable is Animatable)
         if (want == observingTree) return
         observingTree = want
         if (want) KRVisibility.addObserver(treeChangeObserver) else KRVisibility.removeObserver(treeChangeObserver)
     }
 
-    /** Ronaq fork (CHANGES.md §39): drops the load this view waits for, if any. */
+    /** Ronaq fork (CHANGES.md §39, §43): drops the load this view waits for, if any. */
     private fun cancelLoad() {
         loadGeneration++
+        // A request that never arrived does not count: the view compares against what it shows.
+        if (loadOutstanding) sizing.abandoned()
         loadOutstanding = false
         mainHandler.removeCallbacks(giveBackIfStillDetached)
         loadRequest?.cancel()
@@ -735,7 +737,12 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             return
         }
         if (drawable == null) {
-            fireLoadFailureCallback()
+            // Ronaq fork (CHANGES.md §43): a failed re-ask (an upgrade, a return to the window)
+            // keeps the picture of this source the view already shows, and reports nothing — a
+            // caller would swap a good picture for its error state.
+            if (KRImageSizing.reportsFailure(showsPicture = originDrawable != null)) {
+                fireLoadFailureCallback()
+            }
             return
         }
         var resultDrawable = drawable

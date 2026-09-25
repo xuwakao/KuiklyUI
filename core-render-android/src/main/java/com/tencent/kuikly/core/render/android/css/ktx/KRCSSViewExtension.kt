@@ -170,7 +170,14 @@ fun View.setCommonProp(key: String, value: Any): Boolean {
             true
         }
         KRCssConst.FRAME -> {
-            frame = value as Rect
+            val rect = value as Rect
+            // Ronaq fork (CHANGES.md §43): a frame the renderer moves takes what is under it on or
+            // off the glass; coalesced to one notice per main-looper turn.
+            val moved = !hadSetFrame || frame != rect
+            frame = rect
+            if (moved) {
+                KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+            }
             hadSetFrame = true
             dispatchOnSetFrame(value)
             if (KuiklyRenderView.lazyClipChildren) {
