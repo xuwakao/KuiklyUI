@@ -32,11 +32,14 @@ import android.graphics.drawable.Animatable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.NinePatchDrawable
+import android.os.Handler
 import android.os.Looper
 import android.util.SizeF
+import android.view.Choreographer
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.tencent.kuikly.core.render.android.adapter.HRImageLoadOption
+import com.tencent.kuikly.core.render.android.adapter.KRImageRequest
 import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderAdapterManager
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.css.drawable.KRCSSBackgroundDrawable
@@ -50,6 +53,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.toNumberFloat
 import com.tencent.kuikly.core.render.android.css.ktx.toPxI
 import com.tencent.kuikly.core.render.android.expand.component.blur.RenderScriptBlur
 import com.tencent.kuikly.core.render.android.expand.component.image.Insets
+import com.tencent.kuikly.core.render.android.expand.component.image.KRDrawableHolds
 import com.tencent.kuikly.core.render.android.expand.component.image.NinePatchHelper
 import com.tencent.kuikly.core.render.android.expand.module.KRMemoryCacheModule
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
@@ -132,6 +136,26 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     private var maskLinearGradientSize: SizeF = SizeF(0f, 0f)
     private var needReCreatePaintMaskGradient: Boolean = false
     private var capInsets: Insets? = null
+
+    /*
+     * Ronaq fork (CHANGES.md §39): the load this view waits for, and the drawables its adapter
+     * lent it. A load is cancelled when the view no longer wants it (a new source, a reset, its
+     * destruction, leaving the window before the picture came); a lent drawable is given back
+     * once the view neither keeps it, draws anything made from it, nor has a task reading it,
+     * two frames after the last of those (KRDrawableHolds).
+     */
+    private var loadRequest: KRImageRequest? = null
+    private var loadGeneration = 0
+    private var loadOutstanding = false
+    private var reaskOnAttach = false
+    private val holds = KRDrawableHolds<Drawable>(
+        release = { KuiklyRenderAdapterManager.krImageAdapter?.releaseDrawable(it) },
+        afterFrames = { task -> afterTwoFrames(task) },
+    )
+    /** The lent drawable the next [setImageDrawable] was made from (a nine-patch's bitmap). */
+    private var nextOriginRoot: Drawable? = null
+    /** The lent drawable [originDrawable] was made from, or null. */
+    private var originRoot: Drawable? = null
 
     init {
         shouldWaitViewDidLoad = KuiklyRenderAdapterManager.krImageAdapter?.shouldWaitViewDidLoad ?: true
@@ -250,11 +274,49 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     override fun setImageDrawable(drawable: Drawable?) {
         originDrawable = drawable
+        val root = nextOriginRoot ?: drawable
+        nextOriginRoot = null
+        originRoot = if (drawable == null) null else root
+        holds.origin(originRoot)
         updateDrawableImage(drawable)
     }
     override fun onDestroy() {
         super.onDestroy()
         stopAnimatable()
+        cancelLoad()
+        reaskOnAttach = false
+        // Ronaq fork (CHANGES.md §39): draw nothing lent from here on, then give it back.
+        setImageDrawable(null)
+        holds.clear()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // Ronaq fork (CHANGES.md §39): back in a window after its load was given back — ask
+        // again, at the size it has now.
+        if (reaskOnAttach) {
+            reaskOnAttach = false
+            if (src.isNotEmpty() && !isBase64Src() && setSrcLazyTask == null && originDrawable == null) {
+                startLoadImage()
+            }
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        // Ronaq fork (CHANGES.md §39): out of the window with the picture still on its way —
+        // give the load back a main-looper turn later, so a view moved between parents in one
+        // pass keeps it.
+        if (loadOutstanding) {
+            mainHandler.post(giveBackIfStillDetached)
+        }
+    }
+
+    private val giveBackIfStillDetached = Runnable {
+        if (!isAttachedToWindow && loadOutstanding) {
+            cancelLoad()
+            reaskOnAttach = true
+        }
     }
 
     private fun updateDrawableImage(drawable: Drawable?) {
@@ -286,21 +348,30 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         if (blurRadius > 0f) {
             val tBlurRadius = blurRadius
             val tSrc = src
+            // Ronaq fork (CHANGES.md §39): the task reads the lent bitmap off the main thread,
+            // so it holds it until it has run; the result may be the input itself (a blur that
+            // could not run), so it is shown as made from the same root. The completion goes
+            // through the main looper, not View.post, which a view out of the window would park.
+            val tRoot = originRoot
+            holds.beginTask(tRoot)
             KRSubThreadScheduler.scheduleTask(0) {
                 val blurDrawable = com.tencent.kuikly.core.render.android.expand.component.blur.CachedImageBlur.load(safeDrawable, context, tBlurRadius)
-                runOnUiThread {
-                    if (src == tSrc && blurRadius == tBlurRadius) {
-                        superSetImage(blurDrawable)
+                mainHandler.post {
+                    if (src == tSrc && blurRadius == tBlurRadius && originRoot === tRoot) {
+                        superSetImage(blurDrawable, tRoot)
                     }
+                    holds.endTask(tRoot)
                 }
             }
             return
         }
-        superSetImage(safeDrawable)
+        superSetImage(safeDrawable, originRoot)
     }
 
-    private fun superSetImage(drawable: Drawable?) {
+    /** [root]: the lent drawable [drawable] was made from, or null (Ronaq fork, CHANGES.md §39). */
+    private fun superSetImage(drawable: Drawable?, root: Drawable? = null) {
         super.setImageDrawable(drawable)
+        holds.shown(if (drawable == null) null else root)
         if (drawable is Animatable) {
             if (drawable.isRunning) {
                 drawable.stop() // 先停止再启动，确保GIF从第一帧开始播放
@@ -313,6 +384,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     private fun resetSrc(): Boolean {
         src = KRCssConst.EMPTY_STRING
+        cancelLoad()
+        reaskOnAttach = false
         stopAnimatable()
         setImageDrawable(null)
         clipBounds = null
@@ -425,6 +498,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             return true
         }
         stopAnimatable() // 停止当前动画，防止GIF切换时卡住
+        cancelLoad()
+        reaskOnAttach = false
         src = url
         setImageDrawable(null) // 重置drawable，防止动态更新src时, Drawable错乱
 
@@ -444,12 +519,42 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         if (isBase64Src()) {
             loadBase64Image(tempSrc)
         } else if (tempSrc.isNotEmpty()) {
-            fetchDrawable(createImageLoadOption(tempSrc)) { drawable ->
-                runOnUiThread {
-                    setResultImageDrawable(tempSrc, drawable)
+            // Ronaq fork (CHANGES.md §39): a load the view can cancel, whose drawable it gives
+            // back. Delivered through the main looper, not View.post: a view out of the window
+            // would park the result and never give it back.
+            cancelLoad()
+            val generation = ++loadGeneration
+            loadOutstanding = true
+            fetchDrawableForView(createImageLoadOption(tempSrc), generation) { drawable ->
+                if (Thread.currentThread() == Looper.getMainLooper().thread) {
+                    onViewLoadResult(generation, tempSrc, drawable)
+                } else {
+                    mainHandler.post { onViewLoadResult(generation, tempSrc, drawable) }
                 }
             }
         }
+    }
+
+    /** Ronaq fork (CHANGES.md §39): a lent drawable arrived; a stale one goes straight back. */
+    private fun onViewLoadResult(generation: Int, requestSrc: String, drawable: Drawable?) {
+        drawable?.let { holds.track(it) }
+        if (generation != loadGeneration || requestSrc != src) {
+            drawable?.let { holds.discard(it) }
+            return
+        }
+        loadRequest = null
+        loadOutstanding = false
+        setResultImageDrawable(requestSrc, drawable)
+        drawable?.let { holds.settle(it) }
+    }
+
+    /** Ronaq fork (CHANGES.md §39): drops the load this view waits for, if any. */
+    private fun cancelLoad() {
+        loadGeneration++
+        loadOutstanding = false
+        mainHandler.removeCallbacks(giveBackIfStillDetached)
+        loadRequest?.cancel()
+        loadRequest = null
     }
 
     private fun isBase64Src(): Boolean = src.startsWith(BASE64_IMAGE_PREFIX)
@@ -498,6 +603,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
                 .addXCenteredRegion(scaleCenterOffset)
                 .addYCenteredRegion(scaleCenterOffset)
                 .build()
+            // Ronaq fork (CHANGES.md §39): the nine-patch draws the delivered bitmap.
+            nextOriginRoot = drawable
         }
         setImageDrawable(resultDrawable)
     }
@@ -582,6 +689,33 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         }
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §39): [fetchDrawable] with a handle. The load is issued when the
+     * page allows ([shouldWaitViewDidLoad]); one cancelled before then is never issued.
+     */
+    private fun fetchDrawableForView(
+        imageLoadOption: HRImageLoadOption,
+        generation: Int,
+        callback: (drawable: Drawable?) -> Unit,
+    ) {
+        val issue = issue@{
+            if (generation != loadGeneration) return@issue
+            val request = kuiklyRenderContext?.getImageLoader()?.fetchImageForView(imageLoadOption, imageParams, callback)
+            if (generation == loadGeneration && loadOutstanding) {
+                loadRequest = request
+            } else {
+                // Delivered (or cancelled) before the handle came back.
+                request?.cancel()
+            }
+        }
+        val root = kuiklyRenderContext?.kuiklyRenderRootView
+        if (root != null && shouldWaitViewDidLoad) {
+            root.performWhenViewDidLoad { issue() }
+        } else {
+            issue()
+        }
+    }
+
     private fun fetchDrawable(imageLoadOption: HRImageLoadOption, callback: (drawable: Drawable?) -> Unit) {
         if (kuiklyRenderContext?.kuiklyRenderRootView != null && shouldWaitViewDidLoad) {
             kuiklyRenderContext?.kuiklyRenderRootView?.performWhenViewDidLoad {
@@ -658,6 +792,19 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         private fun Drawable.copyDrawable(): Drawable {
             return constantState?.newDrawable()?.mutate() ?: this
         }
+
+        /** Ronaq fork (CHANGES.md §39): results and releases reach the main looper this way. */
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        /**
+         * Ronaq fork (CHANGES.md §39): runs [task] after two frame callbacks — the frame the
+         * render thread may still be drawing when a view lets a bitmap go, and the next.
+         * Main thread.
+         */
+        private fun afterTwoFrames(task: Runnable) {
+            val choreographer = Choreographer.getInstance()
+            choreographer.postFrameCallback { choreographer.postFrameCallback { task.run() } }
+        }
     }
 }
 
@@ -699,6 +846,14 @@ class KRWrapperImageView(context: Context) : KRView(context) {
         return imageView.call(method, params, callback)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        // Ronaq fork (CHANGES.md §39): the inner views are not render nodes, so nobody else
+        // destroys them — and they hold what their adapter lent them.
+        imageView.onDestroy()
+        placeholderView?.onDestroy()
+    }
+
     override fun resetProp(propKey: String): Boolean {
         var result = super.resetProp(propKey)
         result = imageView.resetProp(propKey)
@@ -712,6 +867,7 @@ class KRWrapperImageView(context: Context) : KRView(context) {
     private fun setPlaceholder(src: String) {
         if (placeholder != src) {
             placeholder = src
+            placeholderView?.onDestroy()
             placeholderView?.removeFromParent()
             if (placeholder.isNotEmpty()) {
                 placeholderView = KRImageView(context).apply {
@@ -729,6 +885,7 @@ class KRWrapperImageView(context: Context) : KRView(context) {
     }
 
     private fun removePlaceholder() {
+        placeholderView?.onDestroy()
         placeholderView?.removeFromParent()
         placeholderView = null
         placeholder = ""
