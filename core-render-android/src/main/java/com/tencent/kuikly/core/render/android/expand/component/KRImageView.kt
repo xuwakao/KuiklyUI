@@ -178,8 +178,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     /*
      * Ronaq fork (CHANGES.md §41): an animated picture stops advancing while the view cannot be
      * seen — out of the window, outside the window's bounds, under a hidden, transparent or
-     * `occluded` ancestor — and starts again when it can. Fresco's animated drawable then drops
-     * its prepared frames after two seconds without a draw.
+     * `occluded` ancestor — and starts again when it can. An image library's animated drawable
+     * that is not drawn gives its prepared frames back on its own schedule.
      */
     private val unseenPause = KRUnseenPause()
     private val visibilityCheck = Runnable { applyVisibility() }
