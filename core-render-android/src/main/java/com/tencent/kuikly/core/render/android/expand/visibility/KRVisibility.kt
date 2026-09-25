@@ -22,6 +22,7 @@ import android.view.View
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.css.ktx.getViewData
 import java.util.WeakHashMap
+import kotlin.math.abs
 
 /**
  * Ronaq fork (CHANGES.md §35): whether a view can be seen, and coalesced notices when the
@@ -33,9 +34,10 @@ import java.util.WeakHashMap
  * less, or marked `occluded` — the generic prop for a subtree that is laid out and attached but
  * not on the glass (a page under an overlay, a tab that is not in front).
  *
- * The notices: the `visibility`, `opacity` and `occluded` props and a list's scroll post
- * [CHANGE_VISIBILITY]; however many come in one main-looper turn, observers hear one call.
- * Main thread only.
+ * The notices: the `visibility`, `opacity` and `occluded` props, a list's scroll, a transform
+ * and a frame change post [CHANGE_VISIBILITY] (the last two since §43); an enlarging transform
+ * also posts [CHANGE_GEOMETRY]; however many come in one main-looper turn, observers hear one
+ * call. Main thread only.
  */
 object KRVisibility {
 
@@ -63,6 +65,36 @@ object KRVisibility {
 
     fun removeObserver(observer: Observer) {
         observers.remove(observer)
+    }
+
+    /**
+     * The largest scale each view's transform has had since it was last reset (CHANGES.md §43).
+     * Weak keys: a view that goes away takes its entry with it.
+     */
+    private val largestScales = WeakHashMap<View, Float>()
+
+    /**
+     * A transform with scale [scaleX] × [scaleY] was applied to [view] (CHANGES.md §43). It moves
+     * what is under it on or off the glass — a pager page slid by its translation, an entrance —
+     * so a visibility notice always follows; a geometry notice only when the scale is larger than
+     * any this view has had since its transform was reset, so a pulse back to the same peak posts
+     * it once, not on every frame.
+     */
+    fun noteTransform(view: View, scaleX: Float, scaleY: Float) {
+        var changes = CHANGE_VISIBILITY
+        val scale = maxOf(abs(scaleX), abs(scaleY))
+        val largest = largestScales[view] ?: 1f
+        if (scale > 1.001f && scale > largest + 0.001f) {
+            largestScales[view] = scale
+            changes = changes or CHANGE_GEOMETRY
+        }
+        noteChange(changes)
+    }
+
+    /** [view]'s transform was reset (a recycled view): its scale history starts again. */
+    fun forgetTransform(view: View) {
+        largestScales.remove(view)
+        noteChange(CHANGE_VISIBILITY)
     }
 
     /** Posts [changes]; delivered once, on the next turn, with everything posted until then. */
