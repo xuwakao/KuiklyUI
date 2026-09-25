@@ -58,6 +58,7 @@ import com.tencent.kuikly.core.render.android.expand.component.image.KRDrawableH
 import com.tencent.kuikly.core.render.android.expand.component.image.KRImagePixelSize
 import com.tencent.kuikly.core.render.android.expand.component.image.NinePatchHelper
 import com.tencent.kuikly.core.render.android.expand.module.KRMemoryCacheModule
+import com.tencent.kuikly.core.render.android.expand.visibility.KRUnseenPause
 import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
@@ -171,7 +172,23 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     private var observingTree = false
     private val treeChangeObserver = KRVisibility.Observer { changes ->
         if (changes and KRVisibility.CHANGE_GEOMETRY != 0) upgradeIfGrown()
+        if (changes and KRVisibility.CHANGE_VISIBILITY != 0) applyVisibility()
     }
+
+    /*
+     * Ronaq fork (CHANGES.md §41): an animated picture stops advancing while the view cannot be
+     * seen — out of the window, outside the window's bounds, under a hidden, transparent or
+     * `occluded` ancestor — and starts again when it can. Fresco's animated drawable then drops
+     * its prepared frames after two seconds without a draw.
+     */
+    private val unseenPause = KRUnseenPause()
+    private val visibilityCheck = Runnable { applyVisibility() }
+
+    /**
+     * Whether the view is in a window, as of its own attach and detach callbacks: during
+     * `onDetachedFromWindow` the framework still answers `isAttachedToWindow` true.
+     */
+    private var inWindow = false
 
     init {
         shouldWaitViewDidLoad = KuiklyRenderAdapterManager.krImageAdapter?.shouldWaitViewDidLoad ?: true
@@ -313,6 +330,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        inWindow = true
         // Ronaq fork (CHANGES.md §39): back in a window after its load was given back — ask
         // again, at the size it has now.
         if (reaskOnAttach) {
@@ -324,21 +342,26 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         // Ronaq fork (CHANGES.md §40): ancestors attached late may enlarge it.
         updateTreeObservation()
         upgradeIfGrown()
+        // Ronaq fork (CHANGES.md §41): after this pass's layout, see whether it can be seen.
+        if (drawable is Animatable) post(visibilityCheck)
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        inWindow = false
         // Ronaq fork (CHANGES.md §39): out of the window with the picture still on its way —
         // give the load back a main-looper turn later, so a view moved between parents in one
         // pass keeps it.
         if (loadOutstanding) {
             mainHandler.post(giveBackIfStillDetached)
         }
+        // Ronaq fork (CHANGES.md §41): out of the window is out of sight.
+        applyVisibility()
         updateTreeObservation()
     }
 
     private val giveBackIfStillDetached = Runnable {
-        if (!isAttachedToWindow && loadOutstanding) {
+        if (!inWindow && loadOutstanding) {
             cancelLoad()
             reaskOnAttach = true
         }
@@ -397,12 +420,17 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     private fun superSetImage(drawable: Drawable?, root: Drawable? = null) {
         super.setImageDrawable(drawable)
         holds.shown(if (drawable == null) null else root)
+        unseenPause.reset()
         if (drawable is Animatable) {
             if (drawable.isRunning) {
                 drawable.stop() // 先停止再启动，确保GIF从第一帧开始播放
             }
             drawable.start()
+            // Ronaq fork (CHANGES.md §41): listen while it animates; check once laid out.
+            removeCallbacks(visibilityCheck)
+            post(visibilityCheck)
         }
+        updateTreeObservation()
         fireLoadSuccessCallback(drawable)
         fireLoadResolutionCallback(drawable)
     }
@@ -590,7 +618,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
      * the larger one arrives.
      */
     private fun upgradeIfGrown() {
-        if (!isAttachedToWindow || src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
+        if (!inWindow || src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
         if (issuedWidth <= 0 || issuedHeight <= 0 || needsSourcePixels()) return
         val (width, height) = coveredPixels()
         if (KRImagePixelSize.grewBeyondStep(issuedWidth, issuedHeight, width, height)) {
@@ -609,8 +637,22 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         startLoadImage()
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §41): pauses a running animated picture the view cannot show, and
+     * resumes one this paused once it can; an unknown answer (not laid out yet) changes nothing.
+     */
+    private fun applyVisibility() {
+        val animatable = drawable as? Animatable ?: return
+        val visible = if (inWindow) KRVisibility.visibleOrUnknown(this) else false
+        when (unseenPause.decide(visible, animatable.isRunning, pausable = true)) {
+            KRUnseenPause.Action.PAUSE -> animatable.stop()
+            KRUnseenPause.Action.RESUME -> animatable.start()
+            KRUnseenPause.Action.NONE -> Unit
+        }
+    }
+
     private fun updateTreeObservation() {
-        val want = isAttachedToWindow && issuedWidth > 0
+        val want = inWindow && (issuedWidth > 0 || drawable is Animatable)
         if (want == observingTree) return
         observingTree = want
         if (want) KRVisibility.addObserver(treeChangeObserver) else KRVisibility.removeObserver(treeChangeObserver)
