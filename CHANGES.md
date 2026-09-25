@@ -3432,3 +3432,63 @@ cache is an `android.util.LruCache`, which the fork's JVM tests cannot run witho
 runtime, and the entry has no decision to test.
 
 **Upstreamable.** The blur cache is Ronaq's; the entry point itself is general.
+
+## 39. Android: an image view cancels what it no longer wants and gives back what it was lent
+
+**Files** · `core-render-android/.../adapter/KRImageRequest.kt` (new) ·
+`.../expand/component/image/KRDrawableHolds.kt` (new) + test `KRDrawableHoldsTest.kt` (new) ·
+upstream `adapter/IKRImageAdapter.kt` (`fetchDrawableForView`, `releaseDrawable`) ·
+upstream `expand/component/image/KRImageLoader.kt` (`fetchImageForView`, `releaseDrawable`) ·
+upstream `expand/component/KRImageView.kt` (the load handle, the holds, `KRWrapperImageView`
+destroying its inner views)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.9, gaps G-17 and G-19 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What upstream does.** `IKRImageAdapter.fetchDrawable` hands a drawable to a callback and that is
+the whole conversation: the view cannot cancel a load (a row scrolled away still downloads and
+decodes), and the adapter never learns when the view is done with a drawable. An adapter over an
+image library whose bitmaps are reference-counted and pooled (Fresco) therefore has to copy every
+still out of the library — the library's bitmap may be reused for another picture the moment its
+reference closes — so each picture exists twice, once outside the library's budget and trim.
+
+**The change.**
+
+- `IKRImageAdapter.fetchDrawableForView(option, params, callback): KRImageRequest?` — a load for
+  an image view, with a handle it cancels (`KRImageRequest.cancel()`); after a cancel the adapter
+  delivers nothing. `releaseDrawable(drawable)` — the view no longer draws or reads a drawable it
+  received there; called once per drawable, on the main thread. Both default to today's
+  behaviour (the plain fetch, no handle; release does nothing), so an adapter that implements
+  neither is unaffected. `KRImageLoader` forwards both.
+- `KRImageView` uses them for every non-base64 source. It cancels on a new `src`, a reset, its
+  destruction, and when it leaves its window before the picture came — a main-looper turn later,
+  so a view moved between parents in one pass keeps its load — and asks again when it returns.
+  A result that arrives for a load it no longer wants goes straight back. Results reach the main
+  thread through the main looper rather than `View.post`, which parks a runnable for a view out of
+  the window and would never give its drawable back.
+- **When a drawable goes back** (`KRDrawableHolds`, view-free): not while the view keeps it as the
+  source it re-tints and re-blurs from; not while what it draws was made from it — the drawable, a
+  tint or colour-filter copy (`constantState.newDrawable()` shares the bitmap), a nine-patch built
+  over its bitmap, or a blur that fell back to its input; not while the blur task reads it off the
+  main thread. Two frames after the last of those (`Choreographer`), because the render thread may
+  still be drawing the frame recorded before the view let go; then exactly once. A drawable the
+  view was not lent — a base64 or memory-cache-module picture — is never given back.
+- On destruction the view draws nothing lent from then on and lets everything go.
+  `KRWrapperImageView` destroys its inner image and placeholder views, which are not render nodes
+  and were never destroyed by anyone.
+
+The base64 path and `KRMemoryCacheModule.cacheImage` keep the plain fetch: their drawables live
+in a module map for the page's life.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRDrawableHoldsTest` (11): a
+replaced picture goes back two frames later and not before; the blur task holds it; a blur that
+finishes after the view moved on gives the old picture back; destruction gives everything back;
+never twice; a tint copy replaced by a new tint keeps it; a nine-patch holds it until a new
+source; the old derivative stays drawn until the new source's blur arrives; a stale result goes
+back at once; a drawable the view was not lent is never given back; held again before the frames
+ran means kept. The same suite against a rule that gives a picture back as soon as the view stops
+keeping it (no frames, no task hold) fails 5 of the 11. Ronaq's host implements both entries over
+Fresco (TASK-A2); the device checks (fast scroll with logcat free of recycled-bitmap errors, the
+blurred room background entered and left repeatedly) are Ronaq's device phase.
+
+**Upstreamable.** Yes: both entries are defaulted and vendor-neutral.
