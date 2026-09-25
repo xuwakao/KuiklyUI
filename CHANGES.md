@@ -3405,3 +3405,30 @@ view's download is cancelled and a returning view's picture arrives. Web: Ronaq'
 suite (`e2e/img-decoding.spec.ts`) on Chromium and WebKit. No device run yet.
 
 **Upstreamable.** Yes.
+
+## 38. Android: the renderer's blur cache answers memory pressure
+
+**Files** · `core-render-android/.../KuiklyRenderMemory.kt` (new) ·
+`core-render-android/.../expand/component/blur/CachedImageBlur.kt` (`evictAll`, `sizeBytes`)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24: every gap of the audit is to be
+closed); Ronaq `docs/design/image-pipeline.md` §4.8, gap G-16 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What the fork did.** `CachedImageBlur` (a Ronaq addition, "Source image blur reuse",
+2026-09-20: the room's blurred wallpaper) keeps up to 2 MiB of blurred bitmaps in an `LruCache`. Nothing outside it
+could empty that cache, so it held its bitmaps through every `onTrimMemory`, even with the app
+in the background.
+
+**The change.** `KuiklyRenderMemory.onTrimMemory(level)`, a public entry a host calls from its
+application's `onTrimMemory` (and from `onLowMemory`), empties the renderer's own bitmap caches
+— today the blur cache — at every level, the rule image libraries apply to their evictable
+entries. Eviction never recycles: a view that shows a blurred drawable keeps it, and the bitmap
+goes when the last view lets go. `cachedBitmapBytes()` reports what the caches hold, for a
+host's diagnostics. No upstream file changes.
+
+**Verified.** Ronaq's Android host calls it next to Fresco's trim; the device check is
+`am send-trim-memory` with the host's `ronaq-image` stats line (Ronaq TASK-A1). No JVM test: the
+cache is an `android.util.LruCache`, which the fork's JVM tests cannot run without an Android
+runtime, and the entry has no decision to test.
+
+**Upstreamable.** The blur cache is Ronaq's; the entry point itself is general.
