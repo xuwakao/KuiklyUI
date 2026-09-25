@@ -28,6 +28,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.toPxF
 import com.tencent.kuikly.core.render.android.css.ktx.obtainViewDecorator
 import com.tencent.kuikly.core.render.android.css.ktx.optViewDecorator
 import com.tencent.kuikly.core.render.android.css.ktx.setTransformOverBounds
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import java.lang.ref.WeakReference
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -348,6 +349,11 @@ class KRCSSTransform(transform: String?, private val target: View) {
         }
         applySkewTransform()
         handleOverflowBounds()
+        // Ronaq fork (CHANGES.md §40): an enlarging transform can make the images under it cover
+        // more pixels than they were loaded at; they re-check on this coalesced notice.
+        if (abs(scaleX) > 1f || abs(scaleY) > 1f) {
+            KRVisibility.noteChange(KRVisibility.CHANGE_GEOMETRY)
+        }
     }
 
     /**
