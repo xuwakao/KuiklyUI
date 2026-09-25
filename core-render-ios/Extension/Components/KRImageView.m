@@ -299,6 +299,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_blurRadius:(NSNumber *)css_blurRadius {
     if (_css_blurRadius != css_blurRadius) {
         _css_blurRadius = css_blurRadius;
+        [self kr_dropContentForProcessing];
         if (_originImage == nil) {
             [self setImageWithSrc:self.css_src];
         } else {
@@ -310,6 +311,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_tintColor:(NSString *)css_tintColor {
     _css_tintColor = css_tintColor;
     self.tintColor = [UIView css_color:css_tintColor];
+    [self kr_dropContentForProcessing];
     if (_originImage == nil) {
         [self setImageWithSrc:self.css_src];
     } else {
@@ -320,6 +322,7 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
 - (void)setCss_colorFilter:(NSString *)css_colorFilter {
     if (_css_colorFilter != css_colorFilter) {
         _css_colorFilter = css_colorFilter;
+        [self kr_dropContentForProcessing];
         if (_originImage == nil) {
             [self setImageWithSrc:self.css_src];
         } else {
@@ -404,10 +407,52 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
         _css_capInsets = insets;
         if (_originImage == nil) {
             [self setImageWithSrc:self.css_src];
-        } else {
+        } else if (![self kr_reloadAtSourcePixelsIfNeeded]) {
             [self p_updateWithImage:_originImage];
         }
     }
+}
+
+// Ronaq (CHANGES.md §44): a nine-patch stretches by its source's pixels, like cap insets.
+- (void)setCss_dotNineImage:(NSNumber *)css_dotNineImage {
+    if (_css_dotNineImage != css_dotNineImage) {
+        _css_dotNineImage = css_dotNineImage;
+        if (_originImage != nil && ![self kr_reloadAtSourcePixelsIfNeeded]) {
+            [self p_updateWithImage:_originImage];
+        }
+    }
+}
+
+/// Ronaq (CHANGES.md §44): a tint, a colour filter or a blur is applied to this view's image; frames
+/// a loader animates on top of it (-kr_presentContentView:posterImage:) are not processed, so the
+/// processing would be hidden under them. The content goes, and the poster — already
+/// `_originImage` — shows processed, as a still: what the loader shows a view that has the
+/// processing from the start.
+- (void)kr_dropContentForProcessing {
+    if (_contentView != nil &&
+        (self.css_tintColor.length || self.css_colorFilter.length || [self.css_blurRadius floatValue])) {
+        [self kr_removeContentView];
+    }
+}
+
+/// Ronaq (CHANGES.md §44): the view now stretches its picture by cap insets or as a nine-patch,
+/// whose insets are in the source's pixels, but holds a picture decoded at display size — or
+/// content, which cannot be stretched at all. It asks the loader again at the source's pixels,
+/// keeping what it shows (stretched as it can be) until they arrive. YES when it asked.
+- (BOOL)kr_reloadAtSourcePixelsIfNeeded {
+    if (!self.kr_needsSourcePixels || self.css_src.length == 0) {
+        return NO;
+    }
+    if (_requestedPixelSize.width <= 0 && _contentView == nil) {
+        return NO;  // already at the source's pixels
+    }
+    [self kr_removeContentView];
+    _requestedPixelSize = CGSizeZero;
+    if (_originImage != nil) {
+        [self p_updateWithImage:_originImage];
+    }
+    [self kr_reloadKeepingPicture:self.css_src];
+    return YES;
 }
 
 - (void)setCss_loadSuccess:(KuiklyRenderCallback)css_loadSuccess {
@@ -1114,6 +1159,12 @@ static UIImage *KRSharedBlurImage(UIImage *source, CGFloat radius) {
     _loaderPending = NO;
     // 错误处理
     if (error) {
+        // Ronaq (CHANGES.md §44): a failed re-ask — an upgrade to a larger size, a return to the
+        // window — keeps the picture of this source the view already shows, and reports nothing:
+        // a caller would swap a good picture for its error state.
+        if (_originImage != nil) {
+            return NO;
+        }
         if (self.css_loadFailure) {
             [self p_fireLoadFailureEventWithErrorCode:error.code];
         } else {
