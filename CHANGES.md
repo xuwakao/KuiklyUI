@@ -3256,3 +3256,55 @@ device behaviour is measured by Ronaq's `scripts/moments-swipe-probe.mjs` in its
 
 **Upstreamable.** Yes. `settleTargetPage` is a narrower `targetPage` that does not depend on
 `isScrollInProgress`; the local is a general deferral hook for lazily shown content.
+
+## 35. Scrollers count the drags they begin
+
+**Files** · `compose/.../gestures/KuiklyScrollableState.kt` (`dragCount`, `kuiklyOnDragBegin`) ·
+`compose/.../scroller/ScrollableStateExtensions.kt` (`ScrollableState.dragsBegun`, the dispatch) ·
+`compose/.../ui/layout/SubcomposeLayout.kt` (the `dragBegin` handler, now for every scroller) ·
+test `compose/src/commonTest/.../gestures/DragsBegunTest.kt` (new)
+**Driven by** · the Ronaq owner's paging ruling of 2026-09-25 (「任何页面的加载更多都不应该存在这种情况」: a
+list never asks for page after page by itself) and the implementation review of Ronaq's paging
+trigger that day (finding NC-F1: the momentum of the gesture that asked a page asked the next one
+after it landed); Ronaq `docs/design/load-more.md` §5.2, §5.5
+**Date** · 2026-09-25
+
+**What.** One read-only capability. Nothing existing reads it, and no scroller behaves differently.
+
+- **`ScrollableState.dragsBegun: Int`**, public, snapshot state: how many drag gestures the native
+  scroller behind a lazy list, grid, staggered grid, pager or scroll state has begun. 0 for a state
+  no native scroller drives.
+- The bridge now registers `dragBegin` for every scroller, not only pagers, and counts it. The
+  pager's own work in that handler (dropping `ignoreScrollOffset`) is unchanged and still runs for
+  pagers only. `ScrollerView.listenScrollEvent` already listened for the event on every scroller
+  (`ScrollerView.kt:316-335`), so the hosts send nothing they did not send before.
+
+What begins a drag, per host, is the host's own event: Android `KRRecyclerView` on
+`SCROLL_STATE_DRAGGING` (from idle or from a settle: a finger that catches a fling,
+`KRRecyclerView.kt:807-811`); iOS `KRScrollView` `scrollViewWillBeginDragging:` (`:306-316`); web
+`H5ListView.handleTouchStart` on a touch start, a mouse press, and the first `wheel` event of a
+wheel session, which stays open until 300 ms after its last wheel event (`WHEEL_STOP_TIMEOUT`,
+`KRConst.kt:320`), so a trackpad's inertia is part of the session that started it. A fling, a
+bounce, a programmatic scroll and a relayout never begin one.
+
+**Why.** Compose's `isScrollInProgress` cannot tell a new gesture from the momentum of the last:
+every native scroll event sets it, a fling's included, and web's `scrollEnd` fires 200 ms after the
+last `scroll` event while a wheel session's inertia can still be arriving at the list's end. Ronaq's
+paging trigger asks for a next page at most once per reader gesture, as the native reference
+clients do (lingoandroid `ChatActivity.kt:365-367`, a pull; lingoapple `IMMsgVM.m:3358-3361`,
+`scrollViewDidEndDecelerating`). Without a gesture signal, a fling or a wheel session whose momentum
+outlived a short page asked the next page too.
+
+**Reference.** androidx `RecyclerView` `SCROLL_STATE_DRAGGING`; UIKit
+`scrollViewWillBeginDragging:`; the H5 renderer's own wheel session (`H5ListView.kt`, the `wheel`
+listener).
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `DragsBegunTest` (0 on a new list and grid;
+each begin counts once; scroll events and a scroll end do not count; a read registers a snapshot
+read). The bridge half on a host: Ronaq's web e2e `e2e/load-more.spec.ts` begins each scroll with a
+`wheel` event on the list and asks its page 3 only in a new wheel session, which cannot happen
+unless the H5 list's drag begin reaches `dragsBegun` (Ronaq EVID-LM-9). Android and iOS: Ronaq's
+device runs in its verification phase.
+
+**Upstreamable.** Yes: a general "a user gesture began" signal for anything that must tell a reader's
+new gesture from momentum, which `isScrollInProgress` cannot.
