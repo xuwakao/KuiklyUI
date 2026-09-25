@@ -3539,3 +3539,45 @@ checked on a device (Ronaq TASK-A3: seat headwear sharper at 1/0.7, bundled art 
 
 **Upstreamable.** Yes; the `loadResolution` change is a behaviour change an upstream reviewer should
 weigh (it favours memory over reporting the source's resolution).
+
+## 41. Android: an animated picture stops while it cannot be seen
+
+**Files** · `core-render-android/.../expand/visibility/KRUnseenPause.kt` (new) + test
+`KRUnseenPauseTest.kt` (new) · `.../expand/visibility/KRVisibility.kt` (§35's file:
+`visibleOrUnknown`) · upstream `expand/component/KRImageView.kt` (observes the notices while it
+shows an animatable)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.4, AC-7, INV-5..7, gap G-25 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What upstream does.** An image view starts any `Animatable` it is given and stops it only on a
+new source, a reset or its destruction. Android draws views under an opaque overlay and views
+placed outside the window, so an animated picture on a covered tab page or in a lazy list's
+off-screen item keeps advancing and decoding frames; only a detached or `GONE` view stops being
+drawn.
+
+**The change.**
+
+- `KRUnseenPause`, view-free: a looping animation whose view is not effectively visible (§35's
+  predicate) is paused, and resumed when visible again — only if the rule paused it; one that
+  stopped on its own stays stopped; a one-shot is never paused (the caller says which); an unknown
+  answer changes nothing.
+- `KRVisibility.visibleOrUnknown(view)`: the predicate, or null while the view is attached but not
+  laid out (it cannot be placed against the window yet), false when detached.
+- `KRImageView` listens to §35's notices while it shows an `Animatable` (and, from §40, while it
+  has a sized load) and applies the rule: on a notice, a turn after it is given an animatable or
+  attached (after that pass's layout), and when it leaves the window. Its own attachment is tracked
+  from its callbacks, because `isAttachedToWindow` still answers true inside
+  `onDetachedFromWindow`. An image library's animated drawable that is not drawn frees its
+  prepared frames on its own schedule (Fresco: two seconds).
+
+The same rule is public for a host's own animated views (Ronaq's `RonaqAnimationView` host uses it
+for SVGA, Lottie, animated WebP/GIF and VAP).
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRUnseenPauseTest` (6): pause
+and resume, a one-shot never paused, a self-stopped animation not restarted, unknown changes
+nothing, repeated notices pause and resume once, new content forgets the pause. The device checks
+(Perfetto/gfxinfo: no animated-drawable draws from a covered page; no ticks in hidden slots) are
+Ronaq's device phase.
+
+**Upstreamable.** Yes.
