@@ -3809,7 +3809,7 @@ after it landed); Ronaq `docs/design/load-more.md` §5.2, §5.5
 
 What begins a drag, per host, is the host's own event: Android `KRRecyclerView` on
 `SCROLL_STATE_DRAGGING` (from idle or from a settle: a finger that catches a fling,
-`KRRecyclerView.kt:807-811`); iOS `KRScrollView` `scrollViewWillBeginDragging:` (`:306-316`); web
+`KRRecyclerView.kt:812-816`); iOS `KRScrollView` `scrollViewWillBeginDragging:` (`:310-320`); web
 `H5ListView.handleTouchStart` on a touch start, a mouse press, and the first `wheel` event of a
 wheel session, which stays open until 300 ms after its last wheel event (`WHEEL_STOP_TIMEOUT`,
 `KRConst.kt:320`), so a trackpad's inertia is part of the session that started it. A fling, a
