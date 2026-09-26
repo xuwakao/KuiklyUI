@@ -57,6 +57,32 @@ interface IKRImageAdapter {
     }
 
     /**
+     * Ronaq fork (CHANGES.md §39): a load for an image view, which keeps the returned handle to
+     * cancel what it no longer wants and gives back through [releaseDrawable] every drawable it
+     * received here once nothing draws or reads it. An adapter may therefore lend the view its
+     * image library's own bitmap rather than a private copy.
+     *
+     * [callback] is called at most once, on any thread, and not at all after a cancel took
+     * effect. Default: the plain [fetchDrawable], no handle — an adapter that does not implement
+     * this behaves exactly as before.
+     */
+    fun fetchDrawableForView(
+        imageLoadOption: HRImageLoadOption,
+        imageParams: JSONObject?,
+        callback: (drawable: Drawable?) -> Unit,
+    ): KRImageRequest? {
+        fetchDrawable(imageLoadOption, imageParams, callback)
+        return null
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §39): a drawable delivered by [fetchDrawableForView] is no longer
+     * drawn or read by its view (two frames have passed since the view let go of it). Called once
+     * per delivered drawable, on the main thread. Default: nothing.
+     */
+    fun releaseDrawable(drawable: Drawable) {}
+
+    /**
      * 是否需要等待首屏完成后再加载
      * 默认值为 true，当首屏完成后再加载
      */

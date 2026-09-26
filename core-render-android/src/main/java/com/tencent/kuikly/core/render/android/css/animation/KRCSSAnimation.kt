@@ -28,6 +28,7 @@ import com.tencent.kuikly.core.render.android.css.ktx.toPxF
 import com.tencent.kuikly.core.render.android.css.ktx.obtainViewDecorator
 import com.tencent.kuikly.core.render.android.css.ktx.optViewDecorator
 import com.tencent.kuikly.core.render.android.css.ktx.setTransformOverBounds
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import java.lang.ref.WeakReference
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -348,6 +349,12 @@ class KRCSSTransform(transform: String?, private val target: View) {
         }
         applySkewTransform()
         handleOverflowBounds()
+        // Ronaq fork (CHANGES.md §40, §43): a transform moves what is under it on or off the glass
+        // (a pager page slid by its translation, an entrance), and an enlarging one can make the
+        // images under it cover more pixels than they were loaded at. Both re-check on the
+        // coalesced notice; geometry is posted only for a new largest scale, so a pulse does not
+        // post it on every frame.
+        KRVisibility.noteTransform(target, scaleX, scaleY)
     }
 
     /**
@@ -382,6 +389,8 @@ class KRCSSTransform(transform: String?, private val target: View) {
             target.pivotY = DEFAULT_PIVOT_Y
         }
         resetSkewTransform()
+        // Ronaq fork (CHANGES.md §43): a reset view starts its scale history again, and moved back.
+        KRVisibility.forgetTransform(target)
     }
 
     private fun initTransform(transform: String?) {

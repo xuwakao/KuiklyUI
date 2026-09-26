@@ -31,4 +31,17 @@ internal object CachedImageBlur {
         // Eviction does not recycle: an attached view may still draw the shared bitmap.
         return BitmapDrawable(context.resources, result.bitmap)
     }
+
+    /**
+     * Drops every cached blur (CHANGES.md §38). Views keep the drawables they were given — the
+     * cache only stops holding the bitmaps, which go when the last view lets go of them.
+     */
+    @Synchronized
+    fun evictAll() {
+        cache.evictAll()
+    }
+
+    /** Bytes the cache holds now. */
+    @Synchronized
+    fun sizeBytes(): Int = cache.size()
 }

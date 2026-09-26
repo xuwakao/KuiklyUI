@@ -20,6 +20,7 @@
 #import "KRView.h"
 #import "KuiklyRenderBridge.h"
 #import "KuiklyRenderViewExportProtocol.h"
+#import "UIView+KRVisibility.h"
 
 #define LAZY_ANIMATION_KEY @"lazyAnimationKey"
 #define ANIMATION_KEY @"animation"
@@ -157,7 +158,12 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 - (void)setCss_opacity:(NSNumber *)css_opacity {
     if (self.css_opacity != css_opacity) {
         objc_setAssociatedObject(self, @selector(css_opacity), css_opacity, OBJC_ASSOCIATION_RETAIN);
+        BOOL wasVisible = self.alpha > 0.01;
         self.alpha = !css_opacity ? 1 :  [KRConvertUtil CGFloat:css_opacity];
+        // Ronaq: crossing zero opacity changes what can be seen below here (CHANGES.md §35).
+        if (wasVisible != (self.alpha > 0.01)) {
+            [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+        }
     }
 }
 
@@ -168,7 +174,12 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 - (void)setCss_visibility:(NSNumber *)css_visibility {
     if (self.css_visibility != css_visibility) {
         objc_setAssociatedObject(self, @selector(css_visibility), css_visibility, OBJC_ASSOCIATION_RETAIN);
+        BOOL wasHidden = self.hidden;
         self.hidden = !css_visibility ? NO : ( [css_visibility boolValue] ? NO : YES );
+        // Ronaq: a hidden subtree cannot be seen (CHANGES.md §35).
+        if (wasHidden != self.hidden) {
+            [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+        }
     }
 }
 
@@ -209,6 +220,9 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
     return objc_getAssociatedObject(self, @selector(css_transform));
 }
 
+/// Ronaq (CHANGES.md §42): the largest scale a view's transform has had since it was last reset.
+static char KRLargestNotedScaleKey;
+
 - (void)setCss_transform:(NSString *)css_transform {
     css_transform = [UIView css_string:css_transform];
     if (self.css_transform != css_transform) {
@@ -216,11 +230,29 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
         if (css_transform == nil) {
             self.frame = CGRectZero;
             [CSSTransform resetTransformWithView:self];
+            // Ronaq (CHANGES.md §42): a reused view starts its scale history again.
+            objc_setAssociatedObject(self, &KRLargestNotedScaleKey, nil, OBJC_ASSOCIATION_RETAIN);
         }
         objc_setAssociatedObject(self, @selector(css_transform), css_transform, OBJC_ASSOCIATION_RETAIN);
        
         self.css_transformImp = css_transform.length ? [[CSSTransform alloc] initWithCSSTransform:css_transform] : nil;
         [self.css_transformImp applyToView:self animation:self.css_animationImp oldTransform:oldTransform];
+        // Ronaq: a transform that enlarges its view can make the image views under it cover
+        // more pixels than their loads were sized for; they re-check on this notice
+        // (CHANGES.md §34). The model value is read, so an animated scale counts at its end.
+        // Only a scale larger than any this view has had is news (§42): a pulse that returns to
+        // the same peak every beat would otherwise post on every frame.
+        CATransform3D t = self.layer.transform;
+        CGFloat scale = MAX(sqrt(t.m11 * t.m11 + t.m12 * t.m12), sqrt(t.m21 * t.m21 + t.m22 * t.m22));
+        CGFloat largest = [objc_getAssociatedObject(self, &KRLargestNotedScaleKey) doubleValue];
+        KRViewTreeChange changes = KRViewTreeChangeVisibility;
+        if (scale > 1.001 && scale > largest + 0.001) {
+            objc_setAssociatedObject(self, &KRLargestNotedScaleKey, @(scale), OBJC_ASSOCIATION_RETAIN);
+            changes |= KRViewTreeChangeGeometry;
+        }
+        // Ronaq (§42): a transform moves what is under it — a pager page slid by its layer's
+        // translation, an entrance banner — on or off the glass.
+        [UIView kr_noteViewTreeChange:changes];
     }
 }
 
@@ -802,7 +834,13 @@ static const NSInteger KRDefaultKeyboardAnimationCurve = 7;
 }
 
 - (void)setCss_frame:(NSValue *)css_frame {
+    NSValue *oldFrame = self.css_frame;
     objc_setAssociatedObject(self, @selector(css_frame), css_frame, OBJC_ASSOCIATION_RETAIN);
+    // Ronaq (CHANGES.md §42): a frame the renderer moves takes what is under it on or off the
+    // glass. Coalesced to one notice per run-loop turn however many frames a layout pass sets.
+    if (oldFrame != css_frame && !(oldFrame && css_frame && CGRectEqualToRect(oldFrame.CGRectValue, css_frame.CGRectValue))) {
+        [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+    }
     if (!css_frame) {
         self.frame = CGRectZero;
         return ;

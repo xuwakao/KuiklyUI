@@ -32,11 +32,15 @@ import android.graphics.drawable.Animatable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.NinePatchDrawable
+import android.os.Handler
 import android.os.Looper
 import android.util.SizeF
+import android.view.Choreographer
+import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.tencent.kuikly.core.render.android.adapter.HRImageLoadOption
+import com.tencent.kuikly.core.render.android.adapter.KRImageRequest
 import com.tencent.kuikly.core.render.android.adapter.KuiklyRenderAdapterManager
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.css.drawable.KRCSSBackgroundDrawable
@@ -50,8 +54,13 @@ import com.tencent.kuikly.core.render.android.css.ktx.toNumberFloat
 import com.tencent.kuikly.core.render.android.css.ktx.toPxI
 import com.tencent.kuikly.core.render.android.expand.component.blur.RenderScriptBlur
 import com.tencent.kuikly.core.render.android.expand.component.image.Insets
+import com.tencent.kuikly.core.render.android.expand.component.image.KRDrawableHolds
+import com.tencent.kuikly.core.render.android.expand.component.image.KRImagePixelSize
+import com.tencent.kuikly.core.render.android.expand.component.image.KRImageSizing
 import com.tencent.kuikly.core.render.android.expand.component.image.NinePatchHelper
 import com.tencent.kuikly.core.render.android.expand.module.KRMemoryCacheModule
+import com.tencent.kuikly.core.render.android.expand.visibility.KRUnseenPause
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.android.performace.frame.KRInvalidationProbe
@@ -133,6 +142,54 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
     private var needReCreatePaintMaskGradient: Boolean = false
     private var capInsets: Insets? = null
 
+    /*
+     * Ronaq fork (CHANGES.md §39): the load this view waits for, and the drawables its adapter
+     * lent it. A load is cancelled when the view no longer wants it (a new source, a reset, its
+     * destruction, leaving the window before the picture came); a lent drawable is given back
+     * once the view neither keeps it, draws anything made from it, nor has a task reading it,
+     * two frames after the last of those (KRDrawableHolds).
+     */
+    private var loadRequest: KRImageRequest? = null
+    private var loadGeneration = 0
+    private var loadOutstanding = false
+    private var reaskOnAttach = false
+    private val holds = KRDrawableHolds<Drawable>(
+        release = { KuiklyRenderAdapterManager.krImageAdapter?.releaseDrawable(it) },
+        afterFrames = { task -> afterTwoFrames(task) },
+    )
+    /** The lent drawable the next [setImageDrawable] was made from (a nine-patch's bitmap). */
+    private var nextOriginRoot: Drawable? = null
+    /** The lent drawable [originDrawable] was made from, or null. */
+    private var originRoot: Drawable? = null
+
+    /*
+     * Ronaq fork (CHANGES.md §40, §43): the pixel size the last load asked for against the size of
+     * the picture shown (KRImageSizing), and the observer that hears an ancestor's transform grow —
+     * a view whose covered size grows by more than an eighth asks again, keeping its picture until
+     * the larger one arrives.
+     */
+    private val sizing = KRImageSizing()
+    private var observingTree = false
+    private val treeChangeObserver = KRVisibility.Observer { changes ->
+        if (changes and KRVisibility.CHANGE_GEOMETRY != 0) upgradeIfGrown()
+        if (changes and KRVisibility.CHANGE_VISIBILITY != 0) applyVisibility()
+    }
+
+    /*
+     * Ronaq fork (CHANGES.md §41): an animated picture stops advancing while the view cannot be
+     * seen — out of the window, outside the window's bounds, under a hidden, transparent or
+     * `occluded` ancestor — and starts again when it can. An image library's animated drawable
+     * that is not drawn gives its prepared frames back on its own schedule.
+     */
+    private val unseenPause = KRUnseenPause()
+    private val visibilityCheck = Runnable { applyVisibility() }
+
+    /**
+     * Whether the view is in a window, as of its own attach and detach callbacks: during
+     * `onDetachedFromWindow` the framework still answers `isAttachedToWindow` true.
+     */
+    private var inWindow = false
+
     init {
         shouldWaitViewDidLoad = KuiklyRenderAdapterManager.krImageAdapter?.shouldWaitViewDidLoad ?: true
         scaleType = ScaleType.CENTER_CROP
@@ -209,6 +266,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         super.setLayoutParams(params)
         performSetSrcLazyTaskOnce()
         setClipBound()
+        // Ronaq fork (CHANGES.md §40): a frame that grew asks for a larger picture.
+        upgradeIfGrown()
     }
 
     @SuppressLint("DrawAllocation")
@@ -250,11 +309,61 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     override fun setImageDrawable(drawable: Drawable?) {
         originDrawable = drawable
+        val root = nextOriginRoot ?: drawable
+        nextOriginRoot = null
+        originRoot = if (drawable == null) null else root
+        holds.origin(originRoot)
         updateDrawableImage(drawable)
     }
     override fun onDestroy() {
         super.onDestroy()
         stopAnimatable()
+        cancelLoad()
+        reaskOnAttach = false
+        sizing.reset()
+        updateTreeObservation()
+        // Ronaq fork (CHANGES.md §39): draw nothing lent from here on, then give it back.
+        setImageDrawable(null)
+        holds.clear()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        inWindow = true
+        // Ronaq fork (CHANGES.md §39): back in a window after its load was given back — ask
+        // again, at the size it has now.
+        if (reaskOnAttach) {
+            reaskOnAttach = false
+            if (src.isNotEmpty() && !isBase64Src() && setSrcLazyTask == null && originDrawable == null) {
+                startLoadImage()
+            }
+        }
+        // Ronaq fork (CHANGES.md §40): ancestors attached late may enlarge it.
+        updateTreeObservation()
+        upgradeIfGrown()
+        // Ronaq fork (CHANGES.md §41): after this pass's layout, see whether it can be seen.
+        if (drawable is Animatable) post(visibilityCheck)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        inWindow = false
+        // Ronaq fork (CHANGES.md §39): out of the window with the picture still on its way —
+        // give the load back a main-looper turn later, so a view moved between parents in one
+        // pass keeps it.
+        if (loadOutstanding) {
+            mainHandler.post(giveBackIfStillDetached)
+        }
+        // Ronaq fork (CHANGES.md §41): out of the window is out of sight.
+        applyVisibility()
+        updateTreeObservation()
+    }
+
+    private val giveBackIfStillDetached = Runnable {
+        if (!inWindow && loadOutstanding) {
+            cancelLoad()
+            reaskOnAttach = true
+        }
     }
 
     private fun updateDrawableImage(drawable: Drawable?) {
@@ -286,33 +395,51 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         if (blurRadius > 0f) {
             val tBlurRadius = blurRadius
             val tSrc = src
+            // Ronaq fork (CHANGES.md §39): the task reads the lent bitmap off the main thread,
+            // so it holds it until it has run; the result may be the input itself (a blur that
+            // could not run), so it is shown as made from the same root. The completion goes
+            // through the main looper, not View.post, which a view out of the window would park.
+            val tRoot = originRoot
+            holds.beginTask(tRoot)
             KRSubThreadScheduler.scheduleTask(0) {
                 val blurDrawable = com.tencent.kuikly.core.render.android.expand.component.blur.CachedImageBlur.load(safeDrawable, context, tBlurRadius)
-                runOnUiThread {
-                    if (src == tSrc && blurRadius == tBlurRadius) {
-                        superSetImage(blurDrawable)
+                mainHandler.post {
+                    if (src == tSrc && blurRadius == tBlurRadius && originRoot === tRoot) {
+                        superSetImage(blurDrawable, tRoot)
                     }
+                    holds.endTask(tRoot)
                 }
             }
             return
         }
-        superSetImage(safeDrawable)
+        superSetImage(safeDrawable, originRoot)
     }
 
-    private fun superSetImage(drawable: Drawable?) {
+    /** [root]: the lent drawable [drawable] was made from, or null (Ronaq fork, CHANGES.md §39). */
+    private fun superSetImage(drawable: Drawable?, root: Drawable? = null) {
         super.setImageDrawable(drawable)
+        holds.shown(if (drawable == null) null else root)
+        unseenPause.reset()
         if (drawable is Animatable) {
             if (drawable.isRunning) {
                 drawable.stop() // 先停止再启动，确保GIF从第一帧开始播放
             }
             drawable.start()
+            // Ronaq fork (CHANGES.md §41): listen while it animates; check once laid out.
+            removeCallbacks(visibilityCheck)
+            post(visibilityCheck)
         }
+        updateTreeObservation()
         fireLoadSuccessCallback(drawable)
         fireLoadResolutionCallback(drawable)
     }
 
     private fun resetSrc(): Boolean {
         src = KRCssConst.EMPTY_STRING
+        cancelLoad()
+        reaskOnAttach = false
+        sizing.reset()
+        updateTreeObservation()
         stopAnimatable()
         setImageDrawable(null)
         clipBounds = null
@@ -362,6 +489,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             RESIZE_MODE_STRETCH -> ScaleType.FIT_XY
             else -> ScaleType.CENTER_CROP
         }
+        reloadIfSourcePixelsNeeded()
         return true
     }
 
@@ -417,6 +545,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     private fun setIsNineDotImage(propValue: Any): Boolean {
         isNinePatchDrawable = propValue as Int == TYPE_NINE_DOT_DRAWABLE
+        reloadIfSourcePixelsNeeded()
         return true
     }
 
@@ -425,6 +554,9 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             return true
         }
         stopAnimatable() // 停止当前动画，防止GIF切换时卡住
+        cancelLoad()
+        reaskOnAttach = false
+        sizing.reset()
         src = url
         setImageDrawable(null) // 重置drawable，防止动态更新src时, Drawable错乱
 
@@ -444,18 +576,116 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         if (isBase64Src()) {
             loadBase64Image(tempSrc)
         } else if (tempSrc.isNotEmpty()) {
-            fetchDrawable(createImageLoadOption(tempSrc)) { drawable ->
-                runOnUiThread {
-                    setResultImageDrawable(tempSrc, drawable)
+            // Ronaq fork (CHANGES.md §39): a load the view can cancel, whose drawable it gives
+            // back. Delivered through the main looper, not View.post: a view out of the window
+            // would park the result and never give it back.
+            cancelLoad()
+            val generation = ++loadGeneration
+            loadOutstanding = true
+            val option = createImageLoadOption(tempSrc)
+            val sized = option.needResize && option.requestWidth > 0 && option.requestHeight > 0
+            sizing.issue(if (sized) option.requestWidth else 0, if (sized) option.requestHeight else 0)
+            updateTreeObservation()
+            fetchDrawableForView(option, generation) { drawable ->
+                if (Thread.currentThread() == Looper.getMainLooper().thread) {
+                    onViewLoadResult(generation, tempSrc, drawable)
+                } else {
+                    mainHandler.post { onViewLoadResult(generation, tempSrc, drawable) }
                 }
             }
         }
+    }
+
+    /** Ronaq fork (CHANGES.md §39): a lent drawable arrived; a stale one goes straight back. */
+    private fun onViewLoadResult(generation: Int, requestSrc: String, drawable: Drawable?) {
+        drawable?.let { holds.track(it) }
+        if (generation != loadGeneration || requestSrc != src) {
+            drawable?.let { holds.discard(it) }
+            return
+        }
+        loadRequest = null
+        loadOutstanding = false
+        // Ronaq fork (CHANGES.md §43): what is shown now, or a failure that keeps the picture.
+        if (drawable != null) sizing.delivered() else sizing.failed()
+        setResultImageDrawable(requestSrc, drawable)
+        drawable?.let { holds.settle(it) }
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §40, §43): asks again when the view now covers more than an eighth
+     * more pixels than its last sized load asked for — its frame grew, an ancestor's transform
+     * grew, or it was attached under a scaled ancestor. Never smaller; the current picture stays
+     * until the larger one arrives. Never for an animated picture (KRImageSizing): it would restart.
+     */
+    private fun upgradeIfGrown() {
+        if (!inWindow || src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
+        if (!sizing.sized || needsSourcePixels()) return
+        val (width, height) = coveredPixels()
+        if (sizing.shouldUpgrade(width, height, animated = originDrawable is Animatable)) {
+            startLoadImage()
+        }
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §40): a picture loaded at a size is reloaded at its source's pixels
+     * once the view starts stretching it by cap insets or as a nine-patch — the insets are in
+     * source pixels, and a smaller decode would move the stretch lines.
+     */
+    private fun reloadIfSourcePixelsNeeded() {
+        if (!sizing.sized || !needsSourcePixels()) return
+        if (src.isEmpty() || isBase64Src() || setSrcLazyTask != null) return
+        startLoadImage()
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §41): pauses a running animated picture the view cannot show, and
+     * resumes one this paused once it can; an unknown answer (not laid out yet) changes nothing.
+     */
+    private fun applyVisibility() {
+        val animatable = drawable as? Animatable ?: return
+        val visible = if (inWindow) KRVisibility.visibleOrUnknown(this) else false
+        when (unseenPause.decide(visible, animatable.isRunning, pausable = true)) {
+            KRUnseenPause.Action.PAUSE -> animatable.stop()
+            KRUnseenPause.Action.RESUME -> animatable.start()
+            KRUnseenPause.Action.NONE -> Unit
+        }
+    }
+
+    private fun updateTreeObservation() {
+        val want = inWindow && (sizing.sized || drawable is Animatable)
+        if (want == observingTree) return
+        observingTree = want
+        if (want) KRVisibility.addObserver(treeChangeObserver) else KRVisibility.removeObserver(treeChangeObserver)
+    }
+
+    /** Ronaq fork (CHANGES.md §39, §43): drops the load this view waits for, if any. */
+    private fun cancelLoad() {
+        loadGeneration++
+        // A request that never arrived does not count: the view compares against what it shows.
+        if (loadOutstanding) sizing.abandoned()
+        loadOutstanding = false
+        mainHandler.removeCallbacks(giveBackIfStillDetached)
+        loadRequest?.cancel()
+        loadRequest = null
     }
 
     private fun isBase64Src(): Boolean = src.startsWith(BASE64_IMAGE_PREFIX)
 
     private fun loadBase64Image(tempSrc: String) {
         val base64StrKey = src
+        // Ronaq fork (CHANGES.md §40): a picture decoded at a view's size is kept under the key
+        // plus that size, so a larger view decodes its own; the base64 text stays under the key.
+        val sizing = createImageLoadOption(base64StrKey)
+        val sizedKey = if (sizing.needResize && sizing.requestWidth > 0 && sizing.requestHeight > 0) {
+            "$base64StrKey#${sizing.requestWidth}x${sizing.requestHeight}"
+        } else {
+            null
+        }
+        val sized = sizedKey?.let { getBase64Image(it) }
+        if (sized is Drawable) {
+            setImageDrawable(sized)
+            return
+        }
         val resultBitmapOrBase64Str = getBase64Image(base64StrKey)
         if (resultBitmapOrBase64Str is Drawable) {
             setImageDrawable(resultBitmapOrBase64Str)
@@ -468,19 +698,38 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         fetchDrawable(createImageLoadOption(resultBitmapOrBase64Str as String)) { drawable ->
             runOnUiThread {
                 setResultImageDrawable(tempSrc, drawable)
-                setBase64Image(drawable)
+                setBase64Image(drawable, sizedKey ?: tempSrc)
             }
         }
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §40): the request is sized to the pixels the view covers on screen —
+     * its frame times every enlarging scale above it — and marked for no resize only when the
+     * view stretches the picture by cap insets or as a nine-patch (.9图不需要resize). Upstream
+     * also turned the resize off whenever a `loadResolution` listener was set, which made every
+     * Compose image decode its source whole; the resolution reported is the decoded picture's,
+     * proportional to the source.
+     */
     private fun createImageLoadOption(src: String): HRImageLoadOption {
+        val sourcePixels = needsSourcePixels()
+        val (width, height) = if (sourcePixels) frameWidth to frameHeight else coveredPixels()
         return HRImageLoadOption(
             src,
-            frameWidth,
-            frameHeight,
-            !(isNinePatchDrawable || loadResolutionCallback != null || capInsetsValid()), // .9图不需要resize
+            width,
+            height,
+            !sourcePixels,
             scaleType
         )
+    }
+
+    /** Ronaq fork (CHANGES.md §40): whether the view draws its picture at the source's pixels. */
+    private fun needsSourcePixels(): Boolean = isNinePatchDrawable || capInsetsValid()
+
+    /** Ronaq fork (CHANGES.md §40): the frame times every enlarging scale above it, in pixels. */
+    private fun coveredPixels(): Pair<Int, Int> {
+        val chain = generateSequence<View>(this) { it.parent as? View }.map { it.scaleX to it.scaleY }
+        return KRImagePixelSize.covered(frameWidth, frameHeight, KRImagePixelSize.enlargingScale(chain))
     }
 
     private fun setResultImageDrawable(requestSrc: String, drawable: Drawable?) {
@@ -488,7 +737,12 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             return
         }
         if (drawable == null) {
-            fireLoadFailureCallback()
+            // Ronaq fork (CHANGES.md §43): a failed re-ask (an upgrade, a return to the window)
+            // keeps the picture of this source the view already shows, and reports nothing — a
+            // caller would swap a good picture for its error state.
+            if (KRImageSizing.reportsFailure(showsPicture = originDrawable != null)) {
+                fireLoadFailureCallback()
+            }
             return
         }
         var resultDrawable = drawable
@@ -498,6 +752,8 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
                 .addXCenteredRegion(scaleCenterOffset)
                 .addYCenteredRegion(scaleCenterOffset)
                 .build()
+            // Ronaq fork (CHANGES.md §39): the nine-patch draws the delivered bitmap.
+            nextOriginRoot = drawable
         }
         setImageDrawable(resultDrawable)
     }
@@ -507,10 +763,10 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             ?.get(key)
     }
 
-    private fun setBase64Image(drawable: Drawable?) {
+    private fun setBase64Image(drawable: Drawable?, key: String) {
         drawable?.also {
             kuiklyRenderContext?.module<KRMemoryCacheModule>(KRMemoryCacheModule.MODULE_NAME)
-                ?.set(src, it)
+                ?.set(key, it)
         }
     }
 
@@ -582,6 +838,33 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         }
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §39): [fetchDrawable] with a handle. The load is issued when the
+     * page allows ([shouldWaitViewDidLoad]); one cancelled before then is never issued.
+     */
+    private fun fetchDrawableForView(
+        imageLoadOption: HRImageLoadOption,
+        generation: Int,
+        callback: (drawable: Drawable?) -> Unit,
+    ) {
+        val issue = issue@{
+            if (generation != loadGeneration) return@issue
+            val request = kuiklyRenderContext?.getImageLoader()?.fetchImageForView(imageLoadOption, imageParams, callback)
+            if (generation == loadGeneration && loadOutstanding) {
+                loadRequest = request
+            } else {
+                // Delivered (or cancelled) before the handle came back.
+                request?.cancel()
+            }
+        }
+        val root = kuiklyRenderContext?.kuiklyRenderRootView
+        if (root != null && shouldWaitViewDidLoad) {
+            root.performWhenViewDidLoad { issue() }
+        } else {
+            issue()
+        }
+    }
+
     private fun fetchDrawable(imageLoadOption: HRImageLoadOption, callback: (drawable: Drawable?) -> Unit) {
         if (kuiklyRenderContext?.kuiklyRenderRootView != null && shouldWaitViewDidLoad) {
             kuiklyRenderContext?.kuiklyRenderRootView?.performWhenViewDidLoad {
@@ -606,6 +889,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
             }
         }
         invalidate()
+        reloadIfSourcePixelsNeeded()
         return true
     }
 
@@ -658,6 +942,19 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         private fun Drawable.copyDrawable(): Drawable {
             return constantState?.newDrawable()?.mutate() ?: this
         }
+
+        /** Ronaq fork (CHANGES.md §39): results and releases reach the main looper this way. */
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        /**
+         * Ronaq fork (CHANGES.md §39): runs [task] after two frame callbacks — the frame the
+         * render thread may still be drawing when a view lets a bitmap go, and the next.
+         * Main thread.
+         */
+        private fun afterTwoFrames(task: Runnable) {
+            val choreographer = Choreographer.getInstance()
+            choreographer.postFrameCallback { choreographer.postFrameCallback { task.run() } }
+        }
     }
 }
 
@@ -699,6 +996,14 @@ class KRWrapperImageView(context: Context) : KRView(context) {
         return imageView.call(method, params, callback)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        // Ronaq fork (CHANGES.md §39): the inner views are not render nodes, so nobody else
+        // destroys them — and they hold what their adapter lent them.
+        imageView.onDestroy()
+        placeholderView?.onDestroy()
+    }
+
     override fun resetProp(propKey: String): Boolean {
         var result = super.resetProp(propKey)
         result = imageView.resetProp(propKey)
@@ -712,6 +1017,7 @@ class KRWrapperImageView(context: Context) : KRView(context) {
     private fun setPlaceholder(src: String) {
         if (placeholder != src) {
             placeholder = src
+            placeholderView?.onDestroy()
             placeholderView?.removeFromParent()
             if (placeholder.isNotEmpty()) {
                 placeholderView = KRImageView(context).apply {
@@ -729,6 +1035,7 @@ class KRWrapperImageView(context: Context) : KRView(context) {
     }
 
     private fun removePlaceholder() {
+        placeholderView?.onDestroy()
         placeholderView?.removeFromParent()
         placeholderView = null
         placeholder = ""

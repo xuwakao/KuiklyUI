@@ -22,6 +22,43 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @interface KRImageView : UIImageView<KuiklyRenderViewExportProtocol>
 
+/// Load without waiting for a size. A sized view defers every load (whichever setter asked
+/// for it) until its first layout with a non-empty size, so the image can be decoded for the
+/// pixels it will cover; a view that is never given a frame — the memory-cache module's
+/// off-screen loader — sets this to load at once. Default NO.
+@property (nonatomic, assign) BOOL kr_loadsWithoutSize;
+
+/// YES while the image is stretched by cap insets (any positive `capInsets`) or drawn as a
+/// nine-patch (`dotNineImage`): the stretch is measured in the image's own pixels, so a
+/// loader must not decode it smaller than its source.
+@property (nonatomic, readonly) BOOL kr_needsSourcePixels;
+
+/// The pixel size the current load was issued for — `kr_displayPixelSize` at the moment the
+/// view asked its loader — or CGSizeZero for a load without a size (`kr_loadsWithoutSize`,
+/// `kr_needsSourcePixels`, or a source the view decodes itself). A loader reads it to size
+/// its decode; the view asks again, keeping the current picture, when it grows by more than
+/// an eighth beyond it.
+@property (nonatomic, readonly) CGSize kr_requestedPixelSize;
+
+/// Shows `view` as this image view's content instead of an image: an animated picture whose
+/// frames a loader advances itself, so that no frame goes through -setImage: (which fires
+/// `loadSuccess`/`loadResolution` and redoes tint, filter and blur). `view` fills the bounds
+/// as the only content subview, under the corner clip and the gradient mask, and follows the
+/// content mode; `poster` stands for the picture — `loadSuccess` and `loadResolution` fire
+/// once, with its size. Returns NO and changes nothing when the view applies processing only
+/// an image can carry (tint, colour filter, blur, cap insets, nine-patch) or loads without a
+/// size; the caller then sets the poster as a still. The view goes on a new `src`, on an image
+/// set through -setImage:, and on reuse.
+- (BOOL)kr_presentContentView:(UIView *)view posterImage:(UIImage *)poster;
+
+/// The view -kr_presentContentView:posterImage: is showing, or nil.
+@property (nonatomic, readonly, nullable) UIView *kr_contentView;
+
+/// Decodes encoded image `data` (PNG, JPEG, …) to at most the pixels a view covers: the
+/// largest size that fits `pixelSize` (fill NO) or the smallest that covers it (fill YES),
+/// aspect and EXIF orientation kept, never larger than the source, decoded now rather than at
+/// first draw. `pixelSize` CGSizeZero decodes the whole image. Used for base64 sources.
++ (nullable UIImage *)kr_decodeImageData:(NSData *)data pixelSize:(CGSize)pixelSize fill:(BOOL)fill;
 
 @end
 

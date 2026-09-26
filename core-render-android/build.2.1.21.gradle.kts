@@ -72,6 +72,12 @@ android {
         }
     }
 
+    // Ronaq fork (CHANGES.md §43): the JVM tests drive a few framework classes over the mockable
+    // android.jar, whose methods then answer default values instead of throwing.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
 }
 
 dependencies {

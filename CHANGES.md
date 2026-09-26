@@ -3204,6 +3204,530 @@ the web, browsers latch a scroll gesture to the element it began on.
 
 **Upstreamable.** Yes, as an option; upstream may prefer SELF_FIRST's hand-over by default.
 
+## 34. Image views load at their on-screen pixel size — iOS
+
+**Files** · `core-render-ios/Extension/Category/UIView+KRVisibility.{h,m}` (new) ·
+`Extension/Components/KRImageView.{h,m}` · `Extension/Category/UIView+CSS.m`
+(`setCss_transform:`) · `Extension/Modules/KRMemoryCacheModule.m`
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24: 「上面提到的那些都要解决」);
+Ronaq `docs/design/image-pipeline.md` §4.2.1, gap G-1 of `docs/research/image-pipeline-gap-2026-09-24.md`
+**Date** · 2026-09-24
+
+**What upstream does.** `KRImageView` asks the host's image handler for a picture the moment
+`src` is set — usually before the view has a frame — and every other image setter (tint,
+colour filter, blur, cap insets) asks again while no picture is held
+(`KRImageView.m` `setCss_*`). A handler cannot know how large the picture will be drawn, so a
+host that wants to decode at display size has nothing to size by; and `bounds` would not be
+enough anyway, because an ancestor's scale transform (Compose `Modifier.scale` is a
+`graphicsLayer` transform) enlarges the pixels a view covers without changing its bounds.
+
+**The change.**
+
+- **Load when sized.** `-setImageWithSrc:`, the one path every loader of the view goes
+  through, records the source while the view's bounds are empty and loads it from
+  `-layoutSubviews` once they are not. Layout runs after Kuikly's frame setter has restored
+  the view's transform (`setCss_frame:` resets it, sets the frame, applies it again) and in
+  the same Core Animation transaction, so a picture the handler has in memory still appears
+  in the pass the view was bound. Android's renderer already waits for a frame
+  (`KRImageView.kt` `setSrcLazyTask`).
+- **`kr_requestedPixelSize`**: the pixels the current load was issued for — the new
+  `-[UIView kr_displayPixelSize]` (bounds × screen scale × the scale of the view's own and
+  every ancestor's transform, each axis clamped to at least 1 so a view that mounts shrunk
+  for an entrance is not sized at its smallest) — or zero for a load without a size. A
+  handler reads it; the view keeps it with a `KRImageRefreshCache` entry.
+- **Upgrade, never downgrade.** The view asks again, keeping its current picture, when it
+  now covers more than an eighth more pixels than its load was issued for: on a size change
+  (layout), on `didMoveToWindow`, and on a new coalesced *geometry* notice that
+  `setCss_transform:` posts whenever it sets an enlarging transform.
+- **Loads without a size.** `kr_loadsWithoutSize` exempts a view that never gets a frame —
+  `KRMemoryCacheModule` sets it on its off-screen loader, which Compose `imageResource` and
+  Canvas `drawImage` read. `kr_needsSourcePixels` is YES while the image is stretched by cap
+  insets or drawn as a nine-patch, whose insets are measured in the image's own pixels
+  (Android's renderer excludes the same views from resizing, `needResize`). And a view that is
+  in a window but still has no size 0.25 s after its source arrived — a wrap-content image,
+  sized by the resolution its picture reports — loads without one rather than never.
+- **`UIView (KRVisibility)`**: `kr_displayPixelSize`, and a weak observer registry with
+  coalesced notices (`kr_addViewTreeObserver:`, `kr_noteViewTreeChange:`, delivered at most
+  once per main run-loop turn). This section adds the geometry notice; the visibility notice
+  and predicate follow in the next section.
+
+Nothing here names an image library: the handler still decides what to load and how.
+
+**Verified.** Ronaq's hosted iOS unit bundle, `KRImageViewSizingTests` (10 tests: src before a
+frame waits; `src` + `capInsets` and `src` + `tintColor` before a frame issue one load after
+layout; an exempt view loads at once; an enlarging ancestor scale is counted and a shrinking
+one is not; growth past a step re-asks and small growth and shrinking do not; an enlarging
+`transform` prop re-asks on the next turn; a view with no size loads after the grace; a
+recycled view keeps its issued size). All 10 fail on `bb4c2251` and pass here
+(`scripts/ios-unit-tests.sh`, iPhone 17 simulator). No device run yet.
+
+**Upstreamable.** Yes: load-when-sized and the display size are general; the geometry notice
+could become a documented hook.
+
+## 35. Effective visibility, the `occluded` prop, and a content-view hook for image views — iOS, Android, Compose
+
+**Files** · iOS `Extension/Category/UIView+KRVisibility.{h,m}` (predicate, `css_occluded`) ·
+`Extension/Category/UIView+CSS.m` (`setCss_visibility:`, `setCss_opacity:`) ·
+`Extension/Components/KRScrollView.m` (`setContentOffset:`) · `Extension/Components/KRImageView.{h,m}`
+(`kr_presentContentView:posterImage:`, `kr_contentView`) · Android
+`expand/visibility/KRVisibility.kt` (new) + test `expand/visibility/KRVisibilityTest.kt` (new) ·
+`const/KRConst.kt` (`OCCLUDED`) · `css/ktx/KRCSSViewExtension.kt` (`occluded`, notices on
+`visibility`/`opacity`) · `expand/component/list/KRRecyclerView.kt` (notice on scroll) · Compose
+`extension/ModifierOccluded.kt` (new)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq
+`docs/design/image-pipeline.md` §4.2.5, §4.4; gaps G-3, G-6, G-25 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** Nothing tells a component whether it can be seen. Kuikly hides a lazy
+list's reused slot on the slot's ROOT (`SubcomposeLayoutEx.kt:62-93`), composes items beyond the
+viewport without hiding them (`LazyDsl.kt:338,395`), and an app that keeps several pages composed
+has no way to say which of them are covered. An animated component checking only itself (UIKit's
+`hidden`, Android's `visibility`) keeps playing in all those places. And `KRImageView` can only
+show a `UIImage`: a loader that advances frames itself must go through `-setImage:`, which fires
+`loadSuccess`/`loadResolution` and redoes tint, filter and blur for every frame.
+
+**The change.**
+
+- **One predicate, both platforms.** A view is effectively visible when it is in a window (iOS) /
+  attached (Android), part of it lies inside the window (iOS: its bounds converted to the window;
+  Android: `getGlobalVisibleRect`), and neither it nor any ancestor is hidden / not `VISIBLE`, at
+  alpha 0.01 or less, or `occluded`. iOS `-[UIView kr_isEffectivelyVisible]`, Android
+  `KRVisibility.isEffectivelyVisible(view)` over a view-free `isEffectivelyVisible(attached,
+  insideWindow, chain)` that the JVM test exercises.
+- **`occluded`**, a generic common prop (1/0): the subtree is laid out and attached but not on
+  the glass. Nothing about layout or drawing changes; it is reset on reuse like every common prop.
+  Compose: `Modifier.occluded(Boolean)` over `setProp`. The web renderer ignores unknown common
+  props (`KuiklyRenderCSSKTX.kt` `setCommonProp` looks the key up in `propHandlers` and returns
+  false; nothing reaches the DOM), so it needs no change.
+- **Notices.** The `visibility`, `opacity` (when it crosses 0.01) and `occluded` props and a list
+  scroll post a *visibility* notice, coalesced to one delivery per main-looper / run-loop turn
+  (iOS `UIView kr_noteViewTreeChange:`, §34; Android `KRVisibility.noteChange`). A component that
+  animates re-evaluates the predicate when it hears one; window changes need none (UIKit sends
+  `didMoveToWindow`, Android `onAttachedToWindow`/`onDetachedFromWindow`).
+- **iOS content-view hook.** `-[KRImageView kr_presentContentView:posterImage:]` shows a view the
+  loader animates as the image view's only content subview, under its corner clip and gradient
+  mask, following its content mode; `loadSuccess` and `loadResolution` fire once with the poster.
+  It answers NO, changing nothing, when the view applies processing only an image can carry
+  (tint, colour filter, blur, cap insets, nine-patch) or loads without a size. The content goes on
+  a new `src`, on any image bound through the view, and on reuse; it is never put in the refresh
+  cache, so a recycled row asks its loader again rather than showing a frozen poster.
+
+No image library is named: which views animate, and how, is the host's.
+
+**Verified.** Ronaq's iOS unit bundle: `KRVisibilityTests` (7: on screen, not in a window, hidden,
+transparent and occluded ancestors, reset on reuse, outside the window's bounds, one coalesced
+notice, no notice for an opacity change that stays visible, a scroll's notice) and
+`KRImageViewContentHookTests` (5: events once with the poster's size, refusals, removal on a new
+source, a still and reuse, reuse asks the loader again, content mode followed), plus Ronaq's host
+tests that play animated content through the hook. Android: `:KuiklyUI:core-render-android:testDebugUnitTest`,
+`KRVisibilityTest` (5). The Android wiring into image and animation views is Ronaq's TASK-A4 and
+is not in this section. No device run yet.
+
+**Upstreamable.** Yes: the predicate, the notices and `occluded` are general; the content-view hook
+is a small, optional extension of the image component.
+
+## 36. base64 images decode at the size their view covers — iOS
+
+**Files** · `core-render-ios/Extension/Components/KRImageView.{h,m}` (`p_setBase64Image:`,
+`+kr_decodeImageData:pixelSize:fill:`, the upgrade path)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.2.7, gap G-12 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** A base64 source is decoded whole with `+[UIImage imageWithData:]` —
+lazily, so the pixels are produced at first draw on the main thread — and the decoded image
+replaces the base64 text in the memory-cache module under the same key, so every later view
+of it gets that one picture whatever its size.
+
+**The change.** With §34's load-when-sized, the view knows the pixels it covers when the base64
+branch runs. It decodes with `CGImageSourceCreateThumbnailAtIndex` on the existing background
+queue — the largest size that fits (aspect fit) or the smallest that covers (aspect fill,
+stretch), EXIF orientation applied, never larger than the source, decoded immediately — and
+caches the result under the base64 key plus that size (`<key>#<w>x<h>`, `f` for fill), so a
+later, larger view decodes its own; the base64 text stays under its own key. A view with no
+size (the memory-cache module's, a cap-inset view) or a natural-size content mode decodes the
+whole image, as before, under the plain key. A view that grows past a step asks again (§34's
+upgrade now covers base64). The decode is public as `+kr_decodeImageData:pixelSize:fill:`.
+
+**Verified.** Ronaq's iOS unit bundle, `RonaqLocalImageTests` `testBase64IsDecodedToTheBox`
+(cover, fit, whole, never upscaled, EXIF-rotated). The module path itself needs a render view
+with its memory-cache module and is checked on the device. No device run yet.
+
+**Upstreamable.** Yes.
+
+## 37. Image views give back a load nobody can see; web images decode off the main thread — iOS, web
+
+**Files** · `core-render-ios/Extension/BridgeProtocol/KuiklyRenderBridge.h`
+(`-hr_cancelImageLoadForImageView:`), `core-render-ios/Extension/Components/KRImageView.m`
+(`-didMoveToWindow`, `-setCss_src:`, the abandon and re-ask methods),
+`core-render-web/base/src/jsMain/kotlin/com/tencent/kuikly/core/render/web/expand/components/KRImageView.kt`
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.2.8 and §4.14, gaps G-10 and G-29 of the 2026-09-24 audit
+**Date** · 2026-09-24
+
+**What upstream does.** On iOS, an image view hands its URL to the expand handler and never
+speaks to it again unless the source changes; the only cancel in the protocol is a nil URL,
+which also clears the picture. A view that scrolls out of a list, or a page that closes,
+leaves its loads running: they download and decode into the handler's cache for a view that
+is gone. A view cleared for reuse (source set to nil) says nothing either, so its old load
+can still arrive — over a picture the refresh cache has since supplied. On the web, the
+`<img>` decodes on the main thread at first paint.
+
+**The change.**
+- A new optional expand-protocol method, `- (BOOL)hr_cancelImageLoadForImageView:`, asks the
+  handler to drop the load a view is waiting for without touching what it shows; it answers
+  YES when a load was outstanding. It is never called from `-dealloc` — a handler that must
+  let go of a freed view ties its hold to the view's lifetime instead (an associated object),
+  because forming a weak reference to a deallocating view crashes.
+- `KRImageView` tracks whether a handler accepted a source and has not delivered a picture
+  for it (cleared by any picture bound, by animated content presented through §35's hook,
+  and by a matched completion of the block forms). When it leaves its window with such a
+  load, it gives the load back a main-queue turn later — a view moved between parents in
+  one pass is back in a window by then and keeps it. When the handler answers YES, the view
+  asks again for its source on its return, at the size it covers then, keeping any picture
+  it already shows (an upgrade in flight is asked for again the same way). When the handler
+  answers NO (the load failed, say), nothing is re-asked: moving a view is not a retry.
+- Changing the source to a different one (including nil, as reuse does) gives the old
+  source's load back first.
+- The web `KRImageView` sets `decoding="async"` on its `<img>`, before any `src`.
+  `loading="lazy"` is deliberately not set: a pager composes neighbouring pages off screen,
+  and lazy loading would make their pictures pop in during a swipe.
+
+Handlers that do not implement the new method behave as before: loads run to completion.
+On macOS the compat layer delivers `didMoveToWindow`, so the same path applies there.
+
+**Verified.** Ronaq's iOS unit bundle, `KRImageViewAbandonTests` (11 cases): leaving the
+window gives the load back; returning asks again at the current size; a move between parents
+in one pass keeps it; a delivered picture, or a handler with nothing outstanding, means no
+cancel and no re-ask; an upgrade given back keeps the picture and is asked for again;
+clearing the source gives its load back; and end to end with Ronaq's handler, a detached
+view's download is cancelled and a returning view's picture arrives. Web: Ronaq's Playwright
+suite (`e2e/img-decoding.spec.ts`) on Chromium and WebKit. No device run yet.
+
+**Upstreamable.** Yes.
+
+## 38. Android: the renderer's blur cache answers memory pressure
+
+**Files** · `core-render-android/.../KuiklyRenderMemory.kt` (new) ·
+`core-render-android/.../expand/component/blur/CachedImageBlur.kt` (`evictAll`, `sizeBytes`)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24: every gap of the audit is to be
+closed); Ronaq `docs/design/image-pipeline.md` §4.8, gap G-16 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What the fork did.** `CachedImageBlur` (a Ronaq addition, "Source image blur reuse",
+2026-09-20: the room's blurred wallpaper) keeps up to 2 MiB of blurred bitmaps in an `LruCache`. Nothing outside it
+could empty that cache, so it held its bitmaps through every `onTrimMemory`, even with the app
+in the background.
+
+**The change.** `KuiklyRenderMemory.onTrimMemory(level)`, a public entry a host calls from its
+application's `onTrimMemory` (and from `onLowMemory`), empties the renderer's own bitmap caches
+— today the blur cache — at every level, the rule image libraries apply to their evictable
+entries. Eviction never recycles: a view that shows a blurred drawable keeps it, and the bitmap
+goes when the last view lets go. `cachedBitmapBytes()` reports what the caches hold, for a
+host's diagnostics. No upstream file changes.
+
+**Verified.** Ronaq's Android host calls it next to Fresco's trim; the device check is
+`am send-trim-memory` with the host's `ronaq-image` stats line (Ronaq TASK-A1). No JVM test: the
+cache is an `android.util.LruCache`, which the fork's JVM tests cannot run without an Android
+runtime, and the entry has no decision to test.
+
+**Upstreamable.** The blur cache is Ronaq's; the entry point itself is general.
+
+## 39. Android: an image view cancels what it no longer wants and gives back what it was lent
+
+**Files** · `core-render-android/.../adapter/KRImageRequest.kt` (new) ·
+`.../expand/component/image/KRDrawableHolds.kt` (new) + test `KRDrawableHoldsTest.kt` (new) ·
+upstream `adapter/IKRImageAdapter.kt` (`fetchDrawableForView`, `releaseDrawable`) ·
+upstream `expand/component/image/KRImageLoader.kt` (`fetchImageForView`, `releaseDrawable`) ·
+upstream `expand/component/KRImageView.kt` (the load handle, the holds, `KRWrapperImageView`
+destroying its inner views)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.9, gaps G-17 and G-19 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What upstream does.** `IKRImageAdapter.fetchDrawable` hands a drawable to a callback and that is
+the whole conversation: the view cannot cancel a load (a row scrolled away still downloads and
+decodes), and the adapter never learns when the view is done with a drawable. An adapter over an
+image library whose bitmaps are reference-counted and pooled (Fresco) therefore has to copy every
+still out of the library — the library's bitmap may be reused for another picture the moment its
+reference closes — so each picture exists twice, once outside the library's budget and trim.
+
+**The change.**
+
+- `IKRImageAdapter.fetchDrawableForView(option, params, callback): KRImageRequest?` — a load for
+  an image view, with a handle it cancels (`KRImageRequest.cancel()`); after a cancel the adapter
+  delivers nothing. `releaseDrawable(drawable)` — the view no longer draws or reads a drawable it
+  received there; called once per drawable, on the main thread. Both default to today's
+  behaviour (the plain fetch, no handle; release does nothing), so an adapter that implements
+  neither is unaffected. `KRImageLoader` forwards both.
+- `KRImageView` uses them for every non-base64 source. It cancels on a new `src`, a reset, its
+  destruction, and when it leaves its window before the picture came — a main-looper turn later,
+  so a view moved between parents in one pass keeps its load — and asks again when it returns.
+  A result that arrives for a load it no longer wants goes straight back. Results reach the main
+  thread through the main looper rather than `View.post`, which parks a runnable for a view out of
+  the window and would never give its drawable back.
+- **When a drawable goes back** (`KRDrawableHolds`, view-free): not while the view keeps it as the
+  source it re-tints and re-blurs from; not while what it draws was made from it — the drawable, a
+  tint or colour-filter copy (`constantState.newDrawable()` shares the bitmap), a nine-patch built
+  over its bitmap, or a blur that fell back to its input; not while the blur task reads it off the
+  main thread. Two frames after the last of those (`Choreographer`), because the render thread may
+  still be drawing the frame recorded before the view let go; then exactly once. A drawable the
+  view was not lent — a base64 or memory-cache-module picture — is never given back.
+- On destruction the view draws nothing lent from then on and lets everything go.
+  `KRWrapperImageView` destroys its inner image and placeholder views, which are not render nodes
+  and were never destroyed by anyone.
+
+The base64 path and `KRMemoryCacheModule.cacheImage` keep the plain fetch: their drawables live
+in a module map for the page's life.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRDrawableHoldsTest` (11): a
+replaced picture goes back two frames later and not before; the blur task holds it; a blur that
+finishes after the view moved on gives the old picture back; destruction gives everything back;
+never twice; a tint copy replaced by a new tint keeps it; a nine-patch holds it until a new
+source; the old derivative stays drawn until the new source's blur arrives; a stale result goes
+back at once; a drawable the view was not lent is never given back; held again before the frames
+ran means kept. The same suite against a rule that gives a picture back as soon as the view stops
+keeping it (no frames, no task hold) fails 5 of the 11. Ronaq's host implements both entries over
+Fresco (TASK-A2); the device checks (fast scroll with logcat free of recycled-bitmap errors, the
+blurred room background entered and left repeatedly) are Ronaq's device phase.
+
+**Upstreamable.** Yes: both entries are defaulted and vendor-neutral.
+
+## 40. Android: an image view asks for the pixels it covers, and for the source's only when it must
+
+**Files** · `core-render-android/.../expand/component/image/KRImagePixelSize.kt` (new) + test
+`KRImagePixelSizeTest.kt` (new) · upstream `css/animation/KRCSSAnimation.kt`
+(`KRCSSTransform.applyTransform` posts a geometry notice) · upstream
+`expand/component/KRImageView.kt` (`createImageLoadOption`, the upgrade, base64 keys)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.10 and §4.2.1's rule, gaps G-18 and G-27 of the 2026-09-24 audit, design review 1 findings 7
+and 8
+**Date** · 2026-09-25
+
+**What upstream does.** `createImageLoadOption` asks for the view's frame in pixels. A frame
+excludes the scale of an ancestor's transform (`Modifier.scale` is a view's `scaleX`/`scaleY`), so
+a picture under an enlarging ancestor is decoded smaller than it is drawn — the seat headwear under
+`scale(1/0.7)` got 168 px for 240 on screen. The request is never re-asked when the view grows.
+`needResize` is false for a nine-patch or cap-inset view — whose insets are in source pixels — but
+also whenever a `loadResolution` listener is set, which every Compose image sets, so an adapter
+honouring it decoded every Compose picture whole. A base64 picture decoded for one view replaces
+the base64 text in the memory-cache module, so every later view of it gets that one decode.
+
+**The change.**
+
+- The request size is the frame times the product of the scale magnitudes of the view and every
+  ancestor, **held at 1 or more per axis** (`KRImagePixelSize`): a transform that shrinks is usually
+  the first frame of an entrance, and a decode taken then would be drawn upscaled afterwards.
+- A view whose covered size grows by **more than one eighth** in either dimension asks again,
+  keeping its picture until the larger one arrives — checked when its frame is set, when it is
+  attached (ancestors attached late), and on the coalesced *geometry* notice
+  (`KRVisibility.CHANGE_GEOMETRY`, §35) that `KRCSSTransform.applyTransform` now posts whenever it
+  applies an enlarging scale. Only views with a sized load listen, and only while attached. Never
+  smaller.
+- `needResize` is false only for a nine-patch or cap-inset view. A view that turns into one after a
+  sized load (its `capInsets`, `dotNineImage` or `resize` arrived after its frame) reloads at the
+  source's pixels. The `loadResolution` term is gone: the resolution reported is the decoded
+  picture's, proportional to the source — what Ronaq's iOS renderer reports as well (§34).
+- A base64 picture decoded at a size is kept under its key plus that size (`<key>#<w>x<h>`); the
+  base64 text stays under the key, so a larger view decodes its own (the iOS twin is §36).
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRImagePixelSizeTest` (5): an
+enlarging ancestor counted (168 → 240), scales multiply along the chain and a mirror is not a
+shrink, a shrinking transform held at 1, the covered size rounded up and never below the frame, an
+eighth as the step and never downwards. The wiring into the view and the transform notice are
+checked on a device (Ronaq TASK-A3: seat headwear sharper at 1/0.7, bundled art at request size).
+
+**Upstreamable.** Yes; the `loadResolution` change is a behaviour change an upstream reviewer should
+weigh (it favours memory over reporting the source's resolution).
+
+## 41. Android: an animated picture stops while it cannot be seen
+
+**Files** · `core-render-android/.../expand/visibility/KRUnseenPause.kt` (new) + test
+`KRUnseenPauseTest.kt` (new) · `.../expand/visibility/KRVisibility.kt` (§35's file:
+`visibleOrUnknown`) · upstream `expand/component/KRImageView.kt` (observes the notices while it
+shows an animatable)
+**Driven by** · Ronaq's image pipeline work (owner, 2026-09-24); Ronaq `docs/design/image-pipeline.md`
+§4.4, AC-7, INV-5..7, gap G-25 of the 2026-09-24 audit
+**Date** · 2026-09-25
+
+**What upstream does.** An image view starts any `Animatable` it is given and stops it only on a
+new source, a reset or its destruction. Android draws views under an opaque overlay and views
+placed outside the window, so an animated picture on a covered tab page or in a lazy list's
+off-screen item keeps advancing and decoding frames; only a detached or `GONE` view stops being
+drawn.
+
+**The change.**
+
+- `KRUnseenPause`, view-free: a looping animation whose view is not effectively visible (§35's
+  predicate) is paused, and resumed when visible again — only if the rule paused it; one that
+  stopped on its own stays stopped; a one-shot is never paused (the caller says which); an unknown
+  answer changes nothing.
+- `KRVisibility.visibleOrUnknown(view)`: the predicate, or null while the view is attached but not
+  laid out (it cannot be placed against the window yet), false when detached.
+- `KRImageView` listens to §35's notices while it shows an `Animatable` (and, from §40, while it
+  has a sized load) and applies the rule: on a notice, a turn after it is given an animatable or
+  attached (after that pass's layout), and when it leaves the window. Its own attachment is tracked
+  from its callbacks, because `isAttachedToWindow` still answers true inside
+  `onDetachedFromWindow`. An image library's animated drawable that is not drawn frees its
+  prepared frames on its own schedule (Fresco: two seconds).
+
+The same rule is public for a host's own animated views (Ronaq's `RonaqAnimationView` host uses it
+for SVGA, Lottie, animated WebP/GIF and VAP).
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`, `KRUnseenPauseTest` (6): pause
+and resume, a one-shot never paused, a self-stopped animation not restarted, unknown changes
+nothing, repeated notices pause and resume once, new content forgets the pause. The device checks
+(Perfetto/gfxinfo: no animated-drawable draws from a covered page; no ticks in hidden slots) are
+Ronaq's device phase.
+
+**Upstreamable.** Yes.
+
+## 42. iOS: content the renderer moves is re-checked for visibility; a pulse posts geometry once
+
+**Files** · upstream `core-render-ios/Extension/Category/UIView+CSS.m` (`setCss_transform:`,
+`setCss_frame:`)
+**Driven by** · Ronaq's iOS image pipeline re-audit (owner, 2026-09-25: 「ios imagepipeline也要继续研究和实现啊」);
+Ronaq `docs/design/image-pipeline.md` §17 (re-audit D4, D6), INV-23
+**Date** · 2026-09-25
+
+**What §34/§35 did.** The coalesced view-tree notice carried *visibility* for `visibility`,
+`opacity` crossing 0.01, `occluded` and a scroll, and *geometry* for every transform whose scale
+is above 1.
+
+**What was wrong.**
+
+- A view moved by its layer's translation — a pager page slid by `graphicsLayer.translationX`, an
+  entrance banner — or by a frame the renderer sets goes on or off the glass with no notice, so a
+  host's player that paused while it was off screen stayed paused after it arrived (and one that
+  left kept playing), until some unrelated notice came.
+- A pulse that returns to the same scale above 1 every beat (a gift panel's beat, a heart) posted a
+  geometry notice on every frame of every beat, and every image view under any composed page
+  re-measured itself on each.
+
+**The change.**
+
+- `setCss_transform:` posts *visibility* whenever it sets a transform, and *geometry* only when the
+  view's scale is larger than any it has had since its transform was last reset (kept per view,
+  cleared with the transform).
+- `setCss_frame:` posts *visibility* when the frame it sets differs from the one before.
+
+Both still coalesce to one delivery per main run-loop turn. An observer that only cares about
+geometry (the image view's upgrade check) ignores the visibility bit at the cost of one call.
+
+**Verified.** Ronaq's hosted iOS unit bundle: `KRVisibilityTests` — a transform and a changed frame
+post a visibility notice, the same frame again posts nothing, six 1.3 beats post one geometry
+notice and a new largest scale posts another (both red before: 0 notices, and 6); Ronaq's
+`RonaqMovedContentTests` — a looping picture presented off the glass plays when a translation brings
+its page on and stops when it leaves, and one moved by layout stops and plays again (red before).
+
+**Upstreamable.** Yes, with §34/§35.
+
+## 43. Android: moved content is re-checked for visibility, a pulse posts geometry once, and an image view keeps what it shows
+
+**Files** · `core-render-android/.../expand/visibility/KRVisibility.kt` (§35's file: `noteTransform`,
+`forgetTransform`) · `core-render-android/.../expand/component/image/KRImageSizing.kt` (new) + tests
+`KRImageSizingTest.kt`, `css/animation/KRCSSTransformNoticeTest.kt` (new) · upstream
+`css/animation/KRCSSAnimation.kt` (`KRCSSTransform.applyTransform`, `resetTransform`) · upstream
+`css/ktx/KRCSSViewExtension.kt` (the `frame` prop) · upstream `expand/component/KRImageView.kt` (the
+upgrade, the failure report, the cancel) · upstream `build.2.1.21.gradle.kts` (`testOptions`)
+**Driven by** · Ronaq's image pipeline, review 2 of the Android tasks (owner, 2026-09-24 and
+2026-09-25: 「上面提到的那些都要解决」); Ronaq `docs/design/image-pipeline.md` §4.4, §4.10, INV-6, INV-13,
+INV-23, AC-2, AC-21 — the Android twin of §42
+**Date** · 2026-09-25
+
+**What §35/§40/§41 did.** The coalesced notice carried *visibility* for `visibility`, `opacity`,
+`occluded` and a list's scroll, and *geometry* for every transform whose scale is above 1. An image
+view asked again whenever it covered an eighth more pixels than its last request, and reported any
+failed load.
+
+**What was wrong.**
+
+- A view moved by its transform's translation — a pager page slid by `graphicsLayer.translationX`
+  (Ronaq's VIP centre), an entrance — or by a frame the renderer sets went on or off the glass with
+  no notice. An animated picture bound while off screen was paused by §41 and stayed frozen on its
+  first frame after the swipe brought it on; a looping VAP there was released and stayed blank.
+  Before §41 nothing paused, so this was new.
+- A pulse to the same scale above 1 (a gift panel's beat, a heart) posted a geometry notice on every
+  frame, and every image view with a sized load walked its ancestors on each.
+- An animated picture was upgraded like a still: the larger request is a new cache entry whose
+  frames are the file's size again (an image library does not resize animated frames), so the clip
+  restarted from its first frame — a one-shot replayed — and its frames were held twice.
+- A failed upgrade or re-ask fired `loadFailure` over the picture of the same source the view
+  already showed; Ronaq's VIP tiles then swap a good picture for ⊘.
+- An upgrade cancelled because the view left its window kept its larger size as "asked for", so on
+  its return the view compared against a size it never got and never asked again.
+
+**The change.**
+
+- `KRCSSTransform.applyTransform` posts *visibility* for every transform it applies, and *geometry*
+  only when the view's scale exceeds the largest it has had since its transform was reset
+  (`KRVisibility.noteTransform`, kept per view in a weak map, cleared by `resetTransform` through
+  `forgetTransform`).
+- The `frame` prop posts *visibility* when the frame it sets differs from the one before.
+- `KRImageView` keeps what it asked for against what it shows in `KRImageSizing` (view-free): it never
+  upgrades an animated picture; a failed load over a picture of the same source keeps the picture
+  and reports nothing; a load cancelled before it arrived puts the view back on the size it shows.
+- The module's JVM tests run over the mockable android.jar with default values
+  (`unitTests.isReturnDefaultValues`), so a test can drive `KRCSSTransform` on a plain `View`.
+
+Every notice still coalesces to one delivery per main-looper turn.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRCSSTransformNoticeTest` (4) — a
+page slid off and back by a translation posts a visibility notice each time, six beats to 1.3 post one
+geometry notice and a new largest scale another, a reset starts the history again, a shrink is never
+geometry; red before the change (no visibility notice; six geometry notices). `KRImageSizingTest` (8)
+— the growth step, never for an animated picture, a cancelled upgrade re-asked, a first load cancelled
+leaves nothing to upgrade, a failed upgrade not retried until the view grows further, unsized loads
+never upgrade, a failure over a picture not reported, a reset. The swipe on a device (a preview that
+moves after it lands) is Ronaq's device phase.
+
+**Upstreamable.** Yes, with §35/§40/§41.
+
+## 44. iOS: an image view keeps the picture a re-ask fails over, and processing set over content shows
+
+**Files** · upstream `core-render-ios/Extension/Components/KRImageView.m`
+(`p_handleImageLoadCompletion:`, `setCss_tintColor:`, `setCss_colorFilter:`, `setCss_blurRadius:`,
+`setCss_capInsets:`, a `setCss_dotNineImage:` setter)
+**Driven by** · Ronaq's image pipeline, review 2 of the iOS tasks (owner, 2026-09-25:
+「ios imagepipeline也要继续研究和实现啊」); Ronaq `docs/design/image-pipeline.md` §4.2.1, §4.2.5, AC-22,
+INV-24 — the iOS twin of §43's failure rule
+**Date** · 2026-09-25
+
+**What §34/§35/§37 did.** A view asks its loader again, keeping its picture, when it grows past a
+step or returns to a window after giving its load back; a loader may show an animated picture as
+content over the view (`-kr_presentContentView:posterImage:`), refused when the view carries a tint,
+a colour filter, a blur, cap insets or a nine-patch at that moment. Since Ronaq's loader reports
+failures (its §17 D5), a failed load fires `loadFailure`.
+
+**What was wrong.**
+
+- A re-ask that failed — an upgrade whose larger picture could not be fetched — fired `loadFailure`
+  over the picture of the same source the view still showed; Ronaq's VIP tiles then replace a good
+  tile with ⊘.
+- A tint, a colour filter or a blur set AFTER content was presented was applied to the view's image
+  under the content, whose frames are not processed: invisible. Cap insets or a nine-patch set after
+  a sized load stretched a picture decoded at display size by insets in the source's pixels (and
+  content cannot be stretched at all).
+
+**The change.**
+
+- A failed load while the view shows a picture of its source (`_originImage`) is not reported and the
+  picture stays. A first load (no picture yet) is reported as before.
+- Setting a tint, a colour filter or a blur while content is shown removes the content; the poster,
+  already the view's `_originImage`, shows processed as a still — what the loader shows a view that
+  has the processing from the start.
+- Setting cap insets or `dotNineImage` on a view that holds a sized picture or content asks the loader
+  again at the source's pixels (no size), keeping what it shows until they arrive. `dotNineImage`
+  gains a setter for it (it had none, so a late change applied only to the next picture).
+
+**Verified.** Ronaq's hosted iOS unit bundle: `RonaqImageFailureTests` — an upgrade whose larger
+picture fails keeps the picture and fires no `loadFailure` (red before: 1); `KRImageViewContentHookTests`
+— a tint, a colour filter and a blur set over presented content remove it and show the processed
+poster, cap insets set after a sized load ask again without a size (red before: the content stayed,
+no second request).
+
+**Upstreamable.** Yes, with §34/§35/§37.
+
 ## 45. Pagers say where a released drag is going, and images can wait for their page
 
 **Files** · `compose/.../foundation/pager/PagerState.kt` (`settleTargetPage`) ·
