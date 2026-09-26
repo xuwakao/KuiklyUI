@@ -78,7 +78,7 @@ fun rememberAsyncImagePainter(
 )
 
 /**
- * Ronaq fork (CHANGES.md §34): whether a painter below may fetch a REMOTE image now.
+ * Ronaq fork (CHANGES.md §45): whether a painter below may fetch a REMOTE image now.
  *
  * True by default, so nothing changes where nobody provides it. A pager page composed off screen
  * provides false: its layout is built, but its `http(s)` images are not requested until the page
@@ -90,7 +90,7 @@ val LocalAsyncImageLoading: ProvidableCompositionLocal<Boolean> = compositionLoc
 
 /**
  * The source a painter is given: [src] itself, or null for a remote source while [loading] is
- * false (Ronaq fork, CHANGES.md §34). A null source draws the painter's fallback, as it always has.
+ * false (Ronaq fork, CHANGES.md §45). A null source draws the painter's fallback, as it always has.
  */
 internal fun deferredImageSource(src: String?, loading: Boolean): String? =
     if (!loading && src != null && (src.startsWith("http://") || src.startsWith("https://"))) null else src
