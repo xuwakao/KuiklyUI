@@ -15,6 +15,7 @@
 
 package com.tencent.kuikly.compose.gestures
 
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import com.tencent.kuikly.compose.foundation.MutatePriority
 import com.tencent.kuikly.compose.foundation.MutatorMutex
@@ -82,6 +83,19 @@ internal class KuiklyScrollableState(val onDelta: (Float) -> Float) : Scrollable
 
     fun kuiklyOnScrollEnd(params: ScrollParams) {
         isScrollingState.value = false
+    }
+
+    // Ronaq fork (CHANGES.md §35): the drags the native view has begun, as snapshot state. Only a
+    // touch, a mouse press or a wheel session begins one; a fling, a bounce and a programmatic
+    // scroll never do.
+    private val dragCountState = mutableIntStateOf(0)
+
+    /** How many drag gestures the native scroller has begun (Ronaq fork, CHANGES.md §35). */
+    val dragCount: Int
+        get() = dragCountState.intValue
+
+    fun kuiklyOnDragBegin() {
+        dragCountState.intValue += 1
     }
 
     override fun dispatchRawDelta(delta: Float): Float {

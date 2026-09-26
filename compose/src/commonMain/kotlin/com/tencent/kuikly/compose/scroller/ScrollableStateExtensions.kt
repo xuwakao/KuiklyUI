@@ -60,6 +60,43 @@ internal fun ScrollableState.kuiklyOnScroll(delta: Float): Float = when (this) {
 }
 
 /**
+ * Ronaq fork (CHANGES.md §35): the native scroller began a drag gesture.
+ */
+internal fun ScrollableState.kuiklyOnDragBegin() {
+    when (this) {
+        is LazyListState -> scrollableState.kuiklyOnDragBegin()
+        is PagerState -> scrollableState.kuiklyOnDragBegin()
+        is DrawerInternalPagerState -> scrollableState.kuiklyOnDragBegin()
+        is LazyGridState -> scrollableState.kuiklyOnDragBegin()
+        is LazyStaggeredGridState -> scrollableState.kuiklyOnDragBegin()
+        is ScrollState -> scrollableState.kuiklyOnDragBegin()
+        is KuiklyScrollableState -> kuiklyOnDragBegin()
+        else -> Unit
+    }
+}
+
+/**
+ * Ronaq fork (CHANGES.md §35): how many drag gestures the native scroller behind this state has
+ * begun, as snapshot state, so a composition, a `derivedStateOf` or a `snapshotFlow` can tell a
+ * new gesture from the momentum of the last one. A drag begins when a finger starts moving the
+ * scroller (Android `SCROLL_STATE_DRAGGING`, iOS `scrollViewWillBeginDragging`), and on web on a
+ * touch start, a mouse press, or the first wheel event of a wheel session; a fling, a bounce, a
+ * programmatic scroll and a wheel session's own inertia never begin one. 0 for a state no native
+ * scroller drives.
+ */
+val ScrollableState.dragsBegun: Int
+    get() = when (this) {
+        is LazyListState -> scrollableState.dragsBegun
+        is PagerState -> scrollableState.dragsBegun
+        is DrawerInternalPagerState -> scrollableState.dragsBegun
+        is LazyGridState -> scrollableState.dragsBegun
+        is LazyStaggeredGridState -> scrollableState.dragsBegun
+        is ScrollState -> scrollableState.dragsBegun
+        is KuiklyScrollableState -> dragCount
+        else -> 0
+    }
+
+/**
  * Handle scroll end events
  */
 internal fun ScrollableState.kuiklyOnScrollEnd(params: ScrollParams) {

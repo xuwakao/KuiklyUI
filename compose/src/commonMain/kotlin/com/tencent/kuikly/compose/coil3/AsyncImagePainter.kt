@@ -2,7 +2,9 @@ package com.tencent.kuikly.compose.coil3
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.NonRestartableComposable
+import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import com.tencent.kuikly.compose.coil3.AsyncImagePainter.State
 import com.tencent.kuikly.compose.ui.graphics.painter.Painter
@@ -75,6 +77,24 @@ fun rememberAsyncImagePainter(
     onState = onState,
 )
 
+/**
+ * Ronaq fork (CHANGES.md §34): whether a painter below may fetch a REMOTE image now.
+ *
+ * True by default, so nothing changes where nobody provides it. A pager page composed off screen
+ * provides false: its layout is built, but its `http(s)` images are not requested until the page
+ * becomes current (the reference's `BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT`). Bundled and inline
+ * sources keep drawing. When the local turns true the painter is re-created with its source and
+ * the load starts.
+ */
+val LocalAsyncImageLoading: ProvidableCompositionLocal<Boolean> = compositionLocalOf { true }
+
+/**
+ * The source a painter is given: [src] itself, or null for a remote source while [loading] is
+ * false (Ronaq fork, CHANGES.md §34). A null source draws the painter's fallback, as it always has.
+ */
+internal fun deferredImageSource(src: String?, loading: Boolean): String? =
+    if (!loading && src != null && (src.startsWith("http://") || src.startsWith("https://"))) null else src
+
 @Composable
 private fun rememberAsyncImagePainterInternal(
     src: String?,
@@ -84,10 +104,11 @@ private fun rememberAsyncImagePainterInternal(
     onState: ((State) -> Unit)?,
 ): AsyncImagePainter {
     val context = LocalActivity.current
-    return remember(src, placeholder) {
+    val source = deferredImageSource(src, LocalAsyncImageLoading.current)
+    return remember(source, placeholder) {
         KuiklyPainter(
             context,
-            src = src,
+            src = source,
             placeHolder = placeholder,
             error = error,
             fallback = fallback,
