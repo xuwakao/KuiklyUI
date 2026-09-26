@@ -60,7 +60,7 @@ internal fun ScrollableState.kuiklyOnScroll(delta: Float): Float = when (this) {
 }
 
 /**
- * Ronaq fork (CHANGES.md §35): the native scroller began a drag gesture.
+ * Ronaq fork (CHANGES.md §46): the native scroller began a drag gesture.
  */
 internal fun ScrollableState.kuiklyOnDragBegin() {
     when (this) {
@@ -76,7 +76,7 @@ internal fun ScrollableState.kuiklyOnDragBegin() {
 }
 
 /**
- * Ronaq fork (CHANGES.md §35): how many drag gestures the native scroller behind this state has
+ * Ronaq fork (CHANGES.md §46): how many drag gestures the native scroller behind this state has
  * begun, as snapshot state, so a composition, a `derivedStateOf` or a `snapshotFlow` can tell a
  * new gesture from the momentum of the last one. A drag begins when a finger starts moving the
  * scroller (Android `SCROLL_STATE_DRAGGING`, iOS `scrollViewWillBeginDragging`), and on web on a
