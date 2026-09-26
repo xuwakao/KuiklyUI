@@ -442,12 +442,12 @@ abstract class PagerState internal constructor(
     /**
      * Target page index, kept up to date by key when the item set changes during snap.
      *
-     * Ronaq fork (CHANGES.md §34): snapshot state, so that [settleTargetPage] is observable.
+     * Ronaq fork (CHANGES.md §45): snapshot state, so that [settleTargetPage] is observable.
      */
     internal var snapTargetRelocatedPage by mutableIntStateOf(-1)
 
     /**
-     * Ronaq fork (CHANGES.md §34): the page a released drag is settling to, from the moment the
+     * Ronaq fork (CHANGES.md §45): the page a released drag is settling to, from the moment the
      * finger lifts (`kuiklyWillDragEnd` decides it and starts the snap) until the snap state is
      * cleared; -1 when no drag-driven settle is in progress. It follows the target when the item
      * set moves under a settle ([relocateSnapTargetByKey]). An animated programmatic scroll does
