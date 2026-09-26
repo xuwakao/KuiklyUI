@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Ronaq fork (CHANGES.md §35): a scroller counts the drags its native view begins, observably, and
+ * Ronaq fork (CHANGES.md §46): a scroller counts the drags its native view begins, observably, and
  * nothing else moves the count. The native event reaching [kuiklyOnDragBegin] is the scroll
  * bridge's (`SubcomposeLayout.kt`, `dragBegin`), exercised on a host by Ronaq's web e2e.
  */

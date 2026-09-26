@@ -3204,7 +3204,7 @@ the web, browsers latch a scroll gesture to the element it began on.
 
 **Upstreamable.** Yes, as an option; upstream may prefer SELF_FIRST's hand-over by default.
 
-## 34. Pagers say where a released drag is going, and images can wait for their page
+## 45. Pagers say where a released drag is going, and images can wait for their page
 
 **Files** · `compose/.../foundation/pager/PagerState.kt` (`settleTargetPage`) ·
 `compose/.../coil3/AsyncImagePainter.kt` (`LocalAsyncImageLoading`, `deferredImageSource`) · tests
@@ -3215,6 +3215,8 @@ neighbour pages built, as the native ViewPager's default `offscreenPageLimit` do
 makes no data request, starts no animation and loads no heavy image until it is the current page);
 Ronaq `docs/design/load-more.md` Part B, `docs/issue/pager-neighbour-pages.md`
 **Date** · 2026-09-25
+**Numbered** · 34 on the fork branch `load-more`; 45 since the integration of 2026-09-26, where the
+`image-pipeline` branch keeps 34 to 44
 
 **What.** Two read-only capabilities. Neither changes what any existing caller sees.
 
@@ -3257,7 +3259,7 @@ device behaviour is measured by Ronaq's `scripts/moments-swipe-probe.mjs` in its
 **Upstreamable.** Yes. `settleTargetPage` is a narrower `targetPage` that does not depend on
 `isScrollInProgress`; the local is a general deferral hook for lazily shown content.
 
-## 35. Scrollers count the drags they begin
+## 46. Scrollers count the drags they begin
 
 **Files** · `compose/.../gestures/KuiklyScrollableState.kt` (`dragCount`, `kuiklyOnDragBegin`) ·
 `compose/.../scroller/ScrollableStateExtensions.kt` (`ScrollableState.dragsBegun`, the dispatch) ·
@@ -3268,6 +3270,8 @@ list never asks for page after page by itself) and the implementation review of 
 trigger that day (finding NC-F1: the momentum of the gesture that asked a page asked the next one
 after it landed); Ronaq `docs/design/load-more.md` §5.2, §5.5
 **Date** · 2026-09-25
+**Numbered** · 35 on the fork branch `load-more`; 46 since the integration of 2026-09-26, where the
+`image-pipeline` branch keeps 34 to 44
 
 **What.** One read-only capability. Nothing existing reads it, and no scroller behaves differently.
 

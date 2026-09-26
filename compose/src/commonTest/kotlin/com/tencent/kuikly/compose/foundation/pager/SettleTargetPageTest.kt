@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Ronaq fork (CHANGES.md §34): [PagerState.settleTargetPage] is the page a released drag is
+ * Ronaq fork (CHANGES.md §45): [PagerState.settleTargetPage] is the page a released drag is
  * settling to, observable, from the snap's start until its state is cleared.
  */
 class SettleTargetPageTest {

@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** Ronaq fork (CHANGES.md §34): the source a painter is given while remote loads are held. */
+/** Ronaq fork (CHANGES.md §45): the source a painter is given while remote loads are held. */
 class DeferredImageSourceTest {
 
     @Test
