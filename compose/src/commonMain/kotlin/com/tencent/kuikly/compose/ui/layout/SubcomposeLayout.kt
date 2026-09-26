@@ -300,7 +300,7 @@ fun SubcomposeLayout(
                 scrollViewSize = Size(it.width, it.height)
             }
 
-            // Ronaq fork (CHANGES.md §35): every scroller counts the drags its native view begins
+            // Ronaq fork (CHANGES.md §46): every scroller counts the drags its native view begins
             // (`ScrollableState.dragsBegun`); a pager also drops the offset it was told to ignore,
             // as it always did here.
             dragBegin {
