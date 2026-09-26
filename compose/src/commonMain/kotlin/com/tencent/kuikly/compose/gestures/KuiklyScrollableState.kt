@@ -85,12 +85,12 @@ internal class KuiklyScrollableState(val onDelta: (Float) -> Float) : Scrollable
         isScrollingState.value = false
     }
 
-    // Ronaq fork (CHANGES.md §35): the drags the native view has begun, as snapshot state. Only a
+    // Ronaq fork (CHANGES.md §46): the drags the native view has begun, as snapshot state. Only a
     // touch, a mouse press or a wheel session begins one; a fling, a bounce and a programmatic
     // scroll never do.
     private val dragCountState = mutableIntStateOf(0)
 
-    /** How many drag gestures the native scroller has begun (Ronaq fork, CHANGES.md §35). */
+    /** How many drag gestures the native scroller has begun (Ronaq fork, CHANGES.md §46). */
     val dragCount: Int
         get() = dragCountState.intValue
 
