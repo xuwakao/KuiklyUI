@@ -32,6 +32,9 @@
 
 #define VIEW_DID_APPEAR @"viewDidAppear"
 #define VIEW_DID_DISAPPEAR @"viewDidDisappear"
+// Ronaq (CHANGES.md §52): the app left the screen (background) or came back (foreground).
+#define HOST_DID_HIDE @"hostDidHide"
+#define HOST_DID_SHOW @"hostDidShow"
 #define PAGE_FIRST_FRAME_PAINT @"pageFirstFramePaint"
 
 NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
@@ -88,6 +91,14 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(onReceiveApplicationWillResignActiveNotification:)
                                                  name:UIApplicationWillResignActiveNotification object:nil];
+    // Ronaq (CHANGES.md §52): resign-active alone leaves the app on the glass (Control Center, a
+    // system sheet); the background is where nothing of it can be seen.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onReceiveApplicationDidEnterBackgroundNotification:)
+                                                 name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onReceiveApplicationWillEnterForegroundNotification:)
+                                                 name:UIApplicationWillEnterForegroundNotification object:nil];
 }
 
 
@@ -351,6 +362,14 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
         [self.renderView sendWithEvent:VIEW_DID_APPEAR data:@{ @"app" : @(1) }];
         [self p_disptachDelegatorLifeCycleWithSel:@selector(onReceiveApplicationDidBecomeActive) object:nil];
     }
+}
+
+- (void)onReceiveApplicationDidEnterBackgroundNotification:(NSNotification *)notification {
+    [self sendWithEvent:HOST_DID_HIDE data:@{}];
+}
+
+- (void)onReceiveApplicationWillEnterForegroundNotification:(NSNotification *)notification {
+    [self sendWithEvent:HOST_DID_SHOW data:@{}];
 }
 
 - (void)onReceiveApplicationWillResignActiveNotification:(NSNotification *)notification {

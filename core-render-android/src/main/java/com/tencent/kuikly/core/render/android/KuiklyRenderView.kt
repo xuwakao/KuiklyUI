@@ -28,6 +28,7 @@ import android.util.Size
 import android.util.SizeF
 import android.util.SparseArray
 import android.view.View
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityManager
 import android.widget.FrameLayout
@@ -295,6 +296,26 @@ class KuiklyRenderView(
         }
         super.onVisibilityChanged(changedView, visibility)
     }
+
+    /**
+     * Ronaq fork (CHANGES.md §52): the window stops or starts being shown — the activity was
+     * stopped, or started again. A pause alone (a system sheet over the activity) leaves the window
+     * visible and sends nothing here. The page hears `hostDidHide` / `hostDidShow`, and every
+     * visibility observer (a looping animated picture, a player) re-checks, since
+     * [KRVisibility.isEffectivelyVisible] reads the window's visibility.
+     */
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        val shown = visibility == VISIBLE
+        if (shown != windowShown) {
+            windowShown = shown
+            sendEvent(if (shown) PAGER_EVENT_HOST_DID_SHOW else PAGER_EVENT_HOST_DID_HIDE, mapOf())
+        }
+        KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
+    }
+
+    /** The window's visibility last reported to the page; a window starts shown. */
+    private var windowShown = true
 
     override fun resume() {
         sendEvent(VIEW_DID_APPEAR,
@@ -696,6 +717,10 @@ class KuiklyRenderView(
         private const val FEATURE = "feature"
 
         const val PAGER_EVENT_FIRST_FRAME_PAINT = "pageFirstFramePaint"
+
+        /** Ronaq fork (CHANGES.md §52): as the core `Pager` names them. */
+        const val PAGER_EVENT_HOST_DID_HIDE = "hostDidHide"
+        const val PAGER_EVENT_HOST_DID_SHOW = "hostDidShow"
         private const val ACCESSIBILITY_RUNNING = "isAccessibilityRunning" // 无障碍化是否开启
 
         private const val ON_BACK_PRESSED = "onBackPressed"

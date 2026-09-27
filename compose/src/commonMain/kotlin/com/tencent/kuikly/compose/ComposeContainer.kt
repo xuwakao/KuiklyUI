@@ -193,20 +193,29 @@ open class ComposeContainer :
         }
     }
 
+    /** Ronaq fork (CHANGES.md §52): shown and resumed, which decide the lifecycle state. */
+    private val host = HostLifecycle()
+
     override fun created() {
         super.created()
-        updateLifecycleState(Lifecycle.State.CREATED)
+        // Ronaq fork (CHANGES.md §52): STARTED, not CREATED — the page is being put on the glass
+        // and no appear event has arrived yet.
+        updateLifecycleState(host.state)
     }
 
     override fun pageDidAppear() {
         super.pageDidAppear()
         mediator?.updateAppState(true)
-        updateLifecycleState(Lifecycle.State.RESUMED)
+        host.appeared()
+        updateLifecycleState(host.state)
     }
 
     override fun pageDidDisappear() {
         super.pageDidDisappear()
-        updateLifecycleState(Lifecycle.State.CREATED)
+        // Ronaq fork (CHANGES.md §52): STARTED while the host still shows the page (a pause, a
+        // resign-active); CREATED once it has hidden it.
+        host.disappeared()
+        updateLifecycleState(host.state)
     }
 
     override fun pageWillDestroy() {
@@ -219,7 +228,10 @@ open class ComposeContainer :
     }
 
     private fun updateLifecycleState(state: Lifecycle.State) {
-        (lifecycleOwner.lifecycle as LifecycleRegistry).currentState = state
+        val registry = lifecycleOwner.lifecycle as LifecycleRegistry
+        // Ronaq fork (CHANGES.md §52): a host event arriving after destruction changes nothing.
+        if (registry.currentState == Lifecycle.State.DESTROYED) return
+        registry.currentState = state
     }
 
     @OptIn(InternalComposeUiApi::class)
@@ -284,6 +296,13 @@ open class ComposeContainer :
         } else if (pagerEvent == PAGER_EVENT_WINDOW_SIZE_CHANGED) {
             configuration?.onWindowSizeChanged(eventData.optDouble(WIDTH),eventData.optDouble(
                 HEIGHT))
+        } else if (pagerEvent == PAGER_EVENT_HOST_DID_HIDE) {
+            // Ronaq fork (CHANGES.md §52).
+            host.hid()
+            updateLifecycleState(host.state)
+        } else if (pagerEvent == PAGER_EVENT_HOST_DID_SHOW) {
+            host.showed()
+            updateLifecycleState(host.state)
         } else if (pagerEvent == PAGER_EVENT_CONFIGURATION_DID_CHANGED) {
             val fontWeightScale = eventData.optDouble("fontWeightScale", 1.0)
             val fontSizeScale = eventData.optDouble("fontSizeScale", 1.0)
