@@ -3960,3 +3960,47 @@ and resumed like a loop; an animation its caller cannot hold is never paused). T
 unchanged, so this test was not red; the behaviour change is the host's, red in Ronaq's `UnseenPlaysTest`.
 
 **Upstreamable.** Yes, as documentation of the rule.
+
+## 51. What is clipped away or wholly under an opaque cover is not visible
+
+**Files** · `core-render-android/.../expand/visibility/KRVisibility.kt` (§35's file: the cover registry and
+rule, `Box`, `Branch`, `hiddenByCover`, `drawnAbove`) + test `KRVisibilityTest.kt` · upstream
+`core-render-android/.../const/KRConst.kt` (`OCCLUDES`) · upstream `core-render-android/.../css/ktx/KRCSSViewExtension.kt`
+(the `occludes` prop, set and reset) · `core-render-ios/Extension/Category/UIView+KRVisibility.h/.m`
+(`css_occludes`, the clipping-ancestor term, the cover rule) · `compose/.../extension/ModifierOccluded.kt`
+(`Modifier.occludes`)
+**Driven by** · the Ronaq owner's ruling of 2026-09-27 (「看不见情况下动画肯定要停播啊」); Ronaq
+`docs/design/image-pipeline.md` §20.8 (G-57), AC-36, INV-6
+**Date** · 2026-09-27
+
+**What was wrong.** The predicate counted as seen two kinds of content nobody could see. On iOS,
+content clipped out by an ancestor inside the window: only the window's bounds were checked, so a list
+item scrolled out of its list's viewport, the pull header above its list, a clipped carousel's off-screen
+card or a zero-height clipped container all read "visible" while they sat inside the window. On both
+hosts, content wholly under an opaque surface that is not a page — the seats under a half sheet's solid
+body, which covers up to 0.56 of the height — since nothing marked such a surface.
+
+**The change.**
+
+- **Clipping ancestors (iOS).** The view's bounds are intersected with the window and with every
+  ancestor that clips (`clipsToBounds`, `masksToBounds`); nothing left is not visible. Android's
+  `getGlobalVisibleRect` already intersects the parents that clip their children, and the rect it
+  returns is now also the one the cover rule reads.
+- **Opaque covers (both).** A generic `occludes` common prop (1/0) marks a view as an opaque cover of the
+  rect it occupies; the renderers keep a weak registry of covers and post a visibility notice when one
+  is set or cleared. A view is not visible when all of its visible part lies inside one cover that is
+  itself visible and drawn above it — above meaning that at their lowest common ancestor the cover's
+  branch draws later: the higher z first (Android `View.z`, iOS `layer.zPosition`, which is how each
+  renderer applies `zIndex`), then the later child. A cover never hides its own subtree or an ancestor;
+  covers are not checked against other covers. A view only partly covered stays visible. A moving cover
+  posts the transform and frame notices of §42/§43.
+- **Compose.** `Modifier.occludes(Boolean)` sets the prop. Mark only what is opaque.
+
+Unchanged: a view with no area is still "not known" on Android (§41) and not visible on iOS.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRVisibilityTest` (a view wholly under a
+cover drawn above it; partly under; a cover drawn below; drawing order is z then index), red against a
+stub rule. Ronaq's hosted `KRVisibilityTests` (a view scrolled out of a clipping ancestor inside the window;
+the same three cover cases with a higher `zPosition`; the notice), red on the clip and the covers before.
+
+**Upstreamable.** Yes: both are what "can be seen" means; the prop is generic.
