@@ -35,6 +35,7 @@ import com.tencent.kuikly.compose.layout.resetViewVisible
 import com.tencent.kuikly.compose.ui.KuiklyPath
 import com.tencent.kuikly.compose.ui.layout.LookaheadLayoutCoordinates
 import com.tencent.kuikly.compose.ui.unit.plus
+import com.tencent.kuikly.compose.profiler.FrameCounters
 import com.tencent.kuikly.core.base.Attr
 import com.tencent.kuikly.core.base.Attr.StyleConst
 import com.tencent.kuikly.core.base.BoxShadow
@@ -247,8 +248,10 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
 
     override fun draw(canvas: Canvas) {
         if (!drawInvalidated) {
+            FrameCounters.onNodeSkip()
             return
         }
+        FrameCounters.onNodeDraw()
         drawInvalidated = false
         view.reset()
         canvas.view = view

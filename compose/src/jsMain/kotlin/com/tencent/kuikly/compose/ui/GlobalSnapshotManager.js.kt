@@ -90,6 +90,7 @@ internal actual object GlobalSnapshotManager {
                 messagePort2.onmessage = { _: dynamic ->
                     notificationPending = false
                     runOnKuiklyThread {
+                        com.tencent.kuikly.compose.profiler.FrameCounters.onSnapshotApply()
                         Snapshot.sendApplyNotifications()
                     }
                 }
@@ -134,6 +135,7 @@ internal actual object GlobalSnapshotManager {
                     if (notificationPending) {
                         notificationPending = false
                         runOnKuiklyThread {
+                            com.tencent.kuikly.compose.profiler.FrameCounters.onSnapshotApply()
                             Snapshot.sendApplyNotifications()
                         }
                     }

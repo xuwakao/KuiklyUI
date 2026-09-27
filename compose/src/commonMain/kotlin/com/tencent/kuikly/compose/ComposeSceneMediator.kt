@@ -33,6 +33,7 @@ import com.tencent.kuikly.compose.ui.unit.IntSize
 import com.tencent.kuikly.compose.container.SuperTouchManager
 import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.core.datetime.DateTime
+import com.tencent.kuikly.compose.profiler.FrameCounters
 import com.tencent.kuikly.core.timer.Timer
 import com.tencent.kuikly.core.views.DivView
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -116,6 +117,7 @@ class ComposeSceneMediator(
 
     fun renderFrame() {
         val timestamp = DateTime.nanoTime()
+        FrameCounters.onTick()
         scene.vsyncTickConditions.onDisplayLinkTick {
             scene.render(null, timestamp)
         }
