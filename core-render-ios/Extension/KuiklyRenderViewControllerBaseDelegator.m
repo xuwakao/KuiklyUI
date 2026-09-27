@@ -48,6 +48,11 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
 @property (nonatomic, assign) BOOL fetchContextCoding;
 @property (nonatomic, strong, readwrite) KuiklyRenderView *renderView;
 @property (nonatomic, assign, getter=isViewDidAppear) BOOL viewDidAppear;
+// Ronaq (CHANGES.md §52): the controller disappeared while the app stayed in front — a full-screen
+// controller presented or pushed over it, or it was removed — and has not appeared again.
+@property (nonatomic, assign) BOOL coveredByController;
+// Ronaq (CHANGES.md §52): between the app entering the background and returning to the foreground.
+@property (nonatomic, assign) BOOL appInBackground;
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *eventLazyTasks;
 @property (nonatomic, strong) NSMutableSet<KRWeakObject *> *lifeCycleListenerSet;
 @property (nonatomic, assign) BOOL contentViewDidLoad;
@@ -122,11 +127,14 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
 }
 
 - (void)viewWillAppear {
+    [self p_showPageIfUncovered];
     [self p_disptachDelegatorLifeCycleWithSel:@selector(viewWillAppear) object:nil];
 }
 
 - (void)viewDidAppear {
     self.viewDidAppear = YES;
+    // A host that forwards only did-appear still shows the page before it resumes it.
+    [self p_showPageIfUncovered];
     [self sendWithEvent:VIEW_DID_APPEAR data:@{}];
 
     [self p_disptachDelegatorLifeCycleWithSel:@selector(viewDidAppear) object:nil];
@@ -140,6 +148,13 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
 - (void)viewDidDisappear {
     self.viewDidAppear = NO;
     [self sendWithEvent:VIEW_DID_DISAPPEAR data:@{}];
+    // Ronaq (CHANGES.md §52): a controller that disappears while the app stays in front is covered
+    // by a full-screen one or removed; nothing of its page can be seen, as with a stopped Android
+    // activity. A sheet that leaves the presenter on screen sends no disappearance.
+    if (!self.coveredByController) {
+        self.coveredByController = YES;
+        [self sendWithEvent:HOST_DID_HIDE data:@{}];
+    }
     [self p_disptachDelegatorLifeCycleWithSel:@selector(viewDidDisappear) object:nil];
 }
 
@@ -365,11 +380,28 @@ NSString *const KRPageDataSnapshotKey = @"kr_snapshotKey";
 }
 
 - (void)onReceiveApplicationDidEnterBackgroundNotification:(NSNotification *)notification {
+    self.appInBackground = YES;
     [self sendWithEvent:HOST_DID_HIDE data:@{}];
 }
 
 - (void)onReceiveApplicationWillEnterForegroundNotification:(NSNotification *)notification {
-    [self sendWithEvent:HOST_DID_SHOW data:@{}];
+    self.appInBackground = NO;
+    // A page still under a covering controller stays hidden until that controller goes.
+    if (!self.coveredByController) {
+        [self sendWithEvent:HOST_DID_SHOW data:@{}];
+    }
+}
+
+/// Ronaq (CHANGES.md §52): the controller is appearing again after it was covered; its page is shown,
+/// unless the app is in the background, where the foreground will show it.
+- (void)p_showPageIfUncovered {
+    if (!self.coveredByController) {
+        return;
+    }
+    self.coveredByController = NO;
+    if (!self.appInBackground) {
+        [self sendWithEvent:HOST_DID_SHOW data:@{}];
+    }
 }
 
 - (void)onReceiveApplicationWillResignActiveNotification:(NSNotification *)notification {
