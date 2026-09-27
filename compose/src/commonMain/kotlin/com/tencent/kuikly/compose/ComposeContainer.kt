@@ -26,6 +26,7 @@ import com.tencent.kuikly.compose.foundation.ExperimentalFoundationApi
 import com.tencent.kuikly.compose.foundation.lazy.layout.LocalKuiklyPrefetchScheduler
 import com.tencent.kuikly.compose.foundation.lazy.layout.PrefetchScheduler
 import com.tencent.kuikly.compose.container.LocalSlotProvider
+import com.tencent.kuikly.compose.container.PageFrameLoop
 import com.tencent.kuikly.compose.container.SlotProvider
 import com.tencent.kuikly.compose.coroutines.internal.ComposeDispatcher
 import com.tencent.kuikly.compose.foundation.event.OnBackPressedDispatcher
@@ -179,11 +180,27 @@ open class ComposeContainer :
         if (pageData.isOhOs || pageData.isMiniApp || pageData.isWeb) {
             mediator?.startFrameDispatcher()
         } else {
-            getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.registerVsync {
-                mediator?.renderFrame()
-            }
+            registerVsync()
+            // Ronaq fork (CHANGES.md §49): the vsync source stops while the page is not shown.
+            frameLoop.started()
         }
     }
+
+    private fun registerVsync() {
+        getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.registerVsync {
+            mediator?.renderFrame()
+        }
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §49): no frames while the page is not shown — the scene paused and, where
+     * the page's frames come from the vsync module, the module's source stopped.
+     */
+    private val frameLoop = PageFrameLoop(
+        setAppActive = { mediator?.updateAppState(it) },
+        startSource = ::registerVsync,
+        stopSource = { getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.unRegisterVsync() },
+    )
 
     private fun stopFrameDispatcher() {
         if (getPager().pageData.isOhOs) {
@@ -200,17 +217,21 @@ open class ComposeContainer :
 
     override fun pageDidAppear() {
         super.pageDidAppear()
-        mediator?.updateAppState(true)
+        // Resumes the scene (and redraws it at once); restarts the vsync source if it was stopped.
+        frameLoop.appeared()
         updateLifecycleState(Lifecycle.State.RESUMED)
     }
 
     override fun pageDidDisappear() {
         super.pageDidDisappear()
+        // Ronaq fork (CHANGES.md §49): pauses the scene and stops the vsync source.
+        frameLoop.disappeared()
         updateLifecycleState(Lifecycle.State.CREATED)
     }
 
     override fun pageWillDestroy() {
         super.pageWillDestroy()
+        frameLoop.destroyed()
         stopFrameDispatcher()
         mediator?.updateAppState(false)
         dispose()

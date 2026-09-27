@@ -56,6 +56,7 @@ import com.tencent.kuikly.core.render.android.expand.KuiklyRenderTracer
 import com.tencent.kuikly.core.render.android.expand.KuiklyRenderViewBaseDelegatorDelegate
 import com.tencent.kuikly.core.render.android.expand.component.image.KRImageLoader
 import com.tencent.kuikly.core.render.android.expand.component.text.TypeFaceLoader
+import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderModuleExport
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderShadowExport
 import com.tencent.kuikly.core.render.android.export.IKuiklyRenderViewExport
@@ -294,6 +295,16 @@ class KuiklyRenderView(
             }
         }
         super.onVisibilityChanged(changedView, visibility)
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §48): the window this page is drawn in was shown or hidden — the
+     * activity started or stopped (the app to the front or the background, the screen on or off).
+     * Every view's effective visibility changes with it ([KRVisibility]), so observers hear it.
+     */
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
     }
 
     override fun resume() {
