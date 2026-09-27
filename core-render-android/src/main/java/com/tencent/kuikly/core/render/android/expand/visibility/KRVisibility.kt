@@ -19,6 +19,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.css.ktx.getViewData
 import java.util.WeakHashMap
@@ -47,6 +48,13 @@ object KRVisibility {
     /** Hears the coalesced notices. Held weakly. */
     fun interface Observer {
         fun onViewTreeChanged(changes: Int)
+
+        /**
+         * Ronaq fork (CHANGES.md §51): whether this observer's answer depends on [view]'s own
+         * visibility — true for the view it watches. The default, true for any view, is the safe
+         * one: an observer that does not say is told about every transform, as before.
+         */
+        fun watches(view: View): Boolean = true
     }
 
     /** One layer of the chain from a view up to its root: itself, then each ancestor. */
@@ -81,7 +89,10 @@ object KRVisibility {
      * it once, not on every frame.
      */
     fun noteTransform(view: View, scaleX: Float, scaleY: Float) {
-        var changes = CHANGE_VISIBILITY
+        // Ronaq fork (CHANGES.md §51): a transform moves its view and what is under it. With
+        // nothing under it and no observer watching the view itself, no answer can change, so
+        // the per-frame transform of a leaf (an equaliser bar) posts no visibility notice.
+        var changes = if (isUnwatchedLeaf(view)) 0 else CHANGE_VISIBILITY
         val scale = maxOf(abs(scaleX), abs(scaleY))
         val largest = largestScales[view] ?: 1f
         if (scale > 1.001f && scale > largest + 0.001f) {
@@ -89,6 +100,15 @@ object KRVisibility {
             changes = changes or CHANGE_GEOMETRY
         }
         noteChange(changes)
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §51): [view] has no child views and no registered observer watches
+     * it, so moving it cannot change any observer's answer.
+     */
+    fun isUnwatchedLeaf(view: View): Boolean {
+        if (view is ViewGroup && view.childCount > 0) return false
+        return observers.keys.none { it.watches(view) }
     }
 
     /** [view]'s transform was reset (a recycled view): its scale history starts again. */

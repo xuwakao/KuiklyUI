@@ -3997,3 +3997,38 @@ item not placed is out. In Ronaq: `MeterClockTest` (a loop gated on it stops out
 its phase), and the perf probe's `meters(composed=…,running=…)` on the phones.
 
 **Upstreamable.** Yes, as a general "is this item near the glass" signal; upstream has none.
+
+## 51. A leaf nobody watches moves without a visibility notice — Android, iOS
+
+**Files** · Android `core-render-android/.../expand/visibility/KRVisibility.kt` (`Observer.watches`,
+`isUnwatchedLeaf`, `noteTransform`), `expand/component/KRImageView.kt` (its observer says it watches
+its own view) · iOS `core-render-ios/Extension/Category/UIView+KRVisibility.{h,m}`
+(`KRViewTreeObserver`'s optional `kr_watchesView:`, `kr_isUnwatchedLeaf`), `UIView+CSS.m`
+(`setCss_transform`) · tests: Android `KRLeafTransformNoticeTest.kt` (new), `KRVisibilityTest.kt`;
+iOS Ronaq `iosApp/RonaqAppTests/KRVisibilityTests.m`
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-15 (`docs/design/perf-startup-idle.md` §5.1): the
+owner's ruling of 2026-09-27 on Home's idle CPU
+**Date** · 2026-09-27
+
+**What upstream-plus-§42/§43 did.** Every transform the renderer applies posts a visibility notice
+(§42 iOS, §43 Android): a transform moves its view and what is under it on or off the glass. Every
+visibility observer then re-checks itself — on Android each image view and player walks its
+ancestor chain and asks for its global visible rect — once per main-loop turn.
+
+**What changed.** A transform on a view with no children that no registered observer watches posts
+no visibility notice: nothing is under it, and it is nobody's ancestor, so no observer's answer can
+change. An observer says what it watches — Android `Observer.watches(view)`, iOS `kr_watchesView:`.
+Unchanged where it cannot be sure: an Android observer that does not override `watches` watches
+every view; an iOS observer that is a view and does not implement `kr_watchesView:` watches itself,
+any other one every view. The geometry notice (a new largest scale) is unchanged.
+
+**Why.** Home's room-card equaliser bars are leaves whose transform changes every frame: 36 of them
+at idle, each posting a notice that made every image view on the page re-check itself, 60 times a
+second (Ronaq EVID-PSI-1 "main-thread transform ops", EVID-PSI-2 main thread 39 % of a core).
+
+**Verified.** Android `KRLeafTransformNoticeTest`: an unwatched leaf moves silently; the watched view
+and a view with children still post; an observer that does not say keeps hearing everything; the
+existing §43 notice tests (whose observer does not say) unchanged. iOS
+`testALeafNobodyWatchesMovesWithoutANotice` in Ronaq's hosted tests.
+
+**Upstreamable.** With §42/§43, if those go upstream.

@@ -23,6 +23,11 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 /// Hears the coalesced view-tree notices. Held weakly; main thread only.
 @protocol KRViewTreeObserver <NSObject>
 - (void)kr_viewTreeDidChange:(KRViewTreeChange)changes;
+@optional
+/// Ronaq (CHANGES.md §51): whether this observer's answer depends on `view`'s own visibility.
+/// An observer that is a view and does not implement this is taken to watch itself; any other
+/// observer that does not implement it is taken to watch every view, as before.
+- (BOOL)kr_watchesView:(UIView *)view;
 @end
 
 @interface UIView (KRVisibility)
@@ -44,6 +49,10 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 /// entrance) is never sized below its unscaled bounds. CGSizeZero while the view has no
 /// size.
 @property (nonatomic, readonly) CGSize kr_displayPixelSize;
+
+/// Ronaq (CHANGES.md §51): this view has no subviews and no registered observer watches it, so
+/// moving it (a transform) cannot change any observer's answer.
+@property (nonatomic, readonly) BOOL kr_isUnwatchedLeaf;
 
 /// Registers `observer` for the coalesced notices; a weak reference, so an observer that goes
 /// away simply stops hearing. Main thread only.

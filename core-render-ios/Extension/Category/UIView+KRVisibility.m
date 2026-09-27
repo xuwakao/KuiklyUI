@@ -83,6 +83,26 @@ static KRViewTreeChange sKRPendingViewTreeChanges = 0;
 #endif // [macOS]
 }
 
+- (BOOL)kr_isUnwatchedLeaf {
+    if (self.subviews.count > 0) {
+        return NO;
+    }
+    for (id<KRViewTreeObserver> observer in KRViewTreeObservers()) {
+        if ((id)observer == (id)self) {
+            return NO;
+        }
+        if ([observer respondsToSelector:@selector(kr_watchesView:)]) {
+            if ([observer kr_watchesView:self]) {
+                return NO;
+            }
+        } else if (![(NSObject *)observer isKindOfClass:UIView.class]) {
+            // Not a view and not saying what it watches: it may watch this one.
+            return NO;
+        }
+    }
+    return YES;
+}
+
 + (void)kr_addViewTreeObserver:(id<KRViewTreeObserver>)observer {
     if (observer) {
         [KRViewTreeObservers() addObject:observer];
