@@ -4004,3 +4004,35 @@ stub rule. Ronaq's hosted `KRVisibilityTests` (a view scrolled out of a clipping
 the same three cover cases with a higher `zPosition`; the notice), red on the clip and the covers before.
 
 **Upstreamable.** Yes: both are what "can be seen" means; the prop is generic.
+
+## 52. A cover that leaves the tree is a visibility change
+
+**Files** · `core-render-android/.../expand/visibility/KRVisibility.kt` (§35's file: `setCover` watches the
+cover's attachment) + test `KRVisibilityTest.kt` · upstream `core-render-ios/Handler/KuiklyRenderLayerHandler.mm`
+(`p_removeViewWithTag:` posts the notice for a removed cover)
+**Driven by** · the Ronaq owner's ruling of 2026-09-27 (「看不见情况下动画肯定要停播啊」: animations stop where
+they cannot be seen, and come back correctly); Ronaq `docs/design/image-pipeline.md` §20.15 (CR-A2); §51
+**Date** · 2026-09-27
+
+**What was wrong.** §51 posts a visibility notice when the `occludes` prop is set or cleared. A sheet closes by
+removal, not by clearing the prop, and the renderers post nothing for a removed view: the only notice came from
+the view's reuse reset (`resetCommonProp` / `css_occludes` cleared). Android skips that reset once the view type's
+reuse queue holds `MAX_REUSE_COUNT` (50) views (`KuiklyRenderLayerHandler.pushRenderViewHandlerToReuseQueue`);
+iOS skips it for a view whose reuse is off (`kr_reuseDisable`, an animation node). Then whatever lay wholly under
+the closed sheet stayed paused until some unrelated notice arrived — a scroll, a transform, a frame change.
+
+**The change.**
+
+- **Android.** `KRVisibility.setCover(view, true)` adds one shared `OnAttachStateChangeListener` to the cover (it
+  holds no view), which posts a visibility notice when the cover leaves or joins the window; `setCover(view, false)`
+  removes it. This covers every way a cover leaves: its own removal, an ancestor's, a parent's `removeView`.
+- **iOS.** `p_removeViewWithTag:` reads `css_occludes` before removing the view and posts a visibility notice for a
+  cover, whether or not the reuse reset runs. The renderer removes every node of a removed subtree itself
+  (`ViewContainer.removeRenderView`), so a cover inside it is removed through this path too.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRVisibilityTest.aCoverLeavingTheWindowPostsAVisibilityNotice`
+(a cover registers the listener, detach and attach post the notice, clearing the cover removes it), red before.
+Ronaq's hosted `KRVisibilityTests.testACoverTheRendererRemovesPostsANoticeWithoutItsReuseReset` (a KRView made a
+cover through the layer handler, reuse off, removed: one visibility notice), red before.
+
+**Upstreamable.** Yes, with §51.
