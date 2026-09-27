@@ -17,6 +17,20 @@ static NSHashTable<id<KRViewTreeObserver>> *KRViewTreeObservers(void) {
     return observers;
 }
 
+/// Ronaq (CHANGES.md §51): the observers a leaf has to ask — those that say what they watch
+/// (`kr_watchesView:`) and those that are not views and do not say (they watch every view). An
+/// observer that is a view and does not say watches only itself, which one lookup in the full
+/// registry answers, so a leaf's check does not grow with the image views on a page. A subset of
+/// the registry, weak like it.
+static NSHashTable<id<KRViewTreeObserver>> *KRViewTreeAskedObservers(void) {
+    static NSHashTable *observers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        observers = [NSHashTable weakObjectsHashTable];
+    });
+    return observers;
+}
+
 /// Changes posted since the last delivery; 0 when nothing is pending.
 static KRViewTreeChange sKRPendingViewTreeChanges = 0;
 
@@ -87,16 +101,16 @@ static KRViewTreeChange sKRPendingViewTreeChanges = 0;
     if (self.subviews.count > 0) {
         return NO;
     }
-    for (id<KRViewTreeObserver> observer in KRViewTreeObservers()) {
-        if ((id)observer == (id)self) {
+    // An observer that is this view watches it (whether or not it also says what it watches).
+    if ([KRViewTreeObservers() containsObject:(id<KRViewTreeObserver>)self]) {
+        return NO;
+    }
+    for (id<KRViewTreeObserver> observer in KRViewTreeAskedObservers()) {
+        if (![observer respondsToSelector:@selector(kr_watchesView:)]) {
+            // Not a view and not saying what it watches: it may watch this one.
             return NO;
         }
-        if ([observer respondsToSelector:@selector(kr_watchesView:)]) {
-            if ([observer kr_watchesView:self]) {
-                return NO;
-            }
-        } else if (![(NSObject *)observer isKindOfClass:UIView.class]) {
-            // Not a view and not saying what it watches: it may watch this one.
+        if ([observer kr_watchesView:self]) {
             return NO;
         }
     }
@@ -106,12 +120,17 @@ static KRViewTreeChange sKRPendingViewTreeChanges = 0;
 + (void)kr_addViewTreeObserver:(id<KRViewTreeObserver>)observer {
     if (observer) {
         [KRViewTreeObservers() addObject:observer];
+        if ([observer respondsToSelector:@selector(kr_watchesView:)] ||
+            ![(NSObject *)observer isKindOfClass:UIView.class]) {
+            [KRViewTreeAskedObservers() addObject:observer];
+        }
     }
 }
 
 + (void)kr_removeViewTreeObserver:(id<KRViewTreeObserver>)observer {
     if (observer) {
         [KRViewTreeObservers() removeObject:observer];
+        [KRViewTreeAskedObservers() removeObject:observer];
     }
 }
 
