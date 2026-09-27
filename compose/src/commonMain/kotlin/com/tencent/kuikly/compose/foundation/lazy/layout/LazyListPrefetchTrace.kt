@@ -14,10 +14,16 @@ import com.tencent.kuikly.compose.foundation.ExperimentalFoundationApi
 internal object LazyListPrefetchTrace {
     const val LOG_TAG = "LazyListPrefetchTrace"
 
-    fun log(message: String) {
+    /**
+     * Ronaq fork (CHANGES.md §55): the message is built only when tracing is on. Callers pass a
+     * lambda; `BaseComposeScene.render` alone used to format a ~150-character string every frame
+     * with tracing off.
+     */
+    inline fun log(message: () -> String) {
         if (ComposeFoundationFlags.isLazyListPrefetchTraceEnabled) {
-            println("$LOG_TAG $message")
-            ComposeFoundationFlags.lazyListPrefetchTraceListener?.invoke(message)
+            val text = message()
+            println("$LOG_TAG $text")
+            ComposeFoundationFlags.lazyListPrefetchTraceListener?.invoke(text)
         }
     }
 }

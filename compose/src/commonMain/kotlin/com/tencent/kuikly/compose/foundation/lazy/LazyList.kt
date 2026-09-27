@@ -141,9 +141,9 @@ internal fun LazyList(
                     )
                 if (state.lazyListPrefetchEnabled != resolved) {
                     state.lazyListPrefetchEnabled = resolved
-                    LazyListPrefetchTrace.log(
-                        "LazyList prefetchEnabled=$resolved modifierLocal=${ModifierLocalLazyListPrefetchEnabled.current} global=${ComposeFoundationFlags.isLazyListPrefetchEnabled}",
-                    )
+                    LazyListPrefetchTrace.log {
+                        "LazyList prefetchEnabled=$resolved modifierLocal=${ModifierLocalLazyListPrefetchEnabled.current} global=${ComposeFoundationFlags.isLazyListPrefetchEnabled}"
+                    }
                 }
             }
 //            .then(state.itemAnimator.modifier)

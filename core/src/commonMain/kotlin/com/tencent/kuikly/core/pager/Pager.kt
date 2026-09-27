@@ -581,6 +581,17 @@ abstract class Pager : ComposeView<ComposeAttr, ComposeEvent>(), IPager {
         const val PAGER_EVENT_ROOT_VIEW_SIZE_CHANGED = "rootViewSizeDidChanged"
         const val PAGER_EVENT_DID_APPEAR = "viewDidAppear"
         const val PAGER_EVENT_DID_DISAPPEAR = "viewDidDisappear"
+
+        /**
+         * Ronaq fork (CHANGES.md §58): the host stopped showing the page at all — the Android
+         * window went invisible (activity stopped), the iOS app entered the background, the web
+         * document was hidden. Unlike [PAGER_EVENT_DID_DISAPPEAR], which an iOS resign-active or
+         * an Android pause also sends while the page is still on the glass.
+         */
+        const val PAGER_EVENT_HOST_DID_HIDE = "hostDidHide"
+
+        /** Ronaq fork (CHANGES.md §58): the host shows the page again. */
+        const val PAGER_EVENT_HOST_DID_SHOW = "hostDidShow"
         const val PAGER_EVENT_FIRST_FRAME_PAINT = "pageFirstFramePaint"
         const val PAGER_EVENT_THEME_DID_CHANGED = "themeDidChanged"
         const val PAGER_EVENT_WILL_DESTROY = "pageWillDestroy"

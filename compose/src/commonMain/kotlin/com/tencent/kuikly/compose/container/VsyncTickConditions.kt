@@ -66,9 +66,28 @@ class VsyncTickConditions(
         scheduledRedrawsCount = FRAMES_COUNT_TO_SCHEDULE_ON_NEED_REDRAW
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §59): told when the paused state CHANGES, so the owner of the native
+     * tick can stop it while nothing needs drawing and start it again before the next draw. Null
+     * keeps upstream's behaviour: the tick fires every vsync and a paused scene skips the frame.
+     */
+    var onPausedChanged: ((paused: Boolean) -> Unit)? = null
+        set(value) {
+            field = value
+            // A new listener hears the current state at once.
+            reportedPaused = null
+            update()
+        }
+
+    private var reportedPaused: Boolean? = null
+
     private fun update() {
         val isUnpaused = isApplicationActive && (needsToBeProactive || scheduledRedrawsCount > 0)
         setPausedCallback(!isUnpaused)
+        if (reportedPaused != !isUnpaused) {
+            reportedPaused = !isUnpaused
+            onPausedChanged?.invoke(!isUnpaused)
+        }
     }
 
     companion object {

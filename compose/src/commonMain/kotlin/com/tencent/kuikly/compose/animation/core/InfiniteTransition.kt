@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import com.tencent.kuikly.compose.profiler.FrameCounters
 import com.tencent.kuikly.compose.ui.geometry.Size
 import com.tencent.kuikly.compose.ui.unit.Dp
 import kotlinx.coroutines.flow.first
@@ -174,6 +175,12 @@ class InfiniteTransition internal constructor(val label: String) {
             mutableStateOf<State<Long>?>(null)
         }
         if (isRunning || refreshChildNeeded) {
+            if (FrameCounters.enabled) {
+                DisposableEffect(this) {
+                    FrameCounters.onInfiniteRunning(label, true)
+                    onDispose { FrameCounters.onInfiniteRunning(label, false) }
+                }
+            }
             LaunchedEffect(this) {
                 var durationScale = 1f
                 // Restart every time duration scale changes
@@ -197,6 +204,7 @@ class InfiniteTransition internal constructor(val label: String) {
                         } else {
                             val playTimeNanos = ((currentTimeNanos - startTimeNanos) /
                                 durationScale).toLong()
+                            FrameCounters.onInfiniteFrame()
                             onFrame(playTimeNanos)
                         }
                     }

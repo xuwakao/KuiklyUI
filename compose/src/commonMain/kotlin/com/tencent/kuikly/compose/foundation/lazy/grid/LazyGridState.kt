@@ -61,6 +61,9 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import com.tencent.kuikly.compose.foundation.lazy.layout.InViewportCache
+import com.tencent.kuikly.compose.foundation.lazy.layout.LocalLazyItemInViewport
+import com.tencent.kuikly.compose.foundation.lazy.layout.indicesInViewport
 
 /**
  * Creates a [LazyGridState] that is remembered across compositions.
@@ -193,6 +196,27 @@ class LazyGridState @ExperimentalFoundationApi constructor(
      * @sample androidx.compose.foundation.samples.UsingGridLayoutInfoForSideEffectSample
      */
     val layoutInfo: LazyGridLayoutInfo get() = layoutInfoState.value
+
+    /** Ronaq fork (CHANGES.md §56): the answers behind [LocalLazyItemInViewport], per measure. */
+    private val inViewportCache = InViewportCache<LazyGridMeasureResult> { result ->
+        val vertical = result.orientation == Orientation.Vertical
+        indicesInViewport(
+            items = result.positionedItems,
+            viewportStart = result.viewportStartOffset,
+            viewportEnd = result.viewportEndOffset,
+            spacing = result.mainAxisItemSpacing,
+            index = { it.index },
+            mainStart = { if (vertical) it.offset.y else it.offset.x },
+            mainSize = { if (vertical) it.size.height else it.size.width },
+        )
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §56): whether item [index] is within one line of the viewport in the
+     * last measure. Reads the layout info, so a derived state over it follows every measure.
+     */
+    internal fun isItemInViewport(index: Int): Boolean =
+        inViewportCache.isInViewport(layoutInfoState.value, index)
 
     /**
      * [InteractionSource] that will be used to dispatch drag events when this

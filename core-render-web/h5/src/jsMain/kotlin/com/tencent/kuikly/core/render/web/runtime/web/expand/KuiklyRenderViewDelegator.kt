@@ -179,6 +179,24 @@ class KuiklyRenderViewDelegator(private val delegate: KuiklyRenderViewDelegatorD
         // If enabled, start forwarding container / window resize as
         // `rootViewSizeDidChanged` so pages relayout responsively.
         maybeStartAutoResizeForwarder(size)
+        startHostVisibilityForwarder()
+    }
+
+    /**
+     * Ronaq fork (CHANGES.md §58): a hidden document (another tab in front, the browser minimised)
+     * shows nothing of the page; the page hears `hostDidHide`, and `hostDidShow` when it is back.
+     * A host that also pauses the page on the same event keeps doing so; the two are separate.
+     */
+    private val hostVisibilityListener: (Event) -> Unit = {
+        val hidden = document.asDynamic().hidden as? Boolean ?: false
+        sendEvent(if (hidden) PAGER_EVENT_HOST_DID_HIDE else PAGER_EVENT_HOST_DID_SHOW, mapOf())
+    }
+
+    private fun startHostVisibilityForwarder() {
+        document.addEventListener("visibilitychange", hostVisibilityListener)
+        if (document.asDynamic().hidden as? Boolean == true) {
+            sendEvent(PAGER_EVENT_HOST_DID_HIDE, mapOf())
+        }
     }
 
     /**
@@ -187,6 +205,7 @@ class KuiklyRenderViewDelegator(private val delegate: KuiklyRenderViewDelegatorD
     fun onDetach() {
         // Stop auto resize forwarder before destroying renderView.
         stopAutoResizeForwarder()
+        document.removeEventListener("visibilitychange", hostVisibilityListener)
         runKuiklyRenderViewTask {
             it.destroy()
         }
@@ -706,3 +725,7 @@ class KuiklyRenderViewDelegator(private val delegate: KuiklyRenderViewDelegatorD
         private const val AUTO_RESIZE_THROTTLE_MS = 100
     }
 }
+
+/** Ronaq fork (CHANGES.md §58): as the core `Pager` names them. */
+private const val PAGER_EVENT_HOST_DID_HIDE = "hostDidHide"
+private const val PAGER_EVENT_HOST_DID_SHOW = "hostDidShow"

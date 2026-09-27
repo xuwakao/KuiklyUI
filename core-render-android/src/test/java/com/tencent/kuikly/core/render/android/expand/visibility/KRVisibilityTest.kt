@@ -72,7 +72,8 @@ class KRVisibilityTest {
 
     @Test
     fun aViewInAWindowThatIsNotShownIsNotVisible() {
-        // CHANGES.md §48: the activity stopped — the app in the background, the screen off.
+        // CHANGES.md §48 (and §58's host events, which share this term): the activity stopped — the
+        // app in the background, the screen off; a looping player under it must pause.
         assertFalse(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown), windowShown = false))
         assertTrue(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown), windowShown = true))
     }

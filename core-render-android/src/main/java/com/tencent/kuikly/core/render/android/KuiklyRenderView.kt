@@ -298,14 +298,25 @@ class KuiklyRenderView(
     }
 
     /**
-     * Ronaq fork (CHANGES.md §48): the window this page is drawn in was shown or hidden — the
-     * activity started or stopped (the app to the front or the background, the screen on or off).
-     * Every view's effective visibility changes with it ([KRVisibility]), so observers hear it.
+     * Ronaq fork (CHANGES.md §48, §58): the window this page is drawn in was shown or hidden — the
+     * activity started or stopped (the app to the front or the background, the screen on or off). A
+     * pause alone (a system sheet over the activity) leaves the window visible and sends nothing here.
+     * The page hears `hostDidHide` / `hostDidShow` (§58), and every visibility observer (a looping
+     * animated picture, a player) re-checks through the one window term of
+     * [KRVisibility.isEffectivelyVisible] (§48).
      */
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
+        val shown = visibility == VISIBLE
+        if (shown != windowShown) {
+            windowShown = shown
+            sendEvent(if (shown) PAGER_EVENT_HOST_DID_SHOW else PAGER_EVENT_HOST_DID_HIDE, mapOf())
+        }
         KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
     }
+
+    /** The window's visibility last reported to the page; a window starts shown. */
+    private var windowShown = true
 
     override fun resume() {
         sendEvent(VIEW_DID_APPEAR,
@@ -707,6 +718,10 @@ class KuiklyRenderView(
         private const val FEATURE = "feature"
 
         const val PAGER_EVENT_FIRST_FRAME_PAINT = "pageFirstFramePaint"
+
+        /** Ronaq fork (CHANGES.md §58): as the core `Pager` names them. */
+        const val PAGER_EVENT_HOST_DID_HIDE = "hostDidHide"
+        const val PAGER_EVENT_HOST_DID_SHOW = "hostDidShow"
         private const val ACCESSIBILITY_RUNNING = "isAccessibilityRunning" // 无障碍化是否开启
 
         private const val ON_BACK_PRESSED = "onBackPressed"

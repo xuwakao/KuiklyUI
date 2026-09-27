@@ -245,14 +245,19 @@ static char KRLargestNotedScaleKey;
         CATransform3D t = self.layer.transform;
         CGFloat scale = MAX(sqrt(t.m11 * t.m11 + t.m12 * t.m12), sqrt(t.m21 * t.m21 + t.m22 * t.m22));
         CGFloat largest = [objc_getAssociatedObject(self, &KRLargestNotedScaleKey) doubleValue];
-        KRViewTreeChange changes = KRViewTreeChangeVisibility;
+        // Ronaq (CHANGES.md §57): a transform moves its view and what is under it. A leaf that no
+        // observer watches changes no answer, so an equaliser bar's per-frame transform posts no
+        // visibility notice.
+        KRViewTreeChange changes = self.kr_isUnwatchedLeaf ? 0 : KRViewTreeChangeVisibility;
         if (scale > 1.001 && scale > largest + 0.001) {
             objc_setAssociatedObject(self, &KRLargestNotedScaleKey, @(scale), OBJC_ASSOCIATION_RETAIN);
             changes |= KRViewTreeChangeGeometry;
         }
         // Ronaq (§42): a transform moves what is under it — a pager page slid by its layer's
         // translation, an entrance banner — on or off the glass.
-        [UIView kr_noteViewTreeChange:changes];
+        if (changes != 0) {
+            [UIView kr_noteViewTreeChange:changes];
+        }
     }
 }
 

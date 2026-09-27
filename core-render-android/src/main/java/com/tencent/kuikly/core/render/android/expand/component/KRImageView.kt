@@ -170,9 +170,15 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
      */
     private val sizing = KRImageSizing()
     private var observingTree = false
-    private val treeChangeObserver = KRVisibility.Observer { changes ->
-        if (changes and KRVisibility.CHANGE_GEOMETRY != 0) upgradeIfGrown()
-        if (changes and KRVisibility.CHANGE_VISIBILITY != 0) applyVisibility()
+    private val treeChangeObserver = object : KRVisibility.Observer {
+        override fun onViewTreeChanged(changes: Int) {
+            if (changes and KRVisibility.CHANGE_GEOMETRY != 0) upgradeIfGrown()
+            if (changes and KRVisibility.CHANGE_VISIBILITY != 0) applyVisibility()
+        }
+
+        // Ronaq fork (CHANGES.md §57): this view's answer is its own chain's; a leaf elsewhere
+        // moving cannot change it.
+        override fun watches(view: View): Boolean = view === this@KRImageView
     }
 
     /*

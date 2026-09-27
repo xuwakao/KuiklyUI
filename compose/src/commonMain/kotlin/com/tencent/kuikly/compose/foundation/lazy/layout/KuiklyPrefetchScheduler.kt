@@ -54,16 +54,16 @@ internal class KuiklyPrefetchScheduler :
     private fun enqueue(task: PriorityTask) {
         queue.addLast(task)
         queue.sortWith(compareByDescending { it.priority })
-        LazyListPrefetchTrace.log(
-            "enqueue priority=${task.priority} queueSize=${queue.size}",
-        )
+        LazyListPrefetchTrace.log {
+            "enqueue priority=${task.priority} queueSize=${queue.size}"
+        }
     }
 
     override fun cancelAll() {
         val size = queue.size
         queue.clear()
         if (size > 0) {
-            LazyListPrefetchTrace.log("scheduler cancelAll queueSize=$size")
+            LazyListPrefetchTrace.log { "scheduler cancelAll queueSize=$size" }
         }
     }
 
@@ -86,9 +86,9 @@ internal class KuiklyPrefetchScheduler :
         val lastDrawForDeadline = if (lastDrawNanoTime > 0L) lastDrawNanoTime else nanoTime
         scope.nextFrameTimeNs = max(nanoTime, lastDrawForDeadline) + frameIntervalNs
 
-        LazyListPrefetchTrace.log(
-            "processRequests start isFrameIdle=$isFrameIdle queueSize=${queue.size}",
-        )
+        LazyListPrefetchTrace.log {
+            "processRequests start isFrameIdle=$isFrameIdle queueSize=${queue.size}"
+        }
 
         val startTime = DateTime.nanoTime()
         var scheduleForNextFrame = false
@@ -102,9 +102,9 @@ internal class KuiklyPrefetchScheduler :
         }
         traceValue("compose:lazy:prefetch:available_time_nanos", 0L)
         val spent = DateTime.nanoTime() - startTime
-        LazyListPrefetchTrace.log(
-            "processRequests done spentNs=$spent remainingQueue=${queue.size}",
-        )
+        LazyListPrefetchTrace.log {
+            "processRequests done spentNs=$spent remainingQueue=${queue.size}"
+        }
         return PrefetchProcessResult(spent, scheduleForNextFrame)
     }
 
@@ -115,11 +115,11 @@ internal class KuiklyPrefetchScheduler :
             val task = queue.first()
             val hasMoreWorkToDo = with(task.request) { scope.execute() }
             if (hasMoreWorkToDo) {
-                LazyListPrefetchTrace.log("runRequest paused hasMoreWork queueSize=${queue.size}")
+                LazyListPrefetchTrace.log { "runRequest paused hasMoreWork queueSize=${queue.size}" }
                 return true
             } else {
                 queue.removeFirst()
-                LazyListPrefetchTrace.log("runRequest finished queueSize=${queue.size}")
+                LazyListPrefetchTrace.log { "runRequest finished queueSize=${queue.size}" }
             }
             scope.isFrameIdle = false
         } else {

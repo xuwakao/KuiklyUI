@@ -52,6 +52,7 @@ internal actual object GlobalSnapshotManager {
                 channel.consumeEach {
                     runOnKuiklyThread {
                         sent.compareAndSet(1, 0)
+                        com.tencent.kuikly.compose.profiler.FrameCounters.onSnapshotApply()
                         Snapshot.sendApplyNotifications()
                     }
                 }

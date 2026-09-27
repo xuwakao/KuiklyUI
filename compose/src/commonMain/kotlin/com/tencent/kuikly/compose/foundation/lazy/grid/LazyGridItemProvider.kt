@@ -21,6 +21,7 @@ import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutItemProvider
 import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutKeyIndexMap
 import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutPinnableItem
 import com.tencent.kuikly.compose.foundation.lazy.layout.NearestRangeKeyIndexMap
+import com.tencent.kuikly.compose.foundation.lazy.layout.ProvideLazyItemInViewport
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.referentialEqualityPolicy
@@ -74,8 +75,11 @@ private class LazyGridItemProviderImpl(
     @Composable
     override fun Item(index: Int, key: Any) {
         LazyLayoutPinnableItem(key, index, state.pinnedItems) {
-            intervalContent.withInterval(index) { localIndex, content ->
-                content.item(LazyGridItemScopeImpl, localIndex)
+            // Ronaq fork (CHANGES.md §56).
+            ProvideLazyItemInViewport(index, state::isItemInViewport) {
+                intervalContent.withInterval(index) { localIndex, content ->
+                    content.item(LazyGridItemScopeImpl, localIndex)
+                }
             }
         }
     }

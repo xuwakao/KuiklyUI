@@ -28,10 +28,15 @@ class KRVsyncModule : KuiklyRenderBaseModule() {
 
     private var vsyncFrameCallback: Choreographer.FrameCallback? = null
 
+    /** Ronaq fork (CHANGES.md §59): ticks are paused; the callback stays registered. */
+    private var paused = false
+
     override fun call(method: String, params: String?, callback: KuiklyRenderCallback?): Any? {
         return when (method) {
             METHOD_REGISTER_VSYNC -> registerVsync(callback)
             METHOD_UNREGISTER_VSYNC -> unRegisterVsync(callback)
+            METHOD_PAUSE_VSYNC -> pauseVsync()
+            METHOD_RESUME_VSYNC -> resumeVsync()
             else -> super.call(method, params, callback)
         }
     }
@@ -40,9 +45,31 @@ class KRVsyncModule : KuiklyRenderBaseModule() {
         if (vsyncFrameCallback == null) {
             vsyncFrameCallback = Choreographer.FrameCallback {
                 callback?.invoke(null)
+                if (!paused) {
+                    Choreographer.getInstance().postFrameCallback(vsyncFrameCallback);
+                }
+            }
+            if (!paused) {
                 Choreographer.getInstance().postFrameCallback(vsyncFrameCallback);
             }
-            Choreographer.getInstance().postFrameCallback(vsyncFrameCallback);
+        }
+    }
+
+    /** Ronaq fork (CHANGES.md §59): nothing needs drawing; stop posting the frame callback. */
+    private fun pauseVsync() {
+        if (paused) return
+        paused = true
+        vsyncFrameCallback?.let { Choreographer.getInstance().removeFrameCallback(it) }
+    }
+
+    /** Ronaq fork (CHANGES.md §59): something needs drawing; tick again from the next vsync. */
+    private fun resumeVsync() {
+        if (!paused) return
+        paused = false
+        vsyncFrameCallback?.let {
+            // Never twice in one frame: a callback already posted is removed first.
+            Choreographer.getInstance().removeFrameCallback(it)
+            Choreographer.getInstance().postFrameCallback(it)
         }
     }
 
@@ -64,6 +91,8 @@ class KRVsyncModule : KuiklyRenderBaseModule() {
         const val MODULE_NAME = "KRVsyncModule"
         const val METHOD_REGISTER_VSYNC = "registerVsync"
         const val METHOD_UNREGISTER_VSYNC = "unRegisterVsync"
+        const val METHOD_PAUSE_VSYNC = "pauseVsync"
+        const val METHOD_RESUME_VSYNC = "resumeVsync"
 
     }
 }

@@ -33,6 +33,7 @@ import com.tencent.kuikly.compose.ui.unit.IntSize
 import com.tencent.kuikly.compose.container.SuperTouchManager
 import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.core.datetime.DateTime
+import com.tencent.kuikly.compose.profiler.FrameCounters
 import com.tencent.kuikly.core.timer.Timer
 import com.tencent.kuikly.core.views.DivView
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -114,8 +115,40 @@ class ComposeSceneMediator(
         return timer
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §59): hears the scene's paused state whenever it changes, so the owner
+     * of the native tick can stop it while nothing needs drawing. Null restores upstream's
+     * always-on tick. Set on the thread frames are rendered on.
+     */
+    fun setTickPausedListener(listener: ((paused: Boolean) -> Unit)?) {
+        if (listener == null) {
+            pausableTimer?.cancel()
+            pausableTimer = null
+        }
+        scene.vsyncTickConditions.onPausedChanged = listener
+    }
+
+    private var pausableTimer: Timer? = null
+
+    /**
+     * Ronaq fork (CHANGES.md §59): [startFrameDispatcher]'s timer, stopped while the scene is paused
+     * and started again when it is not. A fresh timer each time: `Timer.cancel` only ends its loop
+     * after the next period, and a restarted one could otherwise run twice.
+     */
+    fun startPausableFrameDispatcher() {
+        setTickPausedListener { paused ->
+            if (paused) {
+                pausableTimer?.cancel()
+                pausableTimer = null
+            } else if (pausableTimer == null) {
+                pausableTimer = startFrameDispatcher()
+            }
+        }
+    }
+
     fun renderFrame() {
         val timestamp = DateTime.nanoTime()
+        FrameCounters.onTick()
         scene.vsyncTickConditions.onDisplayLinkTick {
             scene.render(null, timestamp)
         }

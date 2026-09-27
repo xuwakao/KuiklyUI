@@ -194,9 +194,9 @@ class LazyLayoutPrefetchState() {
             isHighPriority,
             onItemPremeasured,
         ) ?: DummyHandle.also {
-            LazyListPrefetchTrace.log(
-                "WARN schedulePrecompositionAndPremeasure index=$index dropped: prefetchHandleProvider=null",
-            )
+            LazyListPrefetchTrace.log {
+                "WARN schedulePrecompositionAndPremeasure index=$index dropped: prefetchHandleProvider=null"
+            }
         }
     }
 
@@ -494,9 +494,9 @@ internal class PrefetchHandleProvider(
             .also {
                 executor.executeWithPriority(it, isHighPriority)
                 traceValue("compose:lazy:schedule_prefetch:index", index.toLong())
-                LazyListPrefetchTrace.log(
-                    "schedulePremeasure index=$index highPriority=$isHighPriority executor=${executor::class.simpleName}",
-                )
+                LazyListPrefetchTrace.log {
+                    "schedulePremeasure index=$index highPriority=$isHighPriority executor=${executor::class.simpleName}"
+                }
             }
 
     fun PrefetchScheduler.executeWithPriority(request: PrefetchRequest, isHighPriority: Boolean) {
@@ -563,7 +563,7 @@ internal class PrefetchHandleProvider(
         override fun cancel() {
             if (!isCanceled) {
                 isCanceled = true
-                LazyListPrefetchTrace.log("request cancel index=$index")
+                LazyListPrefetchTrace.log { "request cancel index=$index" }
                 cleanUp()
             }
         }
@@ -634,9 +634,9 @@ internal class PrefetchHandleProvider(
             val itemProvider = itemContentFactory.itemProvider()
             val isValid = !isCanceled && index in 0 until itemProvider.itemCount
             if (!isValid) {
-                LazyListPrefetchTrace.log(
-                    "executeRequest invalid index=$index canceled=$isCanceled",
-                )
+                LazyListPrefetchTrace.log {
+                    "executeRequest invalid index=$index canceled=$isCanceled"
+                }
                 cleanUp()
                 return false
             }
@@ -678,13 +678,13 @@ internal class PrefetchHandleProvider(
                         }
                         updateElapsedAndAvailableTime()
                         average.saveCompositionTimeNanos(elapsedTimeNanos)
-                        LazyListPrefetchTrace.log(
-                            "executeRequest composed index=$index elapsedNs=$elapsedTimeNanos startBudgetNs=$startBudgetNs availableNs=${availableTimeNanos()}",
-                        )
+                        LazyListPrefetchTrace.log {
+                            "executeRequest composed index=$index elapsedNs=$elapsedTimeNanos startBudgetNs=$startBudgetNs availableNs=${availableTimeNanos()}"
+                        }
                     } else {
-                        LazyListPrefetchTrace.log(
-                            "executeRequest defer compose index=$index availableNs=$availableTimeNanos avgComposeNs=${average.compositionTimeNanos}",
-                        )
+                        LazyListPrefetchTrace.log {
+                            "executeRequest defer compose index=$index availableNs=$availableTimeNanos avgComposeNs=${average.compositionTimeNanos}"
+                        }
                     }
                 }
                 if (!isComposed) {
@@ -816,9 +816,9 @@ internal class PrefetchHandleProvider(
                     // elapsedTimeNanos 只是最后一段 resume 的 delta；要拿整个 pausable composition
                     // 的真实总耗时，需要用 startBudgetNs - 当前剩余预算（availableTimeNanos 属性）。
                     val totalElapsedNs = startBudgetNs - availableTimeNanos
-                    LazyListPrefetchTrace.log(
-                        "executeRequest composed index=$index elapsedNs=$totalElapsedNs mode=pausable startBudgetNs=$startBudgetNs availableNs=${availableTimeNanos()}",
-                    )
+                    LazyListPrefetchTrace.log {
+                        "executeRequest composed index=$index elapsedNs=$totalElapsedNs mode=pausable startBudgetNs=$startBudgetNs availableNs=${availableTimeNanos()}"
+                    }
                 }
             }
         }

@@ -177,32 +177,32 @@ open class ComposeContainer :
     private fun startFrameDispatcher() {
         mediator?.renderFrame()
         val pageData = getPager().pageData
-        if (pageData.isOhOs || pageData.isMiniApp || pageData.isWeb) {
+        if (pageData.isOhOs || pageData.isMiniApp) {
             mediator?.startFrameDispatcher()
+        } else if (pageData.isWeb) {
+            // Ronaq fork (CHANGES.md §59): the web timer stops while nothing needs drawing.
+            mediator?.startPausableFrameDispatcher()
         } else {
-            registerVsync()
-            // Ronaq fork (CHANGES.md §49): the vsync source stops while the page is not shown.
-            frameLoop.started()
+            val vsync = getModule<VsyncModule>(VsyncModule.MODULE_NAME)
+            vsync?.registerVsync {
+                mediator?.renderFrame()
+            }
+            // Ronaq fork (CHANGES.md §59): the native tick stops while the scene is paused — nothing
+            // invalidated, no frame awaited, no pointer held — and starts again when it is not. The
+            // renderers of this fork know pauseVsync and resumeVsync; a stock one does not. Android's
+            // ignores them and keeps ticking; iOS's asserts in a debug build (KRBaseModule), and in a
+            // release build logs an error on every pause and resume and keeps ticking. Pair this with
+            // this fork's renderers.
+            if (vsync != null) {
+                mediator?.setTickPausedListener { paused ->
+                    if (paused) vsync.pauseVsync() else vsync.resumeVsync()
+                }
+            }
         }
     }
-
-    private fun registerVsync() {
-        getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.registerVsync {
-            mediator?.renderFrame()
-        }
-    }
-
-    /**
-     * Ronaq fork (CHANGES.md §49): no frames while the page is not shown — the scene paused and, where
-     * the page's frames come from the vsync module, the module's source stopped.
-     */
-    private val frameLoop = PageFrameLoop(
-        setAppActive = { mediator?.updateAppState(it) },
-        startSource = ::registerVsync,
-        stopSource = { getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.unRegisterVsync() },
-    )
 
     private fun stopFrameDispatcher() {
+        mediator?.setTickPausedListener(null)
         if (getPager().pageData.isOhOs) {
 
         } else {
@@ -210,23 +210,35 @@ open class ComposeContainer :
         }
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §58, §60): the host lifecycle — shown and resumed, which decide the
+     * lifecycle state — and the page's Compose frames, which follow it: held only while the host hides
+     * the page (CREATED), running while it is merely paused (STARTED). A held scene is paused through
+     * the upstream application term, and §59's listener then stops the native tick.
+     */
+    private val frameLoop = PageFrameLoop(setAppActive = { mediator?.updateAppState(it) })
+
     override fun created() {
         super.created()
-        updateLifecycleState(Lifecycle.State.CREATED)
+        // Ronaq fork (CHANGES.md §58): STARTED, not CREATED — the page is being put on the glass
+        // and no appear event has arrived yet.
+        updateLifecycleState(frameLoop.state)
     }
 
     override fun pageDidAppear() {
         super.pageDidAppear()
-        // Resumes the scene (and redraws it at once); restarts the vsync source if it was stopped.
+        // Ronaq fork (CHANGES.md §60): resumes the scene and redraws it at once, as upstream did on
+        // every appearance, unless the host still hides the page.
         frameLoop.appeared()
-        updateLifecycleState(Lifecycle.State.RESUMED)
+        updateLifecycleState(frameLoop.state)
     }
 
     override fun pageDidDisappear() {
         super.pageDidDisappear()
-        // Ronaq fork (CHANGES.md §49): pauses the scene and stops the vsync source.
+        // Ronaq fork (CHANGES.md §58, §60): STARTED while the host still shows the page (a pause, a
+        // resign-active), and its frames keep running; CREATED once it has hidden it.
         frameLoop.disappeared()
-        updateLifecycleState(Lifecycle.State.CREATED)
+        updateLifecycleState(frameLoop.state)
     }
 
     override fun pageWillDestroy() {
@@ -240,7 +252,10 @@ open class ComposeContainer :
     }
 
     private fun updateLifecycleState(state: Lifecycle.State) {
-        (lifecycleOwner.lifecycle as LifecycleRegistry).currentState = state
+        val registry = lifecycleOwner.lifecycle as LifecycleRegistry
+        // Ronaq fork (CHANGES.md §58): a host event arriving after destruction changes nothing.
+        if (registry.currentState == Lifecycle.State.DESTROYED) return
+        registry.currentState = state
     }
 
     @OptIn(InternalComposeUiApi::class)
@@ -305,6 +320,13 @@ open class ComposeContainer :
         } else if (pagerEvent == PAGER_EVENT_WINDOW_SIZE_CHANGED) {
             configuration?.onWindowSizeChanged(eventData.optDouble(WIDTH),eventData.optDouble(
                 HEIGHT))
+        } else if (pagerEvent == PAGER_EVENT_HOST_DID_HIDE) {
+            // Ronaq fork (CHANGES.md §58, §60): CREATED, and the page's frames held.
+            frameLoop.hid()
+            updateLifecycleState(frameLoop.state)
+        } else if (pagerEvent == PAGER_EVENT_HOST_DID_SHOW) {
+            frameLoop.showed()
+            updateLifecycleState(frameLoop.state)
         } else if (pagerEvent == PAGER_EVENT_CONFIGURATION_DID_CHANGED) {
             val fontWeightScale = eventData.optDouble("fontWeightScale", 1.0)
             val fontSizeScale = eventData.optDouble("fontSizeScale", 1.0)

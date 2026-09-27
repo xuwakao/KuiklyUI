@@ -3937,6 +3937,13 @@ scene and stops the source, a redraw asked for meanwhile waits; an appearance re
 per disappearance; a source started hidden stops; nothing after destroy), red against a stub that did
 what `ComposeContainer` did.
 
+**Superseded in part (2026-09-27, §60).** The trigger and the source stop are gone. Frames are held only
+while the host hides the page (§58's CREATED), not on every disappearance: a page merely paused — a popup,
+a system dialog, Control Center — keeps drawing (the Ronaq owner's ruling Q-2/Q-6, Ronaq
+`docs/design/image-pipeline.md` §20.17, TASK-FU17). The vsync source is no longer unregistered: a held
+scene is paused through the same `isApplicationActive` term, and §59's listener stops the native tick.
+`PageFrameLoop` and its test were rewritten for that.
+
 **Upstreamable.** Yes, as the use of the upstream term it was written for.
 
 ## 50. One-shots pause where nobody can see them
@@ -4036,3 +4043,376 @@ Ronaq's hosted `KRVisibilityTests.testACoverTheRendererRemovesPostsANoticeWithou
 cover through the layer handler, reuse off, removed: one visibility notice), red before.
 
 **Upstreamable.** Yes, with §51.
+
+## 53. Frame counters an application can read — every host
+
+**Files** · `compose/.../profiler/FrameCounters.kt` (new) · the hooks, one line each:
+`compose/.../ComposeSceneMediator.kt` (`renderFrame`: a tick), `compose/.../ui/scene/BaseComposeScene.kt`
+(`render`: a render and why; `sendPointerEvent`: a press), `compose/.../ui/node/KNode.kt` (`draw`:
+drawn or skipped), `compose/.../animation/core/InfiniteTransition.kt` (`run`: running by label, a
+frame), `GlobalSnapshotManager.{android,native,js}.kt` (an apply sent) · test
+`compose/src/commonTest/.../profiler/FrameCountersTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE (`docs/design/perf-startup-idle.md` §5.5 TOOL-1): the
+owner's rulings of 2026-09-27 that Home's idle CPU is to be fixed first and that nothing unseen may
+animate need a count, on a device and in a product-like build, of what the frame path does
+**Date** · 2026-09-27
+
+**What.** A counter object and hooks that feed it. Off by default; nothing reads it unless an
+application switches it on (`FrameCounters.enabled = true`, before the first frame) and drains it
+(`FrameCounters.drain()` returns one line and starts the next window).
+
+Counted: native ticks delivered to the scene; renders that ran, with what made each necessary
+(frame-clock awaiters, a snapshot/layout/draw invalidation, input or a held pointer); `KNode`
+draws and skips (and, from §54, nodes only traversed); snapshot apply notifications sent; frames
+delivered to infinite transitions; the infinite transitions running, by label (a level, carried
+across windows); the delay from a pointer press to the end of the next render.
+
+**Why.** The scratch probe that found Home's idle cost (Ronaq `docs/evidence/perf-2026-09-27/
+profile/ios/probe-patch.diff`) was never committed, so no later change could be measured the same
+way. Profilers see CPU; they do not see how many renders a second ran while the app was hidden, or
+which label kept an animation clock alive.
+
+**Cost when off.** One boolean read per tick, render, node draw and apply; `InfiniteTransition.run`
+composes one extra `DisposableEffect` only while counting. Behaviour is unchanged either way.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `FrameCountersTest` (off counts nothing; a
+window counts and the next starts from zero; running transitions carry over; a press is timed once
+to the end of the next render). On a device through Ronaq's `PerfProbe` (`-perfProbe 1`).
+
+**Integration note (2026-09-27).** §47's `ComposeFrameCounter` (two always-on totals the image pipeline's
+readouts difference) and these switchable counters (the perf probe's window) were written on separate
+branches and both stay: they have different readers and neither changes what the frame loop does.
+
+**Upstreamable.** Possibly, as a debug facility; it is shaped for one reader per process.
+
+**Follow-up (2026-09-28).** A press that renders nothing (a tap on an inert area) no longer stays
+pending until some later render: a press older than one second is dropped when the next render ends,
+and replaced by a newer press. Found on the OPPO (Ronaq EVID-PSI-9a).
+
+**Follow-up (review, 2026-09-27).** `BaseComposeScene.render` checks `FrameCounters.enabled` before
+calling `onRenderStart`: its arguments (`BroadcastFrameClock.hasAwaiters`, the invalidation tracker)
+take a lock each, and were evaluated on every render with the counters off. "One boolean read" is
+now true of that hook too.
+
+## 54. A changed node is drawn; its ancestors are only passed through — every host
+
+**Files** · `compose/.../ui/node/DrawMarks.kt` (new) · `compose/.../ui/node/KNode.kt` (`draw`,
+`invalidateDraw`) · test `compose/src/commonTest/.../ui/node/DrawMarksTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE, the owner's ruling of 2026-09-27 that Home's idle CPU is
+fixed first (「首页空闲 CPU 偏高：要优先解决」); Ronaq `docs/design/perf-startup-idle.md` §16 R-2 (the
+design review's finding that a direct layer write is wrong on this fork)
+**Date** · 2026-09-27
+
+**What upstream does.** `KNode.invalidateDraw` sets the node's one flag and calls the parent's,
+up to the root. `KNode.draw` returns at once for an unflagged node and otherwise resets its view,
+runs the coordinator chain (every layer's `performDrawLayer` multiplying its transform and alpha
+into the view, every draw modifier, then the children) and flushes the view's props.
+
+**What went wrong.** The flag meant two things: "my own draw must run" and "a node below me must
+be reached". Every ancestor of a changed node therefore reset, redrew and flushed its own view
+for nothing — its props came out equal and `setProp` discarded them, after the matrix decomposition
+and string building had been paid. Home's room-card level meters change a `graphicsLayer` on 30
+bars every frame; on the iPhone that was 81 `KNode` draws per frame (debug 18.1 %, release 6.2 %
+of a core; Ronaq EVID-PSI-1), on the OPPO 96 per frame (EVID-PSI-4).
+
+**What changed.** `DrawMarks` keeps the two meanings apart: `self` (the node's own draw must run)
+and `descendant` (the pass must come through). `invalidateDraw` marks the node itself and marks its
+ancestors `descendant`, stopping at the first already marked. `draw`:
+
+- **Draw** — marked itself: exactly upstream's draw, children included.
+- **Visit** — marked for a descendant only: the node's view is left alone; its placed children are
+  drawn in z-order, as `InnerNodeCoordinator.performDraw` does. Not when one of its layers is at
+  alpha ≤ 0 (`isTransparent()`), because its own draw would not reach them either
+  (`RenderNodeLayer.performDrawLayer`).
+- **Skip** — nothing here or below changed.
+
+Every kind of change takes this path (transform, alpha, clip, size, a new draw modifier): the
+changed node always runs its whole own draw, so a node with several layers still combines them
+exactly as before. A direct write of one layer's values to the view — the first design — would
+have overwritten the combination (`.alpha(a).graphicsLayer{…}`), since every layer of a node
+writes into the node's one view (`NodeCoordinator.updateLayerBlock` hands each layer the
+`KNode`'s view).
+
+**Why the props are unchanged.** A `KNode` draws into its own native view and a parent's view holds
+nothing of its children's; `KuiklyCanvas` carries state only inside a `CanvasView`'s own pass, and
+`KNode.draw` sets `canvas.view` itself. A node's props are therefore a function of what its own draw
+reads, so a node whose inputs did not change produces the same props whether or not it is redrawn.
+The one difference: a draw modifier that does not call `drawContent()` no longer keeps a changed
+descendant from being written. On this fork that never hid the descendant (a native view); it left
+its props stale.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `DrawMarksTest` runs upstream's pass and this
+one side by side on 400 random trees with random changes, placements and alpha-0 layers for 30
+frames each, and asserts that every node ends every frame having drawn the same state version under
+both (the same props) and that this pass runs no more own draws; a chain of four under a changing
+leaf draws only the leaf (upstream: all four, every frame); a change under an alpha-0 parent waits
+until the parent is visible, as upstream. Made to fail by breaking the upward mark (all four cases
+fail). On devices: Ronaq's perf probe (`nodes(draw=…,visit=…)`) and the KRInvalidationProbe A/B.
+
+**Upstreamable.** Yes: a general cost of this renderer, nothing Ronaq-specific.
+
+## 55. The prefetch trace builds no message while tracing is off — every host
+
+**Files** · `compose/.../foundation/lazy/layout/LazyListPrefetchTrace.kt` (`log` takes a lambda) ·
+its 24 call sites: `ui/scene/BaseComposeScene.kt`, `foundation/lazy/LazyList.kt`,
+`LazyListPrefetchStrategy.kt`, `LazyListState.kt`, `foundation/lazy/layout/CacheWindowLogic.kt`,
+`KuiklyPrefetchScheduler.kt`, `LazyLayout.kt`, `LazyLayoutPrefetchState.kt` · test
+`compose/src/commonTest/.../foundation/lazy/layout/LazyListPrefetchTraceTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE (`docs/design/perf-startup-idle.md` OPT-4): the owner's
+ruling of 2026-09-27 on Home's idle CPU
+**Date** · 2026-09-27
+
+**What.** `LazyListPrefetchTrace.log(message: String)` became `inline fun log(message: () -> String)`;
+every call passes its message as a lambda. Behaviour with tracing on is unchanged (the message is
+built once and goes to `println` and the listener, as before).
+
+**Why.** The argument was built before `log` checked the flag, so `BaseComposeScene.render` formatted
+a ~150-character string on every frame with tracing off — allocation every frame, which on Kotlin/
+Native feeds the GC (Ronaq EVID-PSI-3, "diagnostic work").
+
+**Verified.** `LazyListPrefetchTraceTest`: off, the lambda never runs; on, it runs once and the
+listener hears the message.
+
+**Upstreamable.** Yes.
+
+## 56. A lazy item knows whether it is within a line of the viewport — every host
+
+**Files** · `compose/.../foundation/lazy/layout/LazyItemInViewport.kt` (new: `LocalLazyItemInViewport`,
+`ProvideLazyItemInViewport`, `indicesInViewport`, `InViewportCache`) · `compose/.../foundation/lazy/
+LazyListItemProvider.kt`, `LazyListState.kt`, `grid/LazyGridItemProvider.kt`, `grid/LazyGridState.kt`
+(`isItemInViewport`, the provider around each item) · test `compose/src/commonTest/.../foundation/
+lazy/layout/LazyItemInViewportTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE: the owner's rulings of 2026-09-27 that Home's idle CPU
+is fixed first and that an animation which cannot be seen does not run; Ronaq
+`docs/design/perf-startup-idle.md` OPT-1 and §16 R-4, R-8
+**Date** · 2026-09-27
+
+**What.** A public composition local, `LocalLazyItemInViewport: Boolean`, provided to every item of
+a `LazyColumn` / `LazyRow` and a `LazyVerticalGrid` / `LazyHorizontalGrid`: true when the item, as
+the list's last measure placed it, overlaps the viewport widened by one line on each side (the
+item's own main-axis size plus the item spacing), ANDed with the value the list itself is composed
+under. True outside any lazy list; true for every item before a list's first measure (nothing
+placed yet). An item the last measure did not place reads false: a list places everything it
+composes for the viewport and its beyond-bounds lines, so such an item is on its way in and gets
+its answer with the next measure. A pinned sticky header is placed at the viewport's edge and
+reads true. Staggered grids and pagers are not covered (no looping content needed them; a pager's
+pages have their own visibility in Ronaq).
+
+The answer is computed once per measure result per list state (`InViewportCache`, a set of the
+placed indices within one line) and read by each item through a `derivedStateOf`, so a measure
+recomposes only the readers whose answer changed.
+
+**Why.** A grid composes `beyondBoundsLineCount = 3` lines past each edge (`LazyGridDsl.kt:78`), and
+content in those items runs whatever it runs: on Ronaq's Home, 12 room cards animated a level meter
+at 60 fps with 6 of them on the glass (iPhone: 10 running, 4 visible). The one-line margin exists
+because on this renderer the native scroller moves first and Compose places items after the fact
+(`ScrollableStateExtensions.kt`, `kuiklyOnScroll`), so an answer from Compose's own layout trails
+the glass; the next line must already be running when it arrives. `onGloballyPositioned` bounds
+cannot answer the question on this fork (they do not follow native scrolling).
+
+**Verified.** `LazyItemInViewportTest`: the viewport and one line either side are in view, two lines
+are not; content padding (a negative viewport start) widens it; a pinned header counts whatever its
+index; nothing placed or no viewport means every item counts; the cache answers per result, and an
+item not placed is out. In Ronaq: `MeterClockTest` (a loop gated on it stops out of view and keeps
+its phase), and the perf probe's `meters(composed=…,running=…)` on the phones.
+
+**Upstreamable.** Yes, as a general "is this item near the glass" signal; upstream has none.
+
+## 57. A leaf nobody watches moves without a visibility notice — Android, iOS
+
+**Files** · Android `core-render-android/.../expand/visibility/KRVisibility.kt` (`Observer.watches`,
+`isUnwatchedLeaf`, `noteTransform`), `expand/component/KRImageView.kt` (its observer says it watches
+its own view) · iOS `core-render-ios/Extension/Category/UIView+KRVisibility.{h,m}`
+(`KRViewTreeObserver`'s optional `kr_watchesView:`, `kr_isUnwatchedLeaf`), `UIView+CSS.m`
+(`setCss_transform`) · tests: Android `KRLeafTransformNoticeTest.kt` (new), `KRVisibilityTest.kt`;
+iOS Ronaq `iosApp/RonaqAppTests/KRVisibilityTests.m`
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-15 (`docs/design/perf-startup-idle.md` §5.1): the
+owner's ruling of 2026-09-27 on Home's idle CPU
+**Date** · 2026-09-27
+
+**What upstream-plus-§42/§43 did.** Every transform the renderer applies posts a visibility notice
+(§42 iOS, §43 Android): a transform moves its view and what is under it on or off the glass. Every
+visibility observer then re-checks itself — on Android each image view and player walks its
+ancestor chain and asks for its global visible rect — once per main-loop turn.
+
+**What changed.** A transform on a view with no children that no registered observer watches posts
+no visibility notice: nothing is under it, and it is nobody's ancestor, so no observer's answer can
+change. An observer says what it watches — Android `Observer.watches(view)`, iOS `kr_watchesView:`.
+Unchanged where it cannot be sure: an Android observer that does not override `watches` watches
+every view; an iOS observer that is a view and does not implement `kr_watchesView:` watches itself,
+any other one every view. The geometry notice (a new largest scale) is unchanged.
+
+**Why.** Home's room-card equaliser bars are leaves whose transform changes every frame: 36 of them
+at idle, each posting a notice that made every image view on the page re-check itself, 60 times a
+second (Ronaq EVID-PSI-1 "main-thread transform ops", EVID-PSI-2 main thread 39 % of a core).
+
+**Verified.** Android `KRLeafTransformNoticeTest`: an unwatched leaf moves silently; the watched view
+and a view with children still post; an observer that does not say keeps hearing everything; the
+existing §43 notice tests (whose observer does not say) unchanged. iOS
+`testALeafNobodyWatchesMovesWithoutANotice` in Ronaq's hosted tests.
+
+**Follow-up (review, 2026-09-27): iOS asks only the observers that can answer.** The first iOS
+version scanned every registered observer for every moving leaf, and on iOS every image view with a
+source is an observer (it reacts only to the geometry notice; `KRImageView` ignores visibility). The
+ask grew with the page: in Ronaq's hosted bench, 36 bars a frame cost 53.6 µs with 20 observing views
+and 1304 µs with 1000, against 1.8 µs and 42 µs for the one delivery a frame it replaced. Now the
+registry keeps a second weak table of the observers that must be asked — those implementing
+`kr_watchesView:` and those that are not views — and an observing view is found by one lookup in the
+full registry (it watches only itself). Same answers; the bench measures 7.7 µs and 9.4 µs. Tests:
+`testALeafIsWatchedOnlyByItselfByAnAskerThatSaysSoOrByAnObserverThatDoesNotSay`,
+`testTheLeafCheckDoesNotGrowWithTheObservingViews` (Ronaq's hosted tests). Whether the notice saved
+outweighs the ask on a phone is measured on the iPhone (Ronaq design §18 I-2).
+
+**Upstreamable.** With §42/§43, if those go upstream.
+
+## 58. A page knows when its host stops showing it — every host
+
+**Files** · core `core/.../pager/Pager.kt` (`PAGER_EVENT_HOST_DID_HIDE`, `…_SHOW`) · compose
+`compose/.../HostLifecycle.kt` (new), `compose/.../ComposeContainer.kt` (the lifecycle from it) ·
+Android `core-render-android/.../KuiklyRenderView.kt` (`onWindowVisibilityChanged`),
+`expand/visibility/KRVisibility.kt` (the window term) · iOS
+`core-render-ios/Extension/KuiklyRenderViewControllerBaseDelegator.m` (background / foreground; a
+covered controller) ·
+web `core-render-web/h5/.../expand/KuiklyRenderViewDelegator.kt` (`visibilitychange`) · tests
+`compose/src/commonTest/.../HostLifecycleTest.kt` (new), Android `KRVisibilityTest.kt`
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-5 and design §16 R-3, R-5: the owner's ruling of
+2026-09-27 that an animation which cannot be seen does not run, "hidden" defined with the owner's
+default as stopped or backgrounded, not merely paused (Ronaq Q-PSI-3)
+**Date** · 2026-09-27
+
+**What upstream does.** `ComposeContainer` sets its lifecycle to CREATED at `created()` and on
+`pageDidDisappear`, RESUMED on `pageDidAppear`. Android pause and iOS resign-active both send
+`viewDidDisappear`, so a page under a system sheet was CREATED, and a page whose app had gone to
+the background was CREATED too — the two could not be told apart, and nothing said "hidden".
+
+**What changed.**
+- Two new pager events: `hostDidHide` and `hostDidShow`. Android sends them from the render view's
+  window visibility (`onWindowVisibilityChanged`: GONE while the activity is stopped), iOS from
+  did-enter-background / will-enter-foreground, the web from `document.visibilitychange` (sent
+  once at attach if the document is already hidden). No host code needs to change.
+- `ComposeContainer` keeps two facts, `shown` (true until `hostDidHide`) and `resumed`
+  (appear/disappear), and derives the state: shown and resumed → RESUMED; shown only → STARTED;
+  not shown → CREATED (`HostLifecycle`). So a launch before the first appear event is STARTED (it
+  was CREATED), a pause or resign-active is STARTED (it was CREATED), and the events may arrive in
+  either order (Android reports the window visible after `onResume`). A host event after
+  `pageWillDestroy` changes nothing.
+- Android's `KRVisibility.isEffectivelyVisible` is false while the window is not visible, and the
+  window change posts a visibility notice, so looping pictures and players pause while the
+  activity is stopped, as iOS's players already do on `appActive`.
+
+`updateAppState` and the scene's frame policy are unchanged: the scene keeps composing while hidden.
+(Since §60 the scene's frames are held while the page is CREATED.)
+
+**Integration note (2026-09-27).** §48, on another branch, gave Android's predicate the same window term
+and the same `onWindowVisibilityChanged` notice. The merged fork keeps one term
+(`KRVisibility.isEffectivelyVisible(…, windowShown)`, §48's, which also makes `visibleOrUnknown` answer
+"not visible") and one override, which sends this section's host events and posts the one notice.
+
+**Why.** An application that must stop what nobody can see needs to know the difference between
+"paused, still on the glass" and "not on the glass"; the androidx lifecycle states already mean
+exactly that (ON_PAUSE → STARTED, ON_STOP → CREATED).
+
+**Verified.** `HostLifecycleTest`: launch before any appear event is STARTED; paused-but-shown is
+STARTED; hidden is CREATED; both return orders end RESUMED. Android `KRVisibilityTest`: nothing in
+a hidden window is visible. On devices through Ronaq's perf probe (renders while hidden).
+
+**Follow-up (review, 2026-09-27): iOS hides a covered page, as Android does.** On Android a page whose
+activity another full-screen activity covers is stopped, so CREATED. On iOS a controller covered by a
+full-screen presented or pushed one gets only `viewDidDisappear`, which is STARTED, so its loops kept
+running unseen. The delegator now sends `hostDidHide` after a `viewDidDisappear` (the app still in
+front: a covering controller, or the controller removed) and `hostDidShow` when the controller
+appears again (`viewWillAppear`, or `viewDidAppear` for a host that forwards only that), unless the
+app is in the background — the foreground then shows it; a page still covered when the app returns
+stays hidden. A sheet that leaves the presenter on screen sends no disappearance and changes nothing.
+Test: `KRHostVisibilityEventTests` (Ronaq's hosted tests, a delegator that records its events).
+
+**Upstreamable.** Yes.
+
+## 59. The native tick stops while nothing needs drawing — Android, iOS, web
+
+**Files** · compose `compose/.../container/VsyncTickConditions.kt` (`onPausedChanged`),
+`compose/.../ComposeSceneMediator.kt` (`setTickPausedListener`, `startPausableFrameDispatcher`),
+`compose/.../ComposeContainer.kt` (the wiring) · core `core/.../module/VsyncModule.kt` (`pauseVsync`,
+`resumeVsync`) · Android `core-render-android/.../expand/module/KRVsyncModule.kt` · iOS
+`core-render-ios/Extension/Modules/KRVsyncModule.mm` · test
+`compose/src/commonTest/.../container/VsyncTickConditionsTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-7 (`docs/design/perf-startup-idle.md` §5.3): the owner's
+rulings of 2026-09-27 on idle CPU and on nothing unseen running; EVID-PSI-2 measured a static screen
+on the OPPO at 16.2 % of a core, most of it the per-vsync tick with nothing to draw
+**Date** · 2026-09-27
+
+**What upstream does.** `VsyncTickConditions` computes "paused" (application inactive, or no redraw
+scheduled and no pointer held) and the scene skips a paused frame (`BaseComposeScene.render`), but the
+native tick is never told: Android's Choreographer callback re-posts itself every vsync, iOS's 60 Hz
+GCD timer fires on the Kotlin queue, the web's 12 ms timer runs — each tick crossing into Kotlin for
+nothing.
+
+**What changed.** `VsyncTickConditions.onPausedChanged` reports the paused state when it changes
+(and once when set). `ComposeContainer` passes it to the vsync module: paused → `pauseVsync`
+(Android removes the frame callback and stops re-posting; iOS suspends the timer), unpaused →
+`resumeVsync` (Android posts the callback for the next vsync; iOS resumes the timer). On the web the
+mediator's timer is cancelled and a fresh one started. The unpause sources are upstream's own: an
+invalidation (`needRedraw`), new frame-clock awaiters, a pointer press, the application becoming
+active; the two-frame linger (`FRAMES_COUNT_TO_SCHEDULE_ON_NEED_REDRAW`) is unchanged, so a motion is
+not cut between two of its frames. HarmonyOS and mini-programs keep the always-on timer. The Kotlin
+side and this fork's renderers go together: a stock Android renderer ignores `pauseVsync` and keeps
+ticking, but a stock iOS renderer asserts on the unknown method in a debug build (`KRBaseModule`) and
+logs an error on every pause and resume in a release build (corrected 2026-09-27; this said every host
+"keeps ticking, as before"). The iOS timer is resumed before it is cancelled or released — on
+unregister and, since the review of 2026-09-27, in `dealloc`: a module freed while paused (its
+`unRegisterVsync` dropped with the render core) released a suspended GCD source, which libdispatch
+traps on (reproduced in Ronaq's hosted `KRVsyncModuleTests`: `_dispatch_queue_xref_dispose` from
+`-[KRVsyncModule .cxx_destruct]`).
+
+**Cost.** The first frame after a rest can come one vsync later than before (the resume crosses to the
+native side). On iOS the resume is an asynchronous module call: it rides the render core's batch to the
+main queue and the timer then fires on the Kotlin queue, so it also waits for the main thread to be
+free. Kept asynchronous: a synchronous call would run on the Kotlin thread while `registerVsync` and
+`unRegisterVsync` run on the main thread, and the module's state would need a lock; the rendered frame
+reaches the glass through the main thread anyway. Ronaq measures press-to-render on devices (AC-PSI-7:
+≤ 2 vsyncs).
+
+**Verified.** `VsyncTickConditionsTest`: a new listener hears the current state; a redraw resumes and,
+two frames later, pauses once; an animation that asks every frame gets no notice; a held pointer keeps
+the tick and its release pauses; an inactive application pauses. iOS `KRVsyncModuleTests` (Ronaq's
+hosted tests): a pause stops the ticks, twice is still one, a resume restarts them, an unregister while
+paused and a release while paused are clean. On devices: the perf probe's `ticks=` at rest.
+
+**Upstreamable.** Yes.
+
+## 60. Compose frames are held only while the host hides the page — every host
+
+**Files** · `compose/.../container/PageFrameLoop.kt` (rewritten: it owns §58's `HostLifecycle` and holds the
+frames at CREATED) + test `PageFrameLoopTest.kt` (rewritten) · upstream `compose/.../ComposeContainer.kt`
+(`created`, `pageDidAppear`, `pageDidDisappear`, the `hostDidHide` / `hostDidShow` events)
+**Driven by** · the Ronaq owner's rulings of 2026-09-27 on what counts as unseen: the room is unseen only
+when covered completely (minimised, the app in the background or the screen locked, a full-screen page
+over it), never under a popup or a system dialog (Q-2), so Compose frames follow the host lifecycle —
+paused (STARTED) keeps drawing, hidden (CREATED) stops (Q-6); Ronaq `docs/design/image-pipeline.md`
+§20.17, TASK-FU17
+**Date** · 2026-09-27
+
+**What was wrong.** Two branches built the same stop twice. §49 paused the scene and unregistered the vsync
+source on every `pageDidDisappear`, which Android sends on pause and iOS on resign-active: a system dialog, a
+permission prompt or Control Center over a page froze its scene. §58 and §59 had meanwhile given the page a
+lifecycle that tells "paused, still on the glass" (STARTED) from "not on the glass" (CREATED), and a native
+tick that stops whenever the scene is paused.
+
+**The change.** One path. `PageFrameLoop` hears the container's four host events, keeps §58's two facts
+(shown, resumed) and holds the scene's frames — `VsyncTickConditions.isApplicationActive` false — exactly
+while the state is CREATED: once per hide, released on the show that makes the page STARTED or RESUMED,
+in either event order (Android resumes before it reports its window visible; iOS returns to the foreground
+before it becomes active). An appearance while shown resumes the scene and redraws it at once, as upstream
+did on every appearance. The native tick follows from §59: a held scene is paused, so its listener stops the
+tick, and the redraw on release starts it; `PageFrameLoop` no longer registers or unregisters the vsync
+source. Nothing after destroy.
+
+A page merely paused therefore keeps composing, laying out and drawing — its animations run under a popup or
+a system dialog — while a page its host hides produces nothing, and its native tick is stopped.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `PageFrameLoopTest` (a paused page that is still shown
+keeps its frames; a hidden page holds them and a redraw asked for meanwhile waits; frames come back in either
+return order; one hold per hide, an appearance redraws while shown; nothing after destroy), red against a
+stand-in with §49's rule (four of five fail, the first on "the scene keeps moving").
+
+**Upstreamable.** Yes, with §58 and §59.

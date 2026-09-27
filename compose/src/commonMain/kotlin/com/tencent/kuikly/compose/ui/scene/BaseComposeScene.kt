@@ -53,6 +53,7 @@ import com.tencent.kuikly.compose.container.ComposeFrameCounter
 import com.tencent.kuikly.compose.container.VsyncTickConditions
 import com.tencent.kuikly.compose.profiler.KuiklyObserverHandle
 import com.tencent.kuikly.compose.profiler.RecompositionProfiler
+import com.tencent.kuikly.compose.profiler.FrameCounters
 import com.tencent.kuikly.compose.profiler.RecompositionTracker
 import com.tencent.kuikly.compose.profiler.kuiklySetObserver
 import com.tencent.kuikly.compose.ui.KuiklyCanvas
@@ -204,6 +205,14 @@ internal abstract class BaseComposeScene(
         }
         // Ronaq fork (CHANGES.md §47): a frame the scene produces.
         ComposeFrameCounter.noteFrameRendered()
+        // Ronaq fork (CHANGES.md §53): checked here, because the arguments take locks.
+        if (FrameCounters.enabled) {
+            FrameCounters.onRenderStart(
+                animation = frameClock.hasAwaiters,
+                invalidation = snapshotInvalidationTracker.hasInvalidations,
+                input = inputHandler.hasInvalidations || vsyncTickConditions.needsToBeProactive,
+            )
+        }
 
         postponeInvalidation {
             val profilerEnabled = RecompositionProfiler.isEnabled
@@ -237,9 +246,9 @@ internal abstract class BaseComposeScene(
                     previousDrawNanoTime,
                 )
             val prefetchSpentNs = prefetchResult?.spentNs ?: 0L
-            LazyListPrefetchTrace.log(
-                "frameEnd isFrameIdle=$isFrameIdle needsProactive=${vsyncTickConditions.needsToBeProactive} scheduledRedraws=${vsyncTickConditions.scheduledRedrawsCount} queuePending=${framePrefetchScheduler?.hasPendingWork() == true} spentNs=$prefetchSpentNs scheduleNextFrame=${prefetchResult?.scheduleForNextFrame == true}",
-            )
+            LazyListPrefetchTrace.log {
+                "frameEnd isFrameIdle=$isFrameIdle needsProactive=${vsyncTickConditions.needsToBeProactive} scheduledRedraws=${vsyncTickConditions.scheduledRedrawsCount} queuePending=${framePrefetchScheduler?.hasPendingWork() == true} spentNs=$prefetchSpentNs scheduleNextFrame=${prefetchResult?.scheduleForNextFrame == true}"
+            }
 
             if (frameSampled) {
                 tracker?.onFrameEnd((prefetchSpentNs / 1_000_000L).toInt())
@@ -251,6 +260,7 @@ internal abstract class BaseComposeScene(
             }
         }
 
+        FrameCounters.onRenderEnd()
         // 在 postponeInvalidation 之后（isInvalidationDisabled 已恢复 false），
         // 安全写入 Compose State 驱动 Overlay UI 刷新
         RecompositionProfiler.tracker?.notifyOverlayIfNeeded()
@@ -271,6 +281,7 @@ internal abstract class BaseComposeScene(
         if (eventType == PointerEventType.Press || eventType == PointerEventType.Release) {
             vsyncTickConditions.needsToBeProactive = eventType == PointerEventType.Press
         }
+        if (eventType == PointerEventType.Press) FrameCounters.onPress()
         return postponeInvalidation {
             val result =
                 inputHandler.onPointerEvent(

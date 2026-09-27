@@ -72,6 +72,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.math.abs
+import com.tencent.kuikly.compose.foundation.lazy.layout.InViewportCache
+import com.tencent.kuikly.compose.foundation.lazy.layout.LocalLazyItemInViewport
+import com.tencent.kuikly.compose.foundation.lazy.layout.indicesInViewport
 import kotlin.ranges.IntRange
 import androidx.annotation.IntRange as AndroidXIntRange
 
@@ -226,6 +229,26 @@ class LazyListState
          * @sample androidx.compose.foundation.samples.UsingListLayoutInfoForSideEffectSample
          */
         val layoutInfo: LazyListLayoutInfo get() = layoutInfoState.value
+
+        /** Ronaq fork (CHANGES.md §56): the answers behind [LocalLazyItemInViewport], per measure. */
+        private val inViewportCache = InViewportCache<LazyListMeasureResult> { result ->
+            indicesInViewport(
+                items = result.positionedItems,
+                viewportStart = result.viewportStartOffset,
+                viewportEnd = result.viewportEndOffset,
+                spacing = result.mainAxisItemSpacing,
+                index = { it.index },
+                mainStart = { it.offset },
+                mainSize = { it.size },
+            )
+        }
+
+        /**
+         * Ronaq fork (CHANGES.md §56): whether item [index] is within one line of the viewport in
+         * the last measure. Reads the layout info, so a derived state over it follows every measure.
+         */
+        internal fun isItemInViewport(index: Int): Boolean =
+            inViewportCache.isInViewport(layoutInfoState.value, index)
 
         /**
          * [InteractionSource] that will be used to dispatch drag events when this
@@ -553,14 +576,14 @@ class LazyListState
 
         private fun notifyPrefetchOnScroll(delta: Float, layoutInfo: LazyListLayoutInfo) {
             if (!prefetchingEnabled || !lazyListPrefetchEnabled || prefetchState == null) {
-                LazyListPrefetchTrace.log(
-                    "onScroll skipped delta=$delta enabled=$lazyListPrefetchEnabled prefetching=$prefetchingEnabled prefetchState=${prefetchState != null}",
-                )
+                LazyListPrefetchTrace.log {
+                    "onScroll skipped delta=$delta enabled=$lazyListPrefetchEnabled prefetching=$prefetchingEnabled prefetchState=${prefetchState != null}"
+                }
                 return
             }
-            LazyListPrefetchTrace.log(
-                "onScroll delta=$delta lastVisible=${layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1}",
-            )
+            LazyListPrefetchTrace.log {
+                "onScroll delta=$delta lastVisible=${layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1}"
+            }
             with(prefetchStrategy) { prefetchScope.onScroll(delta, layoutInfo) }
         }
 
@@ -655,9 +678,9 @@ class LazyListState
                 } else {
                     scrollPosition.updateFromMeasureResult(result)
                     if (prefetchingEnabled && lazyListPrefetchEnabled && prefetchState != null) {
-                        LazyListPrefetchTrace.log(
-                            "onVisibleItemsUpdated first=${result.firstVisibleItem?.index ?: -1} last=${result.visibleItemsInfo.lastOrNull()?.index ?: -1}",
-                        )
+                        LazyListPrefetchTrace.log {
+                            "onVisibleItemsUpdated first=${result.firstVisibleItem?.index ?: -1} last=${result.visibleItemsInfo.lastOrNull()?.index ?: -1}"
+                        }
                         with(prefetchStrategy) { prefetchScope.onVisibleItemsUpdated(result) }
                     }
                 }

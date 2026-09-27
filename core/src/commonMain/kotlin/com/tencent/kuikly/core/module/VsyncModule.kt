@@ -37,6 +37,30 @@ class VsyncModule : Module() {
         )
     }
 
+    /**
+     * Ronaq fork (CHANGES.md §59): stop delivering ticks to the registered callback without
+     * unregistering it; [resumeVsync] starts them again. A host that does not know the method keeps
+     * ticking, which is the old behaviour.
+     */
+    fun pauseVsync() {
+        toNative(
+            keepCallbackAlive = false,
+            methodName = METHOD_PAUSE_VSYNC,
+            syncCall = false,
+            param = null
+        )
+    }
+
+    /** Ronaq fork (CHANGES.md §59): deliver ticks again after [pauseVsync]. */
+    fun resumeVsync() {
+        toNative(
+            keepCallbackAlive = false,
+            methodName = METHOD_RESUME_VSYNC,
+            syncCall = false,
+            param = null
+        )
+    }
+
     fun unRegisterVsync() {
         toNative(
             keepCallbackAlive = false,
@@ -50,5 +74,7 @@ class VsyncModule : Module() {
         const val MODULE_NAME = ModuleConst.VSYNC
         const val METHOD_REGISTER_VSYNC = "registerVsync"
         const val METHOD_UNREGISTER_VSYNC = "unRegisterVsync"
+        const val METHOD_PAUSE_VSYNC = "pauseVsync"
+        const val METHOD_RESUME_VSYNC = "resumeVsync"
     }
 }
