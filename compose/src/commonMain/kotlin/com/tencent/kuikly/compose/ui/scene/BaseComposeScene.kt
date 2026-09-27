@@ -202,11 +202,14 @@ internal abstract class BaseComposeScene(
         if (paused) {
             return
         }
-        FrameCounters.onRenderStart(
-            animation = frameClock.hasAwaiters,
-            invalidation = snapshotInvalidationTracker.hasInvalidations,
-            input = inputHandler.hasInvalidations || vsyncTickConditions.needsToBeProactive,
-        )
+        // Ronaq fork (CHANGES.md §47): checked here, because the arguments take locks.
+        if (FrameCounters.enabled) {
+            FrameCounters.onRenderStart(
+                animation = frameClock.hasAwaiters,
+                invalidation = snapshotInvalidationTracker.hasInvalidations,
+                input = inputHandler.hasInvalidations || vsyncTickConditions.needsToBeProactive,
+            )
+        }
 
         postponeInvalidation {
             val profilerEnabled = RecompositionProfiler.isEnabled
