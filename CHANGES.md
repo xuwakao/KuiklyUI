@@ -3930,3 +3930,27 @@ until the parent is visible, as upstream. Made to fail by breaking the upward ma
 fail). On devices: Ronaq's perf probe (`nodes(draw=…,visit=…)`) and the KRInvalidationProbe A/B.
 
 **Upstreamable.** Yes: a general cost of this renderer, nothing Ronaq-specific.
+
+## 49. The prefetch trace builds no message while tracing is off — every host
+
+**Files** · `compose/.../foundation/lazy/layout/LazyListPrefetchTrace.kt` (`log` takes a lambda) ·
+its 24 call sites: `ui/scene/BaseComposeScene.kt`, `foundation/lazy/LazyList.kt`,
+`LazyListPrefetchStrategy.kt`, `LazyListState.kt`, `foundation/lazy/layout/CacheWindowLogic.kt`,
+`KuiklyPrefetchScheduler.kt`, `LazyLayout.kt`, `LazyLayoutPrefetchState.kt` · test
+`compose/src/commonTest/.../foundation/lazy/layout/LazyListPrefetchTraceTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE (`docs/design/perf-startup-idle.md` OPT-4): the owner's
+ruling of 2026-09-27 on Home's idle CPU
+**Date** · 2026-09-27
+
+**What.** `LazyListPrefetchTrace.log(message: String)` became `inline fun log(message: () -> String)`;
+every call passes its message as a lambda. Behaviour with tracing on is unchanged (the message is
+built once and goes to `println` and the listener, as before).
+
+**Why.** The argument was built before `log` checked the flag, so `BaseComposeScene.render` formatted
+a ~150-character string on every frame with tracing off — allocation every frame, which on Kotlin/
+Native feeds the GC (Ronaq EVID-PSI-3, "diagnostic work").
+
+**Verified.** `LazyListPrefetchTraceTest`: off, the lambda never runs; on, it runs once and the
+listener hears the message.
+
+**Upstreamable.** Yes.
