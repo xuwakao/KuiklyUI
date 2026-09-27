@@ -47,6 +47,8 @@ object KRCssConst {
     const val VISIBILITY = "visibility"
     /** Ronaq fork (CHANGES.md §35): the subtree is attached but not on the glass. */
     const val OCCLUDED = "occluded"
+    /** Ronaq fork (CHANGES.md §51): this view is an opaque cover of the rect it occupies. */
+    const val OCCLUDES = "occludes"
     const val OVERFLOW = "overflow"
     const val BACKGROUND_COLOR = "backgroundColor"
     const val TOUCH_ENABLE = "touchEnable"

@@ -113,6 +113,11 @@ fun View.setCommonProp(key: String, value: Any): Boolean {
             }
             true
         }
+        KRCssConst.OCCLUDES -> {
+            // Ronaq (CHANGES.md §51): an opaque cover — a sheet's solid body.
+            KRVisibility.setCover(this, (value as? Number)?.toInt() == 1 || value == true)
+            true
+        }
         KRCssConst.OVERFLOW -> {
             overflow = (value as Int) == 1
             tryPropagatePendingOverBounds()
@@ -292,6 +297,11 @@ fun View.resetCommonProp(propKey: String): Boolean {
                 putViewData(KRCssConst.OCCLUDED, false)
                 KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
             }
+            return true
+        }
+        KRCssConst.OCCLUDES -> {
+            // Ronaq (CHANGES.md §51).
+            KRVisibility.setCover(this, false)
             return true
         }
         KRCssConst.OVERFLOW -> {
