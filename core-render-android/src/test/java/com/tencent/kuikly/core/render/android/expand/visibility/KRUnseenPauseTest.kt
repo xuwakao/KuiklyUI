@@ -34,10 +34,17 @@ class KRUnseenPauseTest {
     }
 
     @Test
-    fun aOneShotIsNeverPaused() {
+    fun aOneShotIsPausedAndResumedLikeALoop() {
+        // CHANGES.md §50: nothing plays where nobody can see it; the caller holds a one-shot in place.
         val rule = KRUnseenPause()
-        assertEquals(Action.NONE, rule.decide(visible = false, running = true, pausable = false),
-            "a gift effect keeps its timing and its end")
+        assertEquals(Action.PAUSE, rule.decide(visible = false, running = true, pausable = true))
+        assertEquals(Action.RESUME, rule.decide(visible = true, running = false, pausable = true))
+    }
+
+    @Test
+    fun anAnimationItsCallerCannotHoldIsNeverPaused() {
+        val rule = KRUnseenPause()
+        assertEquals(Action.NONE, rule.decide(visible = false, running = true, pausable = false))
         assertEquals(Action.NONE, rule.decide(visible = true, running = true, pausable = false))
     }
 

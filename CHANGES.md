@@ -3938,3 +3938,25 @@ per disappearance; a source started hidden stops; nothing after destroy), red ag
 what `ComposeContainer` did.
 
 **Upstreamable.** Yes, as the use of the upstream term it was written for.
+
+## 50. One-shots pause where nobody can see them
+
+**Files** · `core-render-android/.../expand/visibility/KRUnseenPause.kt` (§41's file: the rule's contract) +
+test `KRUnseenPauseTest.kt`
+**Driven by** · the Ronaq owner's ruling of 2026-09-27 (「看不见情况下动画肯定要停播啊」), which retires the
+one-shot exemption of Ronaq `docs/design/image-pipeline.md` INV-7; §20.8 (G-56), AC-35
+**Date** · 2026-09-27
+
+**What changed.** §41's rule was written for looping animations: a one-shot was never paused, so a gift
+effect kept its timing and its end wherever its view was. The rule's arithmetic had no notion of a
+one-shot — its callers passed `pausable = false` for one — and it keeps none: `pausable` now says only
+whether the caller can hold its animation in place. The fork's image view already passed `true` for
+every animated drawable, finite ones included, so an image's one-shot animation paused unseen before
+this section; Ronaq's animation host now does the same for its one-shot plays, and each continues to its
+one end when seen.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRUnseenPauseTest` (a one-shot is paused
+and resumed like a loop; an animation its caller cannot hold is never paused). The rule's code is
+unchanged, so this test was not red; the behaviour change is the host's, red in Ronaq's `UnseenPlaysTest`.
+
+**Upstreamable.** Yes, as documentation of the rule.

@@ -16,14 +16,16 @@
 package com.tencent.kuikly.core.render.android.expand.visibility
 
 /**
- * Ronaq fork (CHANGES.md §41): the rule an animated view follows when it cannot be seen — the
- * Android half of Ronaq `docs/design/image-pipeline.md` §4.4, the same rule as iOS's frame sources.
+ * Ronaq fork (CHANGES.md §41, §50): the rule an animated view follows when it cannot be seen — the
+ * Android half of Ronaq `docs/design/image-pipeline.md` §4.4 and §20.8, the same rule as iOS's frame
+ * sources.
  *
- * A looping animation whose view is not effectively visible ([KRVisibility]) is paused, and
- * resumed when it is visible again — only if this rule paused it: an animation that stopped on its
- * own (a finite loop that ended) stays stopped. A one-shot play is never paused ([decide]'s
- * `pausable` false): a gift effect keeps its timing and its end. An unknown visibility (a view not
- * laid out yet) changes nothing. View-free, for the JVM tests. Main thread.
+ * An animation whose view is not effectively visible ([KRVisibility]) is paused, and resumed when
+ * it is visible again — only if this rule paused it: an animation that stopped on its own (a finite
+ * loop that ended) stays stopped. Looping or finite alike since §50: a one-shot that cannot be seen
+ * pauses where it is and continues, to its one end, when seen. A caller that cannot hold its
+ * animation in place says so ([decide]'s `pausable` false) and is never told to pause. An unknown
+ * visibility (a view not laid out yet) changes nothing. View-free, for the JVM tests. Main thread.
  */
 class KRUnseenPause {
 
@@ -35,7 +37,7 @@ class KRUnseenPause {
 
     /**
      * What to do now. [visible]: the predicate's answer, or null when unknown; [running]: the
-     * animation is advancing; [pausable]: it may be paused at all (a looping play).
+     * animation is advancing; [pausable]: the caller can hold it in place.
      */
     fun decide(visible: Boolean?, running: Boolean, pausable: Boolean): Action {
         if (visible == null) return Action.NONE
