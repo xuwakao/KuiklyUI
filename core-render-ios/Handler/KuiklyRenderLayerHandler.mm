@@ -23,6 +23,7 @@
 #import "KuiklyBridgeDelegator.h"
 #import "KuiklyRenderLayerHandler.h"
 #import "KuiklyRenderModuleExportProtocol.h"
+#import "UIView+KRVisibility.h"
 /*
  *  渲染层协议的实现者(渲染器)
  */
@@ -313,7 +314,13 @@ Class _Nullable KRClassFromString(NSString *aClassName) {
 #if DEBUG
     assert(renderViewHandler);  // renderViewHandler不存在
 #endif
+    // Ronaq (CHANGES.md §52): a cover leaving the tree is a visibility change whether or not the reuse
+    // reset below runs; without it what lay wholly under a closed sheet would stay paused.
+    BOOL wasCover = [((UIView *)renderViewHandler).css_occludes boolValue];
     [renderViewHandler hrv_removeFromSuperview];
+    if (wasCover) {
+        [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+    }
     if ([renderViewHandler respondsToSelector:@selector(hrv_prepareForeReuse)]
         && !(((UIView *)renderViewHandler).kr_reuseDisable)) {
         // 放进复用队列
