@@ -83,4 +83,10 @@
     [self invalidateTimer];
 }
 
+/// Ronaq (CHANGES.md §53): a module released while paused (its unRegisterVsync dropped with the
+/// render core, or never sent) must not release a suspended source; libdispatch traps on that.
+- (void)dealloc {
+    [self invalidateTimer];
+}
+
 @end

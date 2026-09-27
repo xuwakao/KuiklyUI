@@ -187,8 +187,11 @@ open class ComposeContainer :
                 mediator?.renderFrame()
             }
             // Ronaq fork (CHANGES.md §53): the native tick stops while the scene is paused — nothing
-            // invalidated, no frame awaited, no pointer held — and starts again when it is not. A
-            // host that does not know pauseVsync keeps ticking, as before.
+            // invalidated, no frame awaited, no pointer held — and starts again when it is not. The
+            // renderers of this fork know pauseVsync and resumeVsync; a stock one does not. Android's
+            // ignores them and keeps ticking; iOS's asserts in a debug build (KRBaseModule), and in a
+            // release build logs an error on every pause and resume and keeps ticking. Pair this with
+            // this fork's renderers.
             if (vsync != null) {
                 mediator?.setTickPausedListener { paused ->
                     if (paused) vsync.pauseVsync() else vsync.resumeVsync()
