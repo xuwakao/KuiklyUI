@@ -22,8 +22,8 @@ import com.tencent.kuikly.lifecycle.Lifecycle
  * rather than from the last event heard.
  *
  * - [shown]: the host shows the page at all. True until the host says it hid it
- *   (`hostDidHide`: Android window invisible, iOS background, web document hidden), and again
- *   on `hostDidShow`.
+ *   (`hostDidHide`: Android window invisible, iOS background or a controller covering the page's,
+ *   web document hidden), and again on `hostDidShow`.
  * - [resumed]: the page has appeared and not disappeared since (`viewDidAppear` /
  *   `viewDidDisappear`: Android resume/pause, iOS appear and become-active / resign-active).
  *

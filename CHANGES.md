@@ -3878,6 +3878,11 @@ to the end of the next render). On a device through Ronaq's `PerfProbe` (`-perfP
 pending until some later render: a press older than one second is dropped when the next render ends,
 and replaced by a newer press. Found on the OPPO (Ronaq EVID-PSI-9a).
 
+**Follow-up (review, 2026-09-27).** `BaseComposeScene.render` checks `FrameCounters.enabled` before
+calling `onRenderStart`: its arguments (`BroadcastFrameClock.hasAwaiters`, the invalidation tracker)
+take a lock each, and were evaluated on every render with the counters off. "One boolean read" is
+now true of that hook too.
+
 ## 48. A changed node is drawn; its ancestors are only passed through — every host
 
 **Files** · `compose/.../ui/node/DrawMarks.kt` (new) · `compose/.../ui/node/KNode.kt` (`draw`,
@@ -4035,6 +4040,18 @@ and a view with children still post; an observer that does not say keeps hearing
 existing §43 notice tests (whose observer does not say) unchanged. iOS
 `testALeafNobodyWatchesMovesWithoutANotice` in Ronaq's hosted tests.
 
+**Follow-up (review, 2026-09-27): iOS asks only the observers that can answer.** The first iOS
+version scanned every registered observer for every moving leaf, and on iOS every image view with a
+source is an observer (it reacts only to the geometry notice; `KRImageView` ignores visibility). The
+ask grew with the page: in Ronaq's hosted bench, 36 bars a frame cost 53.6 µs with 20 observing views
+and 1304 µs with 1000, against 1.8 µs and 42 µs for the one delivery a frame it replaced. Now the
+registry keeps a second weak table of the observers that must be asked — those implementing
+`kr_watchesView:` and those that are not views — and an observing view is found by one lookup in the
+full registry (it watches only itself). Same answers; the bench measures 7.7 µs and 9.4 µs. Tests:
+`testALeafIsWatchedOnlyByItselfByAnAskerThatSaysSoOrByAnObserverThatDoesNotSay`,
+`testTheLeafCheckDoesNotGrowWithTheObservingViews` (Ronaq's hosted tests). Whether the notice saved
+outweighs the ask on a phone is measured on the iPhone (Ronaq design §18 I-2).
+
 **Upstreamable.** With §42/§43, if those go upstream.
 
 ## 52. A page knows when its host stops showing it — every host
@@ -4043,7 +4060,8 @@ existing §43 notice tests (whose observer does not say) unchanged. iOS
 `compose/.../HostLifecycle.kt` (new), `compose/.../ComposeContainer.kt` (the lifecycle from it) ·
 Android `core-render-android/.../KuiklyRenderView.kt` (`onWindowVisibilityChanged`),
 `expand/visibility/KRVisibility.kt` (the window term) · iOS
-`core-render-ios/Extension/KuiklyRenderViewControllerBaseDelegator.m` (background / foreground) ·
+`core-render-ios/Extension/KuiklyRenderViewControllerBaseDelegator.m` (background / foreground; a
+covered controller) ·
 web `core-render-web/h5/.../expand/KuiklyRenderViewDelegator.kt` (`visibilitychange`) · tests
 `compose/src/commonTest/.../HostLifecycleTest.kt` (new), Android `KRVisibilityTest.kt`
 **Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-5 and design §16 R-3, R-5: the owner's ruling of
@@ -4081,6 +4099,16 @@ exactly that (ON_PAUSE → STARTED, ON_STOP → CREATED).
 STARTED; hidden is CREATED; both return orders end RESUMED. Android `KRVisibilityTest`: nothing in
 a hidden window is visible. On devices through Ronaq's perf probe (renders while hidden).
 
+**Follow-up (review, 2026-09-27): iOS hides a covered page, as Android does.** On Android a page whose
+activity another full-screen activity covers is stopped, so CREATED. On iOS a controller covered by a
+full-screen presented or pushed one gets only `viewDidDisappear`, which is STARTED, so its loops kept
+running unseen. The delegator now sends `hostDidHide` after a `viewDidDisappear` (the app still in
+front: a covering controller, or the controller removed) and `hostDidShow` when the controller
+appears again (`viewWillAppear`, or `viewDidAppear` for a host that forwards only that), unless the
+app is in the background — the foreground then shows it; a page still covered when the app returns
+stays hidden. A sheet that leaves the presenter on screen sends no disappearance and changes nothing.
+Test: `KRHostVisibilityEventTests` (Ronaq's hosted tests, a delegator that records its events).
+
 **Upstreamable.** Yes.
 
 ## 53. The native tick stops while nothing needs drawing — Android, iOS, web
@@ -4109,16 +4137,28 @@ nothing.
 mediator's timer is cancelled and a fresh one started. The unpause sources are upstream's own: an
 invalidation (`needRedraw`), new frame-clock awaiters, a pointer press, the application becoming
 active; the two-frame linger (`FRAMES_COUNT_TO_SCHEDULE_ON_NEED_REDRAW`) is unchanged, so a motion is
-not cut between two of its frames. HarmonyOS and mini-programs keep the always-on timer. A host whose
-module does not know `pauseVsync` keeps ticking, as before; the iOS timer is resumed before it is
-cancelled (a suspended GCD source must not be released).
+not cut between two of its frames. HarmonyOS and mini-programs keep the always-on timer. The Kotlin
+side and this fork's renderers go together: a stock Android renderer ignores `pauseVsync` and keeps
+ticking, but a stock iOS renderer asserts on the unknown method in a debug build (`KRBaseModule`) and
+logs an error on every pause and resume in a release build (corrected 2026-09-27; this said every host
+"keeps ticking, as before"). The iOS timer is resumed before it is cancelled or released — on
+unregister and, since the review of 2026-09-27, in `dealloc`: a module freed while paused (its
+`unRegisterVsync` dropped with the render core) released a suspended GCD source, which libdispatch
+traps on (reproduced in Ronaq's hosted `KRVsyncModuleTests`: `_dispatch_queue_xref_dispose` from
+`-[KRVsyncModule .cxx_destruct]`).
 
 **Cost.** The first frame after a rest can come one vsync later than before (the resume crosses to the
-native side). Ronaq measures press-to-render on devices (AC-PSI-7: ≤ 2 vsyncs).
+native side). On iOS the resume is an asynchronous module call: it rides the render core's batch to the
+main queue and the timer then fires on the Kotlin queue, so it also waits for the main thread to be
+free. Kept asynchronous: a synchronous call would run on the Kotlin thread while `registerVsync` and
+`unRegisterVsync` run on the main thread, and the module's state would need a lock; the rendered frame
+reaches the glass through the main thread anyway. Ronaq measures press-to-render on devices (AC-PSI-7:
+≤ 2 vsyncs).
 
 **Verified.** `VsyncTickConditionsTest`: a new listener hears the current state; a redraw resumes and,
 two frames later, pauses once; an animation that asks every frame gets no notice; a held pointer keeps
-the tick and its release pauses; an inactive application pauses. On devices: the perf probe's
-`ticks=` at rest.
+the tick and its release pauses; an inactive application pauses. iOS `KRVsyncModuleTests` (Ronaq's
+hosted tests): a pause stops the ticks, twice is still one, a resume restarts them, an unregister while
+paused and a release while paused are clean. On devices: the perf probe's `ticks=` at rest.
 
 **Upstreamable.** Yes.
