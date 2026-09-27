@@ -49,6 +49,7 @@ import com.tencent.kuikly.compose.foundation.lazy.layout.KUIKLY_PREFETCH_FRAME_I
 import com.tencent.kuikly.compose.foundation.lazy.layout.KUIKLY_PREFETCH_IDLE_FRAME_MULTIPLIER
 import com.tencent.kuikly.compose.foundation.lazy.layout.LazyListPrefetchTrace
 import com.tencent.kuikly.compose.foundation.lazy.layout.PrefetchScheduler
+import com.tencent.kuikly.compose.container.ComposeFrameCounter
 import com.tencent.kuikly.compose.container.VsyncTickConditions
 import com.tencent.kuikly.compose.profiler.KuiklyObserverHandle
 import com.tencent.kuikly.compose.profiler.RecompositionProfiler
@@ -201,6 +202,8 @@ internal abstract class BaseComposeScene(
         if (paused) {
             return
         }
+        // Ronaq fork (CHANGES.md §47): a frame the scene produces.
+        ComposeFrameCounter.noteFrameRendered()
 
         postponeInvalidation {
             val profilerEnabled = RecompositionProfiler.isEnabled

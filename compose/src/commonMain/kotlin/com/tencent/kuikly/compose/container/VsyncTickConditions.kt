@@ -51,6 +51,8 @@ class VsyncTickConditions(
      * Handle display link callback by updating internal state and dispatching the draw, if needed.
      */
     inline fun onDisplayLinkTick(draw: () -> Unit) {
+        // Ronaq fork (CHANGES.md §47): every callback the vsync source delivers is counted.
+        ComposeFrameCounter.noteVsyncTick()
         if (scheduledRedrawsCount > 0) {
             scheduledRedrawsCount -= 1
             draw()
