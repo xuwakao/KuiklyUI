@@ -60,6 +60,13 @@ class KRVisibilityTest {
     }
 
     @Test
+    fun nothingInAHiddenWindowIsVisible() {
+        // CHANGES.md §52: the activity is stopped; a looping player under it must pause.
+        assertFalse(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown, shown), windowShown = false))
+        assertTrue(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown, shown), windowShown = true))
+    }
+
+    @Test
     fun aHiddenTransparentOrOccludedAncestorHidesTheSubtree() {
         assertFalse(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown, shown.copy(shown = false), shown)),
             "Kuikly hides a lazy slot's root, not the player")

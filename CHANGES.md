@@ -4032,3 +4032,49 @@ existing §43 notice tests (whose observer does not say) unchanged. iOS
 `testALeafNobodyWatchesMovesWithoutANotice` in Ronaq's hosted tests.
 
 **Upstreamable.** With §42/§43, if those go upstream.
+
+## 52. A page knows when its host stops showing it — every host
+
+**Files** · core `core/.../pager/Pager.kt` (`PAGER_EVENT_HOST_DID_HIDE`, `…_SHOW`) · compose
+`compose/.../HostLifecycle.kt` (new), `compose/.../ComposeContainer.kt` (the lifecycle from it) ·
+Android `core-render-android/.../KuiklyRenderView.kt` (`onWindowVisibilityChanged`),
+`expand/visibility/KRVisibility.kt` (the window term) · iOS
+`core-render-ios/Extension/KuiklyRenderViewControllerBaseDelegator.m` (background / foreground) ·
+web `core-render-web/h5/.../expand/KuiklyRenderViewDelegator.kt` (`visibilitychange`) · tests
+`compose/src/commonTest/.../HostLifecycleTest.kt` (new), Android `KRVisibilityTest.kt`
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-5 and design §16 R-3, R-5: the owner's ruling of
+2026-09-27 that an animation which cannot be seen does not run, "hidden" defined with the owner's
+default as stopped or backgrounded, not merely paused (Ronaq Q-PSI-3)
+**Date** · 2026-09-27
+
+**What upstream does.** `ComposeContainer` sets its lifecycle to CREATED at `created()` and on
+`pageDidDisappear`, RESUMED on `pageDidAppear`. Android pause and iOS resign-active both send
+`viewDidDisappear`, so a page under a system sheet was CREATED, and a page whose app had gone to
+the background was CREATED too — the two could not be told apart, and nothing said "hidden".
+
+**What changed.**
+- Two new pager events: `hostDidHide` and `hostDidShow`. Android sends them from the render view's
+  window visibility (`onWindowVisibilityChanged`: GONE while the activity is stopped), iOS from
+  did-enter-background / will-enter-foreground, the web from `document.visibilitychange` (sent
+  once at attach if the document is already hidden). No host code needs to change.
+- `ComposeContainer` keeps two facts, `shown` (true until `hostDidHide`) and `resumed`
+  (appear/disappear), and derives the state: shown and resumed → RESUMED; shown only → STARTED;
+  not shown → CREATED (`HostLifecycle`). So a launch before the first appear event is STARTED (it
+  was CREATED), a pause or resign-active is STARTED (it was CREATED), and the events may arrive in
+  either order (Android reports the window visible after `onResume`). A host event after
+  `pageWillDestroy` changes nothing.
+- Android's `KRVisibility.isEffectivelyVisible` is false while the window is not visible, and the
+  window change posts a visibility notice, so looping pictures and players pause while the
+  activity is stopped, as iOS's players already do on `appActive`.
+
+`updateAppState` and the scene's frame policy are unchanged: the scene keeps composing while hidden.
+
+**Why.** An application that must stop what nobody can see needs to know the difference between
+"paused, still on the glass" and "not on the glass"; the androidx lifecycle states already mean
+exactly that (ON_PAUSE → STARTED, ON_STOP → CREATED).
+
+**Verified.** `HostLifecycleTest`: launch before any appear event is STARTED; paused-but-shown is
+STARTED; hidden is CREATED; both return orders end RESUMED. Android `KRVisibilityTest`: nothing in
+a hidden window is visible. On devices through Ronaq's perf probe (renders while hidden).
+
+**Upstreamable.** Yes.

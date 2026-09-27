@@ -137,9 +137,18 @@ object KRVisibility {
         }
     }
 
-    /** The predicate, over plain values, for tests and for [isEffectivelyVisible]. */
-    fun isEffectivelyVisible(attached: Boolean, insideWindow: Boolean, chain: Sequence<Layer>): Boolean {
-        if (!attached) return false
+    /**
+     * The predicate, over plain values, for tests and for [isEffectivelyVisible]. [windowShown]:
+     * the window itself is visible — false while its activity is stopped (Ronaq fork, CHANGES.md
+     * §52), when nothing in it can be seen whatever the chain says.
+     */
+    fun isEffectivelyVisible(
+        attached: Boolean,
+        insideWindow: Boolean,
+        chain: Sequence<Layer>,
+        windowShown: Boolean = true,
+    ): Boolean {
+        if (!attached || !windowShown) return false
         for (layer in chain) {
             if (!layer.shown || layer.alpha <= 0.01f || layer.occluded) return false
         }
@@ -165,6 +174,7 @@ object KRVisibility {
             attached = view.isAttachedToWindow,
             insideWindow = view.isAttachedToWindow && view.getGlobalVisibleRect(Rect()),
             chain = chain,
+            windowShown = view.windowVisibility == View.VISIBLE,
         )
     }
 }
