@@ -29,13 +29,15 @@ import kotlin.math.abs
  * framework changes something that could change the answer — the Android twin of the iOS
  * renderer's `UIView (KRVisibility)`, one predicate on both (Ronaq design image-pipeline INV-6).
  *
- * A view is effectively visible when it is attached, part of it is inside the window
- * (`getGlobalVisibleRect`), and neither it nor any ancestor is not `VISIBLE`, at alpha 0.01 or
- * less, or marked `occluded` — the generic prop for a subtree that is laid out and attached but
+ * A view is effectively visible when it is attached, its window is shown (CHANGES.md §48: not once
+ * the activity has stopped — the app in the background, the screen off), part of it is inside the
+ * window (`getGlobalVisibleRect`), and neither it nor any ancestor is not `VISIBLE`, at alpha 0.01
+ * or less, or marked `occluded` — the generic prop for a subtree that is laid out and attached but
  * not on the glass (a page under an overlay, a tab that is not in front).
  *
  * The notices: the `visibility`, `opacity` and `occluded` props, a list's scroll, a transform
- * and a frame change post [CHANGE_VISIBILITY] (the last two since §43); an enlarging transform
+ * and a frame change post [CHANGE_VISIBILITY] (the last two since §43), and so does the root
+ * render view's window being shown or hidden (§48); an enlarging transform
  * also posts [CHANGE_GEOMETRY]; however many come in one main-looper turn, observers hear one
  * call. Main thread only.
  */
@@ -117,9 +119,17 @@ object KRVisibility {
         }
     }
 
-    /** The predicate, over plain values, for tests and for [isEffectivelyVisible]. */
-    fun isEffectivelyVisible(attached: Boolean, insideWindow: Boolean, chain: Sequence<Layer>): Boolean {
-        if (!attached) return false
+    /**
+     * The predicate, over plain values, for tests and for [isEffectivelyVisible]. [windowShown]:
+     * the view's window is shown (`View.getWindowVisibility() == VISIBLE`), CHANGES.md §48.
+     */
+    fun isEffectivelyVisible(
+        attached: Boolean,
+        insideWindow: Boolean,
+        chain: Sequence<Layer>,
+        windowShown: Boolean = true,
+    ): Boolean {
+        if (!attached || !windowShown) return false
         for (layer in chain) {
             if (!layer.shown || layer.alpha <= 0.01f || layer.occluded) return false
         }
@@ -129,10 +139,10 @@ object KRVisibility {
     /**
      * [isEffectivelyVisible], or null while the answer is not known yet: an attached view that
      * has not been laid out, or has no area, cannot be placed against the window (CHANGES.md §41).
-     * A detached view is not visible.
+     * A detached view, or one whose window is not shown (§48), is not visible.
      */
     fun visibleOrUnknown(view: View): Boolean? {
-        if (!view.isAttachedToWindow) return false
+        if (!view.isAttachedToWindow || view.windowVisibility != View.VISIBLE) return false
         if (!view.isLaidOut || view.width <= 0 || view.height <= 0) return null
         return isEffectivelyVisible(view)
     }
@@ -145,6 +155,7 @@ object KRVisibility {
             attached = view.isAttachedToWindow,
             insideWindow = view.isAttachedToWindow && view.getGlobalVisibleRect(Rect()),
             chain = chain,
+            windowShown = view.windowVisibility == View.VISIBLE,
         )
     }
 }

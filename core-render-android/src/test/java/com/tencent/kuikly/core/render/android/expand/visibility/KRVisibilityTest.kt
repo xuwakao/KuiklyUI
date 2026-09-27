@@ -70,6 +70,13 @@ class KRVisibilityTest {
     }
 
     @Test
+    fun aViewInAWindowThatIsNotShownIsNotVisible() {
+        // CHANGES.md §48: the activity stopped — the app in the background, the screen off.
+        assertFalse(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown), windowShown = false))
+        assertTrue(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown), windowShown = true))
+    }
+
+    @Test
     fun noticesPostedInOneTurnAreHeardOnceTogether() {
         KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
         KRVisibility.noteChange(KRVisibility.CHANGE_GEOMETRY)

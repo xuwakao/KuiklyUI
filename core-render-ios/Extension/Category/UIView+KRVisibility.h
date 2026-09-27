@@ -13,8 +13,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// learn of an ancestor's change from UIKit, so the framework posts these notices where it
 /// makes such changes itself.
 typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
-    /// A view became hidden or shown, crossed zero opacity, was marked occluded or not, or a
-    /// scroll view moved its content.
+    /// A view became hidden or shown, crossed zero opacity, was marked occluded or not, a
+    /// scroll view moved its content, or the application entered or left the background.
     KRViewTreeChangeVisibility = 1 << 0,
     /// A transform that enlarges its view (a scale above 1 on either axis) was set.
     KRViewTreeChangeGeometry = 1 << 1,
@@ -32,10 +32,11 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 /// visibility notice. Reset on reuse like every common prop.
 @property (nonatomic, strong, nullable) NSNumber *css_occluded;
 
-/// Whether anything of this view can be seen: it is in a window, its bounds in window
-/// coordinates intersect the window's, and neither it nor any ancestor (the window included)
-/// is hidden, at alpha 0.01 or less, or marked occluded. The same predicate the Android
-/// renderer uses (Ronaq design image-pipeline INV-6).
+/// Whether anything of this view can be seen: the application is not in the background (a
+/// visibility notice is posted when it enters the background and when it comes back; CHANGES.md
+/// §48), the view is in a window, its bounds in window coordinates intersect the window's, and
+/// neither it nor any ancestor (the window included) is hidden, at alpha 0.01 or less, or marked
+/// occluded. The same predicate the Android renderer uses (Ronaq design image-pipeline INV-6).
 @property (nonatomic, readonly) BOOL kr_isEffectivelyVisible;
 
 /// How many pixels this view covers on the screen: its bounds, times the screen scale,

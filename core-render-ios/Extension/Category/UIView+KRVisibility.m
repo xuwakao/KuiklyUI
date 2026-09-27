@@ -20,6 +20,48 @@ static NSHashTable<id<KRViewTreeObserver>> *KRViewTreeObservers(void) {
 /// Changes posted since the last delivery; 0 when nothing is pending.
 static KRViewTreeChange sKRPendingViewTreeChanges = 0;
 
+#if !TARGET_OS_OSX // [macOS]
+#pragma mark - The app's term (CHANGES.md §48)
+
+/// Whether the application is in the background, as of its lifecycle notifications: set on
+/// DidEnterBackground, cleared on WillEnterForeground (during which `applicationState` still reads
+/// Background). Read from `applicationState` until the first notification. Main thread.
+static BOOL sKRAppInBackground = NO;
+static BOOL sKRAppStateKnown = NO;
+
+static BOOL KRAppInBackground(void) {
+    if (!sKRAppStateKnown) {
+        sKRAppStateKnown = YES;
+        sKRAppInBackground = UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
+    }
+    return sKRAppInBackground;
+}
+
+/// Hears the application's lifecycle for the predicate, from launch.
+@interface KRAppPresence : NSObject
+@end
+
+@implementation KRAppPresence
+
++ (void)load {
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
+                         queue:nil usingBlock:^(NSNotification *note) {
+        sKRAppStateKnown = YES;
+        sKRAppInBackground = YES;
+        [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+    }];
+    [center addObserverForName:UIApplicationWillEnterForegroundNotification object:nil
+                         queue:nil usingBlock:^(NSNotification *note) {
+        sKRAppStateKnown = YES;
+        sKRAppInBackground = NO;
+        [UIView kr_noteViewTreeChange:KRViewTreeChangeVisibility];
+    }];
+}
+
+@end
+#endif // [macOS]
+
 @implementation UIView (KRVisibility)
 
 - (NSNumber *)css_occluded {
@@ -39,6 +81,12 @@ static KRViewTreeChange sKRPendingViewTreeChanges = 0;
     if (window == nil) {
         return NO;
     }
+#if !TARGET_OS_OSX // [macOS]
+    // Nothing of the app can be seen while it is in the background (CHANGES.md §48).
+    if (KRAppInBackground()) {
+        return NO;
+    }
+#endif // [macOS]
     for (UIView *view = self; view != nil; view = view.superview) {
         if (view.hidden || view.alpha <= 0.01 || [view.css_occluded boolValue]) {
             return NO;
