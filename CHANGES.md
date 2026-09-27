@@ -3783,6 +3783,12 @@ device behaviour is measured by Ronaq's `scripts/moments-swipe-probe.mjs` in its
 **Upstreamable.** Yes. `settleTargetPage` is a narrower `targetPage` that does not depend on
 `isScrollInProgress`; the local is a general deferral hook for lazily shown content.
 
+**Correction (2026-09-27).** "`kuiklyWillDragEnd` already decided that page" holds on Android and
+iOS only. The H5 pager snaps a released drag itself and fires no `willDragEnd`
+(`core-render-web/.../list/H5ListPagingHelper.kt:443-447`), so on the web `settleTargetPage` stays -1
+through a settle; Ronaq times the web settle by its own clock instead (`PagerPages.kt`
+`WEB_SNAP_MS`, its design's DELTA-PN-1).
+
 ## 46. Scrollers count the drags they begin
 
 **Files** · `compose/.../gestures/KuiklyScrollableState.kt` (`dragCount`, `kuiklyOnDragBegin`) ·
