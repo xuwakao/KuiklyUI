@@ -101,17 +101,28 @@ object FrameCounters {
         if (input) rendersForInput++
     }
 
-    /** A render finished; closes a pending press-to-render measurement. */
+    /**
+     * A render finished; closes a pending press-to-render measurement. A press older than
+     * [PRESS_STALE_MS] caused no render of its own (it landed on something inert) and is dropped
+     * rather than charged to whatever renders next.
+     */
     fun onRenderEnd() {
         if (!enabled || pendingPressNanos == 0L) return
-        pressDelaysMs.add((DateTime.nanoTime() - pendingPressNanos) / 1_000_000L)
+        val delayMs = (DateTime.nanoTime() - pendingPressNanos) / 1_000_000L
+        if (delayMs <= PRESS_STALE_MS) pressDelaysMs.add(delayMs)
         pendingPressNanos = 0L
     }
 
+    /** A press not followed by a render within this long rendered nothing. */
+    private const val PRESS_STALE_MS = 1_000L
+
     /** A pointer went down; the next [onRenderEnd] measures how long it took to be drawn. */
     fun onPress() {
-        if (!enabled || pendingPressNanos != 0L) return
-        pendingPressNanos = DateTime.nanoTime()
+        if (!enabled) return
+        val now = DateTime.nanoTime()
+        // A pending press that is already stale is replaced, not kept.
+        if (pendingPressNanos != 0L && (now - pendingPressNanos) / 1_000_000L <= PRESS_STALE_MS) return
+        pendingPressNanos = now
     }
 
     fun onNodeDraw() {

@@ -3874,6 +3874,10 @@ to the end of the next render). On a device through Ronaq's `PerfProbe` (`-perfP
 
 **Upstreamable.** Possibly, as a debug facility; it is shaped for one reader per process.
 
+**Follow-up (2026-09-28).** A press that renders nothing (a tap on an inert area) no longer stays
+pending until some later render: a press older than one second is dropped when the next render ends,
+and replaced by a newer press. Found on the OPPO (Ronaq EVID-PSI-9a).
+
 ## 48. A changed node is drawn; its ancestors are only passed through — every host
 
 **Files** · `compose/.../ui/node/DrawMarks.kt` (new) · `compose/.../ui/node/KNode.kt` (`draw`,
