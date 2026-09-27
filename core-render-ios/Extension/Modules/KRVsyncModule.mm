@@ -20,6 +20,8 @@
 {
     KuiklyRenderCallback _tipCb;
     dispatch_source_t _kotlinTimer;
+    // Ronaq (CHANGES.md §53): the timer is suspended because nothing needs drawing.
+    BOOL _paused;
 }
 
 - (void)registerVsync:(NSDictionary *)args {
@@ -31,6 +33,7 @@
         return ;
     }
     [self invalidateTimer];
+    _paused = NO;
     _kotlinTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, contextQueue);
     dispatch_source_set_timer(_kotlinTimer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60.0, NSEC_PER_MSEC);
     __weak __typeof__(self) wself = self;
@@ -50,8 +53,29 @@
 
 - (void)invalidateTimer {
     if (_kotlinTimer) {
+        // A suspended source must be resumed before it is released (libdispatch).
+        if (_paused) {
+            dispatch_resume(_kotlinTimer);
+            _paused = NO;
+        }
         dispatch_source_cancel(_kotlinTimer);
         _kotlinTimer = nil;
+    }
+}
+
+/// Ronaq (CHANGES.md §53): nothing needs drawing; the timer stops firing, the callback stays.
+- (void)pauseVsync:(NSDictionary *)args {
+    if (_kotlinTimer && !_paused) {
+        dispatch_suspend(_kotlinTimer);
+        _paused = YES;
+    }
+}
+
+/// Ronaq (CHANGES.md §53): something needs drawing; the timer fires again from the next period.
+- (void)resumeVsync:(NSDictionary *)args {
+    if (_kotlinTimer && _paused) {
+        _paused = NO;
+        dispatch_resume(_kotlinTimer);
     }
 }
 

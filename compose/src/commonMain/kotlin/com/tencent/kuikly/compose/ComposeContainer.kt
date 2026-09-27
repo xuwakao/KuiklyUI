@@ -176,16 +176,29 @@ open class ComposeContainer :
     private fun startFrameDispatcher() {
         mediator?.renderFrame()
         val pageData = getPager().pageData
-        if (pageData.isOhOs || pageData.isMiniApp || pageData.isWeb) {
+        if (pageData.isOhOs || pageData.isMiniApp) {
             mediator?.startFrameDispatcher()
+        } else if (pageData.isWeb) {
+            // Ronaq fork (CHANGES.md §53): the web timer stops while nothing needs drawing.
+            mediator?.startPausableFrameDispatcher()
         } else {
-            getModule<VsyncModule>(VsyncModule.MODULE_NAME)?.registerVsync {
+            val vsync = getModule<VsyncModule>(VsyncModule.MODULE_NAME)
+            vsync?.registerVsync {
                 mediator?.renderFrame()
+            }
+            // Ronaq fork (CHANGES.md §53): the native tick stops while the scene is paused — nothing
+            // invalidated, no frame awaited, no pointer held — and starts again when it is not. A
+            // host that does not know pauseVsync keeps ticking, as before.
+            if (vsync != null) {
+                mediator?.setTickPausedListener { paused ->
+                    if (paused) vsync.pauseVsync() else vsync.resumeVsync()
+                }
             }
         }
     }
 
     private fun stopFrameDispatcher() {
+        mediator?.setTickPausedListener(null)
         if (getPager().pageData.isOhOs) {
 
         } else {
