@@ -4078,3 +4078,43 @@ STARTED; hidden is CREATED; both return orders end RESUMED. Android `KRVisibilit
 a hidden window is visible. On devices through Ronaq's perf probe (renders while hidden).
 
 **Upstreamable.** Yes.
+
+## 53. The native tick stops while nothing needs drawing — Android, iOS, web
+
+**Files** · compose `compose/.../container/VsyncTickConditions.kt` (`onPausedChanged`),
+`compose/.../ComposeSceneMediator.kt` (`setTickPausedListener`, `startPausableFrameDispatcher`),
+`compose/.../ComposeContainer.kt` (the wiring) · core `core/.../module/VsyncModule.kt` (`pauseVsync`,
+`resumeVsync`) · Android `core-render-android/.../expand/module/KRVsyncModule.kt` · iOS
+`core-render-ios/Extension/Modules/KRVsyncModule.mm` · test
+`compose/src/commonTest/.../container/VsyncTickConditionsTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE OPT-7 (`docs/design/perf-startup-idle.md` §5.3): the owner's
+rulings of 2026-09-27 on idle CPU and on nothing unseen running; EVID-PSI-2 measured a static screen
+on the OPPO at 16.2 % of a core, most of it the per-vsync tick with nothing to draw
+**Date** · 2026-09-27
+
+**What upstream does.** `VsyncTickConditions` computes "paused" (application inactive, or no redraw
+scheduled and no pointer held) and the scene skips a paused frame (`BaseComposeScene.render`), but the
+native tick is never told: Android's Choreographer callback re-posts itself every vsync, iOS's 60 Hz
+GCD timer fires on the Kotlin queue, the web's 12 ms timer runs — each tick crossing into Kotlin for
+nothing.
+
+**What changed.** `VsyncTickConditions.onPausedChanged` reports the paused state when it changes
+(and once when set). `ComposeContainer` passes it to the vsync module: paused → `pauseVsync`
+(Android removes the frame callback and stops re-posting; iOS suspends the timer), unpaused →
+`resumeVsync` (Android posts the callback for the next vsync; iOS resumes the timer). On the web the
+mediator's timer is cancelled and a fresh one started. The unpause sources are upstream's own: an
+invalidation (`needRedraw`), new frame-clock awaiters, a pointer press, the application becoming
+active; the two-frame linger (`FRAMES_COUNT_TO_SCHEDULE_ON_NEED_REDRAW`) is unchanged, so a motion is
+not cut between two of its frames. HarmonyOS and mini-programs keep the always-on timer. A host whose
+module does not know `pauseVsync` keeps ticking, as before; the iOS timer is resumed before it is
+cancelled (a suspended GCD source must not be released).
+
+**Cost.** The first frame after a rest can come one vsync later than before (the resume crosses to the
+native side). Ronaq measures press-to-render on devices (AC-PSI-7: ≤ 2 vsyncs).
+
+**Verified.** `VsyncTickConditionsTest`: a new listener hears the current state; a redraw resumes and,
+two frames later, pauses once; an animation that asks every frame gets no notice; a held pointer keeps
+the tick and its release pauses; an inactive application pauses. On devices: the perf probe's
+`ticks=` at rest.
+
+**Upstreamable.** Yes.
