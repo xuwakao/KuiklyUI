@@ -15,6 +15,7 @@
 
 package com.tencent.kuikly.core.render.android.expand.visibility
 
+import android.view.View
 import com.tencent.kuikly.core.render.android.expand.visibility.KRVisibility.Layer
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -103,6 +104,46 @@ class KRVisibilityTest {
         assertTrue(KRVisibility.drawnAbove(cover = KRVisibility.Branch(20f, 0), view = KRVisibility.Branch(0f, 5)),
             "a higher z draws later whatever the index")
         assertFalse(KRVisibility.drawnAbove(cover = KRVisibility.Branch(0f, 5), view = KRVisibility.Branch(9f, 0)))
+    }
+
+    /** A view that keeps the attach listeners it is given (the mockable android.jar drops them). */
+    private class ListenedView : View(null) {
+        val listeners = mutableListOf<View.OnAttachStateChangeListener>()
+
+        override fun addOnAttachStateChangeListener(listener: View.OnAttachStateChangeListener?) {
+            listener?.let(listeners::add)
+        }
+
+        override fun removeOnAttachStateChangeListener(listener: View.OnAttachStateChangeListener?) {
+            listeners.remove(listener)
+        }
+    }
+
+    private fun drain(): Int {
+        var changes = 0
+        while (queued.isNotEmpty()) queued.removeAt(0).run()
+        heard.forEach { changes = changes or it }
+        heard.clear()
+        return changes
+    }
+
+    @Test
+    fun aCoverLeavingTheWindowPostsAVisibilityNotice() {
+        // CHANGES.md §52: a sheet closes by removal, and the renderer posts nothing for a removed
+        // view unless its reuse reset runs — which it skips once the reuse queue is full. Whatever
+        // was wholly under the cover must still hear that it is gone.
+        val cover = ListenedView()
+        KRVisibility.setCover(cover, true)
+        drain()
+        assertEquals(1, cover.listeners.size, "a cover watches its own attachment")
+        cover.listeners.toList().forEach { it.onViewDetachedFromWindow(cover) }
+        assertEquals(KRVisibility.CHANGE_VISIBILITY, drain() and KRVisibility.CHANGE_VISIBILITY)
+        cover.listeners.toList().forEach { it.onViewAttachedToWindow(cover) }
+        assertEquals(KRVisibility.CHANGE_VISIBILITY, drain() and KRVisibility.CHANGE_VISIBILITY,
+            "and coming back covers what is under it again")
+        KRVisibility.setCover(cover, false)
+        drain()
+        assertTrue(cover.listeners.isEmpty(), "no longer a cover: no longer watched")
     }
 
     @Test

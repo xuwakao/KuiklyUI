@@ -41,7 +41,8 @@ import kotlin.math.abs
  *
  * The notices: the `visibility`, `opacity` and `occluded` props, a list's scroll, a transform
  * and a frame change post [CHANGE_VISIBILITY] (the last two since §43), and so does the root
- * render view's window being shown or hidden (§48); an enlarging transform
+ * render view's window being shown or hidden (§48) and a cover leaving or joining the window
+ * (§52); an enlarging transform
  * also posts [CHANGE_GEOMETRY]; however many come in one main-looper turn, observers hear one
  * call. Main thread only.
  */
@@ -150,11 +151,25 @@ object KRVisibility {
      */
     private val covers = WeakHashMap<View, Boolean>()
 
-    /** [view] is, or is no longer, an opaque cover; a visibility notice follows a change. */
+    /**
+     * [view] is, or is no longer, an opaque cover; a visibility notice follows a change. A cover also
+     * posts one when it leaves or rejoins the window (CHANGES.md §52): a sheet closes by removal, and
+     * the renderer posts nothing for a removed view unless its reuse reset runs, which it skips once
+     * that view type's reuse queue is full — whatever was wholly under the cover would stay paused.
+     */
     fun setCover(view: View, cover: Boolean) {
         val was = covers.containsKey(view)
         if (cover) covers[view] = true else covers.remove(view)
-        if (was != cover) noteChange(CHANGE_VISIBILITY)
+        if (was == cover) return
+        if (cover) view.addOnAttachStateChangeListener(coverAttachment) else view.removeOnAttachStateChangeListener(coverAttachment)
+        noteChange(CHANGE_VISIBILITY)
+    }
+
+    /** One listener for every cover: it holds no view, so a cover that goes takes nothing with it. */
+    private val coverAttachment = object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) = noteChange(CHANGE_VISIBILITY)
+
+        override fun onViewDetachedFromWindow(v: View) = noteChange(CHANGE_VISIBILITY)
     }
 
     /** Whether a registered cover drawn above [view] covers all of [visible], its visible rect. */
