@@ -3954,3 +3954,46 @@ Native feeds the GC (Ronaq EVID-PSI-3, "diagnostic work").
 listener hears the message.
 
 **Upstreamable.** Yes.
+
+## 50. A lazy item knows whether it is within a line of the viewport — every host
+
+**Files** · `compose/.../foundation/lazy/layout/LazyItemInViewport.kt` (new: `LocalLazyItemInViewport`,
+`ProvideLazyItemInViewport`, `indicesInViewport`, `InViewportCache`) · `compose/.../foundation/lazy/
+LazyListItemProvider.kt`, `LazyListState.kt`, `grid/LazyGridItemProvider.kt`, `grid/LazyGridState.kt`
+(`isItemInViewport`, the provider around each item) · test `compose/src/commonTest/.../foundation/
+lazy/layout/LazyItemInViewportTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE: the owner's rulings of 2026-09-27 that Home's idle CPU
+is fixed first and that an animation which cannot be seen does not run; Ronaq
+`docs/design/perf-startup-idle.md` OPT-1 and §16 R-4, R-8
+**Date** · 2026-09-27
+
+**What.** A public composition local, `LocalLazyItemInViewport: Boolean`, provided to every item of
+a `LazyColumn` / `LazyRow` and a `LazyVerticalGrid` / `LazyHorizontalGrid`: true when the item, as
+the list's last measure placed it, overlaps the viewport widened by one line on each side (the
+item's own main-axis size plus the item spacing), ANDed with the value the list itself is composed
+under. True outside any lazy list; true for every item before a list's first measure (nothing
+placed yet). An item the last measure did not place reads false: a list places everything it
+composes for the viewport and its beyond-bounds lines, so such an item is on its way in and gets
+its answer with the next measure. A pinned sticky header is placed at the viewport's edge and
+reads true. Staggered grids and pagers are not covered (no looping content needed them; a pager's
+pages have their own visibility in Ronaq).
+
+The answer is computed once per measure result per list state (`InViewportCache`, a set of the
+placed indices within one line) and read by each item through a `derivedStateOf`, so a measure
+recomposes only the readers whose answer changed.
+
+**Why.** A grid composes `beyondBoundsLineCount = 3` lines past each edge (`LazyGridDsl.kt:78`), and
+content in those items runs whatever it runs: on Ronaq's Home, 12 room cards animated a level meter
+at 60 fps with 6 of them on the glass (iPhone: 10 running, 4 visible). The one-line margin exists
+because on this renderer the native scroller moves first and Compose places items after the fact
+(`ScrollableStateExtensions.kt`, `kuiklyOnScroll`), so an answer from Compose's own layout trails
+the glass; the next line must already be running when it arrives. `onGloballyPositioned` bounds
+cannot answer the question on this fork (they do not follow native scrolling).
+
+**Verified.** `LazyItemInViewportTest`: the viewport and one line either side are in view, two lines
+are not; content padding (a negative viewport start) widens it; a pinned header counts whatever its
+index; nothing placed or no viewport means every item counts; the cache answers per result, and an
+item not placed is out. In Ronaq: `MeterClockTest` (a loop gated on it stops out of view and keeps
+its phase), and the perf probe's `meters(composed=…,running=…)` on the phones.
+
+**Upstreamable.** Yes, as a general "is this item near the glass" signal; upstream has none.
