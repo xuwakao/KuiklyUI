@@ -109,11 +109,13 @@ object KRVisibility {
     }
 
     /**
-     * Ronaq fork (CHANGES.md §57): [view] has no child views and no registered observer watches
-     * it, so moving it cannot change any observer's answer.
+     * Ronaq fork (CHANGES.md §57): [view] has no child views, is not an opaque cover (§51: moving
+     * a cover changes what lies wholly under it), and no registered observer watches it, so moving
+     * it cannot change any observer's answer.
      */
     fun isUnwatchedLeaf(view: View): Boolean {
         if (view is ViewGroup && view.childCount > 0) return false
+        if (covers.containsKey(view)) return false
         return observers.keys.none { it.watches(view) }
     }
 

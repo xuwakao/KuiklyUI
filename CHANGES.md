@@ -4263,6 +4263,14 @@ full registry (it watches only itself). Same answers; the bench measures 7.7 µs
 `testTheLeafCheckDoesNotGrowWithTheObservingViews` (Ronaq's hosted tests). Whether the notice saved
 outweighs the ask on a phone is measured on the iPhone (Ronaq design §18 I-2).
 
+**Follow-up (integration with §51, 2026-09-27): a cover is never an unwatched leaf.** §51's `occludes`
+covers and this section were written on separate branches. A cover that is a leaf and that no observer
+watches — a sheet's solid body — would have moved without a notice, and what lay wholly under it would
+have stayed paused after it slid away. `KRVisibility.isUnwatchedLeaf` (Android) and `kr_isUnwatchedLeaf`
+(iOS) now answer false for a registered cover. Tests: Android
+`KRLeafTransformNoticeTest.aCoverThatIsALeafStillPostsOneWhenItMoves`, red before; iOS
+`testACoverThatIsALeafStillPostsANoticeWhenItMoves` in Ronaq's hosted tests.
+
 **Upstreamable.** With §42/§43, if those go upstream.
 
 ## 58. A page knows when its host stops showing it — every host

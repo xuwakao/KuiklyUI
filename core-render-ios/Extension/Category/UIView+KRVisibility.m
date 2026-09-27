@@ -244,6 +244,11 @@ static BOOL KRDrawnAbove(UIView *cover, UIView *view) {
     if (self.subviews.count > 0) {
         return NO;
     }
+    // A cover's move changes what lies wholly under it (CHANGES.md §51), though nothing is under it
+    // in the tree and nobody watches it.
+    if ([self.css_occludes boolValue]) {
+        return NO;
+    }
     // An observer that is this view watches it (whether or not it also says what it watches).
     if ([KRViewTreeObservers() containsObject:(id<KRViewTreeObserver>)self]) {
         return NO;

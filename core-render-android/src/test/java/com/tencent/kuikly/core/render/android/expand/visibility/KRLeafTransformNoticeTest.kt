@@ -77,6 +77,24 @@ class KRLeafTransformNoticeTest {
     }
 
     @Test
+    fun aCoverThatIsALeafStillPostsOneWhenItMoves() {
+        // CHANGES.md §51 with §57: a moving cover changes what lies wholly under it, although nothing
+        // is under it in the tree and no observer watches it — a sheet's solid body sliding away.
+        val sheet = View(null)
+        KRVisibility.setCover(sheet, true)
+        turn()
+        notices = 0
+        try {
+            assertFalse(KRVisibility.isUnwatchedLeaf(sheet))
+            move(sheet)
+            assertEquals(1, notices)
+        } finally {
+            KRVisibility.setCover(sheet, false)
+            turn()
+        }
+    }
+
+    @Test
     fun anObserverThatDoesNotSayWatchesEverything() {
         var heard = 0
         val quiet = KRVisibility.Observer { if (it and KRVisibility.CHANGE_VISIBILITY != 0) heard++ }

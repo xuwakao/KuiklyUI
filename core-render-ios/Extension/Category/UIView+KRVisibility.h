@@ -58,8 +58,9 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 /// size.
 @property (nonatomic, readonly) CGSize kr_displayPixelSize;
 
-/// Ronaq (CHANGES.md §57): this view has no subviews and no registered observer watches it, so
-/// moving it (a transform) cannot change any observer's answer.
+/// Ronaq (CHANGES.md §57): this view has no subviews, is not an `occludes` cover (§51: moving a
+/// cover changes what lies under it), and no registered observer watches it, so moving it (a
+/// transform) cannot change any observer's answer.
 @property (nonatomic, readonly) BOOL kr_isUnwatchedLeaf;
 
 /// Registers `observer` for the coalesced notices; a weak reference, so an observer that goes
