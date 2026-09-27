@@ -3873,3 +3873,60 @@ window counts and the next starts from zero; running transitions carry over; a p
 to the end of the next render). On a device through Ronaq's `PerfProbe` (`-perfProbe 1`).
 
 **Upstreamable.** Possibly, as a debug facility; it is shaped for one reader per process.
+
+## 48. A changed node is drawn; its ancestors are only passed through — every host
+
+**Files** · `compose/.../ui/node/DrawMarks.kt` (new) · `compose/.../ui/node/KNode.kt` (`draw`,
+`invalidateDraw`) · test `compose/src/commonTest/.../ui/node/DrawMarksTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE, the owner's ruling of 2026-09-27 that Home's idle CPU is
+fixed first (「首页空闲 CPU 偏高：要优先解决」); Ronaq `docs/design/perf-startup-idle.md` §16 R-2 (the
+design review's finding that a direct layer write is wrong on this fork)
+**Date** · 2026-09-27
+
+**What upstream does.** `KNode.invalidateDraw` sets the node's one flag and calls the parent's,
+up to the root. `KNode.draw` returns at once for an unflagged node and otherwise resets its view,
+runs the coordinator chain (every layer's `performDrawLayer` multiplying its transform and alpha
+into the view, every draw modifier, then the children) and flushes the view's props.
+
+**What went wrong.** The flag meant two things: "my own draw must run" and "a node below me must
+be reached". Every ancestor of a changed node therefore reset, redrew and flushed its own view
+for nothing — its props came out equal and `setProp` discarded them, after the matrix decomposition
+and string building had been paid. Home's room-card level meters change a `graphicsLayer` on 30
+bars every frame; on the iPhone that was 81 `KNode` draws per frame (debug 18.1 %, release 6.2 %
+of a core; Ronaq EVID-PSI-1), on the OPPO 96 per frame (EVID-PSI-4).
+
+**What changed.** `DrawMarks` keeps the two meanings apart: `self` (the node's own draw must run)
+and `descendant` (the pass must come through). `invalidateDraw` marks the node itself and marks its
+ancestors `descendant`, stopping at the first already marked. `draw`:
+
+- **Draw** — marked itself: exactly upstream's draw, children included.
+- **Visit** — marked for a descendant only: the node's view is left alone; its placed children are
+  drawn in z-order, as `InnerNodeCoordinator.performDraw` does. Not when one of its layers is at
+  alpha ≤ 0 (`isTransparent()`), because its own draw would not reach them either
+  (`RenderNodeLayer.performDrawLayer`).
+- **Skip** — nothing here or below changed.
+
+Every kind of change takes this path (transform, alpha, clip, size, a new draw modifier): the
+changed node always runs its whole own draw, so a node with several layers still combines them
+exactly as before. A direct write of one layer's values to the view — the first design — would
+have overwritten the combination (`.alpha(a).graphicsLayer{…}`), since every layer of a node
+writes into the node's one view (`NodeCoordinator.updateLayerBlock` hands each layer the
+`KNode`'s view).
+
+**Why the props are unchanged.** A `KNode` draws into its own native view and a parent's view holds
+nothing of its children's; `KuiklyCanvas` carries state only inside a `CanvasView`'s own pass, and
+`KNode.draw` sets `canvas.view` itself. A node's props are therefore a function of what its own draw
+reads, so a node whose inputs did not change produces the same props whether or not it is redrawn.
+The one difference: a draw modifier that does not call `drawContent()` no longer keeps a changed
+descendant from being written. On this fork that never hid the descendant (a native view); it left
+its props stale.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `DrawMarksTest` runs upstream's pass and this
+one side by side on 400 random trees with random changes, placements and alpha-0 layers for 30
+frames each, and asserts that every node ends every frame having drawn the same state version under
+both (the same props) and that this pass runs no more own draws; a chain of four under a changing
+leaf draws only the leaf (upstream: all four, every frame); a change under an alpha-0 parent waits
+until the parent is visible, as upstream. Made to fail by breaking the upward mark (all four cases
+fail). On devices: Ronaq's perf probe (`nodes(draw=…,visit=…)`) and the KRInvalidationProbe A/B.
+
+**Upstreamable.** Yes: a general cost of this renderer, nothing Ronaq-specific.
