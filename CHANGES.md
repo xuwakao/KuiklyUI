@@ -3836,3 +3836,40 @@ device runs in its verification phase.
 
 **Upstreamable.** Yes: a general "a user gesture began" signal for anything that must tell a reader's
 new gesture from momentum, which `isScrollInProgress` cannot.
+
+## 47. Frame counters an application can read — every host
+
+**Files** · `compose/.../profiler/FrameCounters.kt` (new) · the hooks, one line each:
+`compose/.../ComposeSceneMediator.kt` (`renderFrame`: a tick), `compose/.../ui/scene/BaseComposeScene.kt`
+(`render`: a render and why; `sendPointerEvent`: a press), `compose/.../ui/node/KNode.kt` (`draw`:
+drawn or skipped), `compose/.../animation/core/InfiniteTransition.kt` (`run`: running by label, a
+frame), `GlobalSnapshotManager.{android,native,js}.kt` (an apply sent) · test
+`compose/src/commonTest/.../profiler/FrameCountersTest.kt` (new)
+**Driven by** · Ronaq WORK-PERF-STARTUP-IDLE (`docs/design/perf-startup-idle.md` §5.5 TOOL-1): the
+owner's rulings of 2026-09-27 that Home's idle CPU is to be fixed first and that nothing unseen may
+animate need a count, on a device and in a product-like build, of what the frame path does
+**Date** · 2026-09-27
+
+**What.** A counter object and hooks that feed it. Off by default; nothing reads it unless an
+application switches it on (`FrameCounters.enabled = true`, before the first frame) and drains it
+(`FrameCounters.drain()` returns one line and starts the next window).
+
+Counted: native ticks delivered to the scene; renders that ran, with what made each necessary
+(frame-clock awaiters, a snapshot/layout/draw invalidation, input or a held pointer); `KNode`
+draws and skips (and, from §48, nodes only traversed); snapshot apply notifications sent; frames
+delivered to infinite transitions; the infinite transitions running, by label (a level, carried
+across windows); the delay from a pointer press to the end of the next render.
+
+**Why.** The scratch probe that found Home's idle cost (Ronaq `docs/evidence/perf-2026-09-27/
+profile/ios/probe-patch.diff`) was never committed, so no later change could be measured the same
+way. Profilers see CPU; they do not see how many renders a second ran while the app was hidden, or
+which label kept an animation clock alive.
+
+**Cost when off.** One boolean read per tick, render, node draw and apply; `InfiniteTransition.run`
+composes one extra `DisposableEffect` only while counting. Behaviour is unchanged either way.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `FrameCountersTest` (off counts nothing; a
+window counts and the next starts from zero; running transitions carry over; a press is timed once
+to the end of the next render). On a device through Ronaq's `PerfProbe` (`-perfProbe 1`).
+
+**Upstreamable.** Possibly, as a debug facility; it is shaped for one reader per process.
