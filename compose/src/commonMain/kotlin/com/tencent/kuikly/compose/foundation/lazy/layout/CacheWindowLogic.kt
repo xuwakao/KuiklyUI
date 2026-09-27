@@ -384,7 +384,7 @@ internal abstract class CacheWindowLogic(private val cacheWindow: LazyLayoutCach
         prefetchWindowStartLine = minOf(prefetchWindowStartLine, index)
         prefetchWindowEndLine = maxOf(prefetchWindowEndLine, index)
         prefetchWindowHandles.remove(index)?.fastForEach { handle ->
-            LazyListPrefetchTrace.log("cacheWindow cancel index=$index")
+            LazyListPrefetchTrace.log { "cacheWindow cancel index=$index" }
             handle.cancel()
         }
     }
@@ -398,7 +398,7 @@ internal abstract class CacheWindowLogic(private val cacheWindow: LazyLayoutCach
 
         indicesToRemove.forEach { removedIndex ->
             prefetchWindowHandles.remove(removedIndex)?.fastForEach { handle ->
-                LazyListPrefetchTrace.log("cacheWindow cancel index=$removedIndex")
+                LazyListPrefetchTrace.log { "cacheWindow cancel index=$removedIndex" }
                 handle.cancel()
             }
             windowCache.remove(removedIndex)

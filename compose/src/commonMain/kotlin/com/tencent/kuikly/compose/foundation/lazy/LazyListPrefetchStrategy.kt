@@ -171,9 +171,9 @@ private class DefaultLazyListPrefetchStrategy(private val initialNestedPrefetchI
                     this@DefaultLazyListPrefetchStrategy.wasScrollingForward = scrollingForward
                     this@DefaultLazyListPrefetchStrategy.indexToPrefetch = indexToPrefetch
                     currentPrefetchHandle = schedulePrefetch(indexToPrefetch)
-                    LazyListPrefetchTrace.log(
-                        "strategy onScroll schedule index=$indexToPrefetch forward=$scrollingForward",
-                    )
+                    LazyListPrefetchTrace.log {
+                        "strategy onScroll schedule index=$indexToPrefetch forward=$scrollingForward"
+                    }
                 }
                 if (scrollingForward) {
                     val lastItem = layoutInfo.visibleItemsInfo.last()
@@ -233,7 +233,7 @@ private class DefaultLazyListPrefetchStrategy(private val initialNestedPrefetchI
 
     private fun resetPrefetchState() {
         if (indexToPrefetch != -1) {
-            LazyListPrefetchTrace.log("strategy reset cancel index=$indexToPrefetch")
+            LazyListPrefetchTrace.log { "strategy reset cancel index=$indexToPrefetch" }
         }
         indexToPrefetch = -1
         currentPrefetchHandle?.cancel()

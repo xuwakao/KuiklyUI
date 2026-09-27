@@ -75,13 +75,13 @@ fun LazyLayout(
                 subcomposeLayoutState,
                 executor
             ) {
-                LazyListPrefetchTrace.log(
-                    "LazyLayout prefetchHandleProvider attach executor=${executor::class.simpleName}",
-                )
+                LazyListPrefetchTrace.log {
+                    "LazyLayout prefetchHandleProvider attach executor=${executor::class.simpleName}"
+                }
                 if (executor is NoOpPrefetchScheduler) {
-                    LazyListPrefetchTrace.log(
-                        "WARN NoOpPrefetchScheduler: prefetch requests will never execute",
-                    )
+                    LazyListPrefetchTrace.log {
+                        "WARN NoOpPrefetchScheduler: prefetch requests will never execute"
+                    }
                 }
                 prefetchState.prefetchHandleProvider = PrefetchHandleProvider(
                     itemContentFactory,

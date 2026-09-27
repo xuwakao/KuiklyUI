@@ -240,9 +240,9 @@ internal abstract class BaseComposeScene(
                     previousDrawNanoTime,
                 )
             val prefetchSpentNs = prefetchResult?.spentNs ?: 0L
-            LazyListPrefetchTrace.log(
-                "frameEnd isFrameIdle=$isFrameIdle needsProactive=${vsyncTickConditions.needsToBeProactive} scheduledRedraws=${vsyncTickConditions.scheduledRedrawsCount} queuePending=${framePrefetchScheduler?.hasPendingWork() == true} spentNs=$prefetchSpentNs scheduleNextFrame=${prefetchResult?.scheduleForNextFrame == true}",
-            )
+            LazyListPrefetchTrace.log {
+                "frameEnd isFrameIdle=$isFrameIdle needsProactive=${vsyncTickConditions.needsToBeProactive} scheduledRedraws=${vsyncTickConditions.scheduledRedrawsCount} queuePending=${framePrefetchScheduler?.hasPendingWork() == true} spentNs=$prefetchSpentNs scheduleNextFrame=${prefetchResult?.scheduleForNextFrame == true}"
+            }
 
             if (frameSampled) {
                 tracker?.onFrameEnd((prefetchSpentNs / 1_000_000L).toInt())
