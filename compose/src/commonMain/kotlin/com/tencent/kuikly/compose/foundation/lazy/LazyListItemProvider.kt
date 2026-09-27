@@ -22,6 +22,7 @@ import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutItemProvider
 import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutKeyIndexMap
 import com.tencent.kuikly.compose.foundation.lazy.layout.LazyLayoutPinnableItem
 import com.tencent.kuikly.compose.foundation.lazy.layout.NearestRangeKeyIndexMap
+import com.tencent.kuikly.compose.foundation.lazy.layout.ProvideLazyItemInViewport
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.referentialEqualityPolicy
@@ -76,8 +77,11 @@ private class LazyListItemProviderImpl constructor(
     @Composable
     override fun Item(index: Int, key: Any) {
         LazyLayoutPinnableItem(key, index, state.pinnedItems) {
-            intervalContent.withInterval(index) { localIndex, content ->
-                content.item(itemScope, localIndex)
+            // Ronaq fork (CHANGES.md §50).
+            ProvideLazyItemInViewport(index, state::isItemInViewport) {
+                intervalContent.withInterval(index) { localIndex, content ->
+                    content.item(itemScope, localIndex)
+                }
             }
         }
     }
