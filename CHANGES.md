@@ -3836,3 +3836,31 @@ device runs in its verification phase.
 
 **Upstreamable.** Yes: a general "a user gesture began" signal for anything that must tell a reader's
 new gesture from momentum, which `isScrollInProgress` cannot.
+
+## 47. Compose counts its vsync ticks and its frames
+
+**Files** · `compose/.../container/ComposeFrameCounter.kt` (new) · `compose/.../container/VsyncTickConditions.kt`
+(`onDisplayLinkTick` counts) · `compose/.../ui/scene/BaseComposeScene.kt` (`render` counts past its pause
+check) · test `compose/src/commonTest/.../container/ComposeFrameCounterTest.kt` (new)
+**Driven by** · the Ronaq owner's ruling of 2026-09-27 that nothing animates where it cannot be seen
+(「看不见情况下动画肯定要停播啊」); Ronaq `docs/design/image-pipeline.md` §20.8 (G-52, the readouts of
+TASK-FU0)
+**Date** · 2026-09-27
+
+**What.** Two process-wide totals, read-only, that change nothing the frame loop does:
+`ComposeFrameCounter.vsyncTicks` (every callback the page's vsync source hands the scene, whether or
+not a frame is due) and `ComposeFrameCounter.framesRendered` (frames the scene produces: past
+`render`'s pause check). One writer each, the scene's thread; a host reads them from any thread and
+takes differences.
+
+**Why.** Whether a page that is not shown still wakes the Kotlin side every display refresh, and
+whether it still recomposes and draws, cannot be seen from a host without a debugger. The iOS vsync
+source is a 60 Hz GCD timer on the context queue (`KRVsyncModule.mm`) and the Android one re-posts a
+Choreographer callback every frame (`KRVsyncModule.kt`); both run until the page is destroyed, in the
+background too. These counters are the before-and-after instrument for stopping them.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `ComposeFrameCounterTest` (every tick counted,
+only scheduled draws run; a rendered frame counts once), red on the tick assertion before
+`onDisplayLinkTick` counted.
+
+**Upstreamable.** Yes, as a general diagnostic of the frame loop.
