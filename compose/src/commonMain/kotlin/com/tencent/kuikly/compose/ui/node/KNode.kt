@@ -244,26 +244,53 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         super.removeAt(index, count)
     }
 
-    private var drawInvalidated = true
+    /**
+     * Ronaq fork (CHANGES.md §48): whether this node's own draw must run, or only the pass must
+     * come through it to a node below. Upstream kept one flag and set it on every ancestor of a
+     * changed node, so each of them reset, redrew and flushed its own view for nothing.
+     */
+    private val drawMarks = DrawMarks()
 
     override fun draw(canvas: Canvas) {
-        if (!drawInvalidated) {
-            FrameCounters.onNodeSkip()
-            return
+        when (drawMarks.take()) {
+            DrawAction.Draw -> {
+                FrameCounters.onNodeDraw()
+                view.reset()
+                canvas.view = view
+                super.draw(canvas)
+                canvas.view = null
+                view.flush()
+            }
+            DrawAction.Visit -> {
+                FrameCounters.onNodeVisit()
+                // Where this node's own draw would not reach its children — a layer at alpha 0
+                // skips its content (RenderNodeLayer.performDrawLayer) — neither does this.
+                if (!innerCoordinator.isTransparent()) {
+                    // As InnerNodeCoordinator.performDraw, without this node's own draw around it.
+                    zSortedChildren.forEach { child ->
+                        if (child.isPlaced) {
+                            child.draw(canvas)
+                        }
+                    }
+                }
+            }
+            DrawAction.Skip -> FrameCounters.onNodeSkip()
         }
-        FrameCounters.onNodeDraw()
-        drawInvalidated = false
-        view.reset()
-        canvas.view = view
-        super.draw(canvas)
-        canvas.view = null
-        view.flush()
     }
 
     override fun invalidateDraw() {
-        if (!drawInvalidated) {
-            drawInvalidated = true
-            parent?.invalidateDraw()
+        if (drawMarks.markSelf()) {
+            invalidateParentForDescendant()
+        }
+    }
+
+    /** Tells the ancestors, up to the first already on a marked path, that a node below needs drawing. */
+    private fun invalidateParentForDescendant() {
+        when (val parent = parent) {
+            is KNode<*> -> if (parent.drawMarks.markDescendant()) {
+                parent.invalidateParentForDescendant()
+            }
+            else -> parent?.invalidateDraw()
         }
     }
 
