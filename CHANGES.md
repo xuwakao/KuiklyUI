@@ -3864,3 +3864,77 @@ only scheduled draws run; a rendered frame counts once), red on the tick asserti
 `onDisplayLinkTick` counted.
 
 **Upstreamable.** Yes, as a general diagnostic of the frame loop.
+
+## 48. Nothing is visible while the app is not in front
+
+**Files** · `core-render-android/.../expand/visibility/KRVisibility.kt` (§35's file: the window term) + test
+`KRVisibilityTest.kt` · upstream `core-render-android/.../KuiklyRenderView.kt`
+(`onWindowVisibilityChanged` posts a visibility notice) · `core-render-ios/Extension/Category/UIView+KRVisibility.h/.m`
+(the app term, `KRAppPresence`)
+**Driven by** · the Ronaq owner's ruling of 2026-09-27 that nothing animates where it cannot be seen
+(「看不见情况下动画肯定要停播啊」); Ronaq `docs/design/image-pipeline.md` §20.8 (G-52), AC-33, INV-29
+**Date** · 2026-09-27
+
+**What was wrong.** The effective-visibility predicate (§35 on Android, the Ronaq addition on iOS) had
+no term for the app itself. With the app in the background or the screen locked, every view kept
+answering "visible": Android views stay attached to a window the activity has stopped, and iOS views
+stay in theirs. So every observer of the rule — image views with animated pictures, and the host
+players Ronaq builds on it — went on playing: a looping SVGA's animator kept ticking on the main
+thread, a VAP kept decoding into a surface nobody saw. Android's views were never told at all.
+
+**The change.**
+
+- **Android.** A view is visible only while its window is shown (`View.getWindowVisibility() ==
+  VISIBLE`); the window goes `GONE` when the activity stops (the background, the screen off) and comes
+  back when it starts. `visibleOrUnknown` answers "not visible", not "unknown", for such a view. The
+  root render view posts a visibility notice from `onWindowVisibilityChanged`, so every observer
+  re-checks through the rule it already has.
+- **iOS.** Nothing is visible while the application is in the background: a flag set on
+  `UIApplicationDidEnterBackgroundNotification` and cleared on `WillEnterForeground` (during which
+  `applicationState` still reads Background), read from `applicationState` until the first
+  notification. Each posts one visibility notice. The observers are registered from `+load` of a small
+  class in the same file, so the term holds from launch.
+
+A view that is merely inactive — a system alert over it, Control Center pulled down — stays visible:
+it can still be seen.
+
+**Verified.** `:KuiklyUI:core-render-android:testDebugUnitTest`: `KRVisibilityTest` (a view in a window
+that is not shown is not visible), red against a predicate that took the term and ignored it. Ronaq's
+hosted `KRVisibilityTests` (the background hides every view, one notice each way), red on the
+predicate before the app term.
+
+**Upstreamable.** Yes: the predicate's own definition of "can be seen" was missing the app.
+
+## 49. Compose produces no frames while its page is not shown
+
+**Files** · `compose/.../container/PageFrameLoop.kt` (new) + test `PageFrameLoopTest.kt` (new) · upstream
+`compose/.../ComposeContainer.kt` (`pageDidAppear`, `pageDidDisappear`, `startFrameDispatcher`)
+**Driven by** · as §48; Ronaq `docs/design/image-pipeline.md` §20.8 (G-52, decision 2)
+**Date** · 2026-09-27
+
+**What was wrong.** `ComposeContainer.pageDidDisappear` only moved the lifecycle to CREATED. The scene
+kept producing frames — every running animation recomposed, laid out and drew — and the vsync source
+kept waking the Kotlin side every display refresh: iOS's 60 Hz GCD timer on the context queue
+(`KRVsyncModule.mm`) and Android's Choreographer callback re-posted every frame (`KRVsyncModule.kt`),
+both until the page was destroyed. The frame conditions carry an `isApplicationActive` term for exactly
+this; Kuikly set it only at destroy. §47's counters showed both running in the background.
+
+**The change.** A page's frame loop runs only while the page is shown (`PageFrameLoop`, view-free): a
+disappearance — Android's delegator pause, iOS's resign-active and view-did-disappear, a hidden web
+tab — sets `VsyncTickConditions.isApplicationActive` false (the scene skips `render`) and, where the
+frames come from the vsync module, unregisters the module's source; an appearance registers it again
+and sets the term true, which redraws at once. One stop per disappearance, no second source on an
+appearance while shown, nothing after destroy; a source started while the page is not shown stops at
+once. Web, OHOS and mini-app pages keep their timer (it is not stored), and their scene pauses.
+
+While paused, recomposition, layout, drawing and frame-clock awaiters (animations, `withFrameNanos`)
+wait. Coroutines do not: `delay`, flows, snapshot-apply notifications (the global snapshot manager is
+not frame-driven) and view models run as before. A composition effect keyed on state that changes
+while the page is not shown starts when the page shows again.
+
+**Verified.** `:KuiklyUI:compose:testDebugUnitTest`: `PageFrameLoopTest` (a disappearance pauses the
+scene and stops the source, a redraw asked for meanwhile waits; an appearance restarts both; one stop
+per disappearance; a source started hidden stops; nothing after destroy), red against a stub that did
+what `ComposeContainer` did.
+
+**Upstreamable.** Yes, as the use of the upstream term it was written for.
