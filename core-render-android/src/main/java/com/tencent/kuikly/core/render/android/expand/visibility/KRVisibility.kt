@@ -19,6 +19,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
 import com.tencent.kuikly.core.render.android.const.KRCssConst
 import com.tencent.kuikly.core.render.android.css.ktx.getViewData
 import java.util.WeakHashMap
@@ -33,7 +34,10 @@ import kotlin.math.abs
  * the activity has stopped — the app in the background, the screen off), part of it is inside the
  * window (`getGlobalVisibleRect`), and neither it nor any ancestor is not `VISIBLE`, at alpha 0.01
  * or less, or marked `occluded` — the generic prop for a subtree that is laid out and attached but
- * not on the glass (a page under an overlay, a tab that is not in front).
+ * not on the glass (a page under an overlay, a tab that is not in front). Since §51, "inside the
+ * window" is the part of the view inside the window and every ancestor that clips its children
+ * (what `getGlobalVisibleRect` returns), and a view all of whose visible part lies under an opaque
+ * cover drawn above it — a view marked `occludes`, a sheet's solid body — is not visible either.
  *
  * The notices: the `visibility`, `opacity` and `occluded` props, a list's scroll, a transform
  * and a frame change post [CHANGE_VISIBILITY] (the last two since §43), and so does the root
@@ -119,6 +123,74 @@ object KRVisibility {
         }
     }
 
+    /** A rectangle in window pixels: left, top, right, bottom. */
+    data class Box(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+    /** A child's place in its parent's drawing order: its z, then its index. */
+    data class Branch(val z: Float, val index: Int)
+
+    /**
+     * CHANGES.md §51: an opaque [cover] drawn above a view hides it when it covers ALL of what is
+     * visible of it ([view], already clipped); a view only partly covered stays visible.
+     */
+    fun hiddenByCover(view: Box, cover: Box, coverAbove: Boolean): Boolean =
+        coverAbove && cover.left <= view.left && cover.top <= view.top &&
+            cover.right >= view.right && cover.bottom >= view.bottom
+
+    /**
+     * CHANGES.md §51: whether a cover's branch draws after a view's at their lowest common
+     * ancestor — a higher z first (a `ViewGroup` orders its children by z), then a later index.
+     */
+    fun drawnAbove(cover: Branch, view: Branch): Boolean =
+        cover.z > view.z || (cover.z == view.z && cover.index > view.index)
+
+    /**
+     * Views marked `occludes` (CHANGES.md §51): opaque covers of the rect they occupy — a sheet's
+     * solid body. Weak keys: a cover that goes away takes its entry with it.
+     */
+    private val covers = WeakHashMap<View, Boolean>()
+
+    /** [view] is, or is no longer, an opaque cover; a visibility notice follows a change. */
+    fun setCover(view: View, cover: Boolean) {
+        val was = covers.containsKey(view)
+        if (cover) covers[view] = true else covers.remove(view)
+        if (was != cover) noteChange(CHANGE_VISIBILITY)
+    }
+
+    /** Whether a registered cover drawn above [view] covers all of [visible], its visible rect. */
+    private fun coveredByAnOccluder(view: View, visible: Rect): Boolean {
+        if (covers.isEmpty()) return false
+        val coverRect = Rect()
+        for (cover in covers.keys.toList()) {
+            if (cover === view || !cover.isAttachedToWindow) continue
+            // A cover that cannot be seen itself hides nothing; covers are not checked for covers.
+            if (!isEffectivelyVisible(cover, withCovers = false)) continue
+            if (!cover.getGlobalVisibleRect(coverRect)) continue
+            val above = drawnAbove(cover, view) ?: continue
+            if (hiddenByCover(visible.box(), coverRect.box(), above)) return true
+        }
+        return false
+    }
+
+    /**
+     * Whether [cover] draws above [view]: their branches compared at the lowest common ancestor.
+     * Null when they share no ancestor, or one contains the other (a cover never hides its own
+     * subtree, nor a view the cover's ancestor).
+     */
+    private fun drawnAbove(cover: View, view: View): Boolean? {
+        val coverPath = generateSequence(cover) { it.parent as? View }.toList().asReversed()
+        val viewPath = generateSequence(view) { it.parent as? View }.toList().asReversed()
+        var depth = 0
+        while (depth < coverPath.size && depth < viewPath.size && coverPath[depth] === viewPath[depth]) depth++
+        if (depth == 0 || depth >= coverPath.size || depth >= viewPath.size) return null
+        val parent = coverPath[depth - 1] as? ViewGroup ?: return null
+        val c = coverPath[depth]
+        val v = viewPath[depth]
+        return drawnAbove(Branch(c.z, parent.indexOfChild(c)), Branch(v.z, parent.indexOfChild(v)))
+    }
+
+    private fun Rect.box() = Box(left, top, right, bottom)
+
     /**
      * The predicate, over plain values, for tests and for [isEffectivelyVisible]. [windowShown]:
      * the view's window is shown (`View.getWindowVisibility() == VISIBLE`), CHANGES.md §48.
@@ -147,16 +219,23 @@ object KRVisibility {
         return isEffectivelyVisible(view)
     }
 
-    fun isEffectivelyVisible(view: View): Boolean {
+    fun isEffectivelyVisible(view: View): Boolean = isEffectivelyVisible(view, withCovers = true)
+
+    private fun isEffectivelyVisible(view: View, withCovers: Boolean): Boolean {
         val chain = generateSequence(view) { it.parent as? View }.map {
             Layer(it.visibility == View.VISIBLE, it.alpha, it.isOccluded)
         }
-        return isEffectivelyVisible(
+        // The rect is the part of the view inside the window and every clipping ancestor
+        // (`getGlobalVisibleRect` intersects the parents that clip their children).
+        val visible = Rect()
+        val insideWindow = view.isAttachedToWindow && view.getGlobalVisibleRect(visible)
+        val shown = isEffectivelyVisible(
             attached = view.isAttachedToWindow,
-            insideWindow = view.isAttachedToWindow && view.getGlobalVisibleRect(Rect()),
+            insideWindow = insideWindow,
             chain = chain,
             windowShown = view.windowVisibility == View.VISIBLE,
         )
+        return shown && !(withCovers && coveredByAnOccluder(view, visible))
     }
 }
 

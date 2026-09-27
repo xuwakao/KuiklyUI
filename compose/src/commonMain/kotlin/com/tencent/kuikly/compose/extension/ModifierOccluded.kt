@@ -28,3 +28,15 @@ const val OCCLUDED_PROP = "occluded"
  * every animated view inside hears it, whatever composable drew it.
  */
 fun Modifier.occluded(occluded: Boolean): Modifier = setProp(OCCLUDED_PROP, if (occluded) 1 else 0)
+
+/** The generic common prop the renderers read (CHANGES.md §51). */
+const val OCCLUDES_PROP = "occludes"
+
+/**
+ * Ronaq fork (CHANGES.md §51): marks this node as an opaque cover of the rect it occupies — a
+ * sheet's solid body. A view all of whose visible part lies under a cover drawn above it is not
+ * effectively visible to the native renderers, so animated content wholly under a sheet stops; a
+ * view only partly covered stays visible. Mark only what is opaque: a translucent surface hides
+ * nothing.
+ */
+fun Modifier.occludes(occludes: Boolean): Modifier = setProp(OCCLUDES_PROP, if (occludes) 1 else 0)

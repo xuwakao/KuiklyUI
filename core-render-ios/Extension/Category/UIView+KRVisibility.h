@@ -32,11 +32,18 @@ typedef NS_OPTIONS(NSUInteger, KRViewTreeChange) {
 /// visibility notice. Reset on reuse like every common prop.
 @property (nonatomic, strong, nullable) NSNumber *css_occluded;
 
+/// The generic `occludes` prop (1/0, CHANGES.md §51): this view is an opaque cover of the rect it
+/// occupies — a sheet's solid body. A view all of whose visible part lies under a cover drawn above
+/// it is not effectively visible. Setting it posts a visibility notice. Reset on reuse.
+@property (nonatomic, strong, nullable) NSNumber *css_occludes;
+
 /// Whether anything of this view can be seen: the application is not in the background (a
 /// visibility notice is posted when it enters the background and when it comes back; CHANGES.md
-/// §48), the view is in a window, its bounds in window coordinates intersect the window's, and
-/// neither it nor any ancestor (the window included) is hidden, at alpha 0.01 or less, or marked
-/// occluded. The same predicate the Android renderer uses (Ronaq design image-pipeline INV-6).
+/// §48), the view is in a window, neither it nor any ancestor (the window included) is hidden, at
+/// alpha 0.01 or less, or marked occluded, some of its bounds lies inside the window and inside
+/// every ancestor that clips (`clipsToBounds`, `masksToBounds`: a list's viewport, a clipped
+/// carousel; §51), and that part does not lie wholly under an `occludes` cover drawn above it
+/// (§51). The same predicate the Android renderer uses (Ronaq design image-pipeline INV-6).
 @property (nonatomic, readonly) BOOL kr_isEffectivelyVisible;
 
 /// How many pixels this view covers on the screen: its bounds, times the screen scale,

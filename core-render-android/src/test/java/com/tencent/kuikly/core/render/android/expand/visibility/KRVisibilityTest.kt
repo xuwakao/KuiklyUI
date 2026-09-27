@@ -76,6 +76,35 @@ class KRVisibilityTest {
         assertTrue(KRVisibility.isEffectivelyVisible(true, true, sequenceOf(shown), windowShown = true))
     }
 
+    // CHANGES.md §51: an opaque cover drawn above a view hides it when it covers all of it.
+
+    @Test
+    fun aViewWhollyUnderACoverDrawnAboveItIsNotVisible() {
+        val view = KRVisibility.Box(10, 10, 60, 60)
+        assertTrue(KRVisibility.hiddenByCover(view, cover = KRVisibility.Box(0, 0, 100, 100), coverAbove = true))
+    }
+
+    @Test
+    fun aViewPartlyUnderACoverStaysVisible() {
+        val view = KRVisibility.Box(10, 10, 60, 60)
+        assertFalse(KRVisibility.hiddenByCover(view, cover = KRVisibility.Box(0, 0, 100, 40), coverAbove = true))
+    }
+
+    @Test
+    fun aCoverDrawnBelowTheViewHidesNothing() {
+        val view = KRVisibility.Box(10, 10, 60, 60)
+        assertFalse(KRVisibility.hiddenByCover(view, cover = KRVisibility.Box(0, 0, 100, 100), coverAbove = false))
+    }
+
+    @Test
+    fun drawingOrderAtTheCommonAncestorIsZThenIndex() {
+        assertTrue(KRVisibility.drawnAbove(cover = KRVisibility.Branch(0f, 3), view = KRVisibility.Branch(0f, 1)))
+        assertFalse(KRVisibility.drawnAbove(cover = KRVisibility.Branch(0f, 1), view = KRVisibility.Branch(0f, 3)))
+        assertTrue(KRVisibility.drawnAbove(cover = KRVisibility.Branch(20f, 0), view = KRVisibility.Branch(0f, 5)),
+            "a higher z draws later whatever the index")
+        assertFalse(KRVisibility.drawnAbove(cover = KRVisibility.Branch(0f, 5), view = KRVisibility.Branch(9f, 0)))
+    }
+
     @Test
     fun noticesPostedInOneTurnAreHeardOnceTogether() {
         KRVisibility.noteChange(KRVisibility.CHANGE_VISIBILITY)
