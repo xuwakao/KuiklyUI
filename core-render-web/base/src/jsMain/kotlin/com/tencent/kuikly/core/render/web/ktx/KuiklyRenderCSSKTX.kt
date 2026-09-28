@@ -1138,6 +1138,11 @@ private val propHandlers = mapOf<String, (CSSStyleDeclaration, Any, HTMLElement)
         ele.setFrame(value.unsafeCast<Frame>(), cssStyle)
         true
     },
+    // Ronaq fork (CHANGES.md §61): a loop the browser runs by itself (KRLoopAnimation.kt).
+    LOOP_ANIMATION to { _, value, ele ->
+        ele.setLoopAnimation(value.unsafeCast<String?>())
+        true
+    },
     KRCssConst.ANIMATION_COMPLETION_BLOCK to { _, value, ele ->
         ele.animationCompletionBlock = value.unsafeCast<KuiklyRenderCallback>()
         true
