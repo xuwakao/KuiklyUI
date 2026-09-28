@@ -174,6 +174,11 @@ fun View.setCommonProp(key: String, value: Any): Boolean {
             setHRAnimation(value as String)
             true
         }
+        // Ronaq fork (CHANGES.md §61): a loop the renderer runs by itself (KRLoopAnimation.kt).
+        LOOP_ANIMATION -> {
+            setLoopAnimation(value as? String)
+            true
+        }
         KRCssConst.FRAME -> {
             val rect = value as Rect
             // Ronaq fork (CHANGES.md §43): a frame the renderer moves takes what is under it on or
@@ -353,6 +358,10 @@ fun View.resetCommonProp(propKey: String): Boolean {
         }
         KRCssConst.ANIMATION -> {
             setHRAnimation(null)
+            return true
+        }
+        LOOP_ANIMATION -> {
+            setLoopAnimation(null)
             return true
         }
         KRCssConst.ANIMATION_COMPLETION_BLOCK -> {
