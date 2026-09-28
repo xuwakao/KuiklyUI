@@ -21,6 +21,7 @@
 #import "KuiklyRenderBridge.h"
 #import "KuiklyRenderViewExportProtocol.h"
 #import "UIView+KRVisibility.h"
+#import "UIView+KRLoopAnimation.h"
 
 #define LAZY_ANIMATION_KEY @"lazyAnimationKey"
 #define ANIMATION_KEY @"animation"
@@ -880,6 +881,8 @@ static char KRLargestNotedScaleKey;
         setFrameBlock();
     }
     [self p_limitMaxBorderRadisuIfNeed];
+    // Ronaq (CHANGES.md §61): a looping scale is built from the view's size; a new size rebuilds it.
+    [self kr_loopAnimationDidLayout];
 }
 
 - (void)p_boundsDidChanged {
