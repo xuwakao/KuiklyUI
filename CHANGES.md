@@ -4424,3 +4424,64 @@ return order; one hold per hide, an appearance redraws while shown; nothing afte
 stand-in with §49's rule (four of five fail, the first on "the scene keeps moving").
 
 **Upstreamable.** Yes, with §58 and §59.
+
+## 61. A loop the renderer runs by itself — Android, iOS, web
+
+**Files** · compose `compose/.../extension/ModifierLoopAnimation.kt` (new: `LoopAnimation`, `Modifier.loopAnimation`)
++ test `compose/src/commonTest/.../extension/LoopAnimationTest.kt` · Android
+`core-render-android/.../css/ktx/KRLoopAnimation.kt` (new) + test `.../css/ktx/KRLoopAnimationTest.kt`, upstream
+`.../css/ktx/KRCSSViewExtension.kt` (`setCommonProp` / `resetCommonProp` dispatch) · iOS
+`core-render-ios/Extension/Category/UIView+KRLoopAnimation.{h,m}` (new), upstream `UIView+CSS.m` (the frame
+path calls `-kr_loopAnimationDidLayout`) · web `core-render-web/base/.../ktx/KRLoopAnimation.kt` (new), upstream
+`.../ktx/KuiklyRenderCSSKTX.kt` (a prop handler) · tests Ronaq's hosted `KRLoopAnimationTests` (iOS)
+**Driven by** · the Ronaq owner's words of 2026-09-27, 「iPhone 上房间最小化后的悬浮小窗，会让界面一直按 60 帧重绘：这个一定要解决」:
+the minimised room's bubble kept Compose rendering 60 frames a second, 24–29 % of a core on the simulator
+(Ronaq `docs/design/minimised-room.md` §3.1, §4.1; EVID-R3-4)
+**Date** · 2026-09-27
+
+**What upstream does.** An infinite Compose transition asks the frame clock for a frame on every vsync
+(`InfiniteTransition.kt:173-188`). So one small looping ornament that is on screen by design — a turning
+ring, a level meter — keeps the whole scene recomposing and rendering every frame, and §59's tick stop never
+fires (`BaseComposeScene.invalidateIfNeeded` sees the awaiter). Kuikly's own `animation` prop with
+`repeatForever` is no substitute: it animates every animatable prop set while it is active, the frame
+included, has no visibility pause, and Compose has no path to it.
+
+**What changed.** A generic common prop, `loopAnimation`, that the native renderer animates by itself for
+as long as it is set. Compose writes it once (`Modifier.loopAnimation(LoopAnimation(...))`) and asks for no
+frame; `null` writes the empty value, which stops the loop.
+- Wire form: `"<rotate|scaleX|scaleY|opacity> <from> <to> <legMillis> <reverse 0|1> <linear|easeInOut> <phase>
+  <pivotX> <pivotY>"` (degrees for a rotation, factors otherwise; a cycle is two legs when reversed; the
+  phase a fraction of a cycle; the pivot fractions of the view's size). Whole numbers are written without a
+  fraction, so every platform writes the same text. A malformed value or an unknown property is ignored
+  and leaves the view at rest (one log line on Android and iOS).
+- The loop owns its property on its node: the node must carry no transform (rotate, scale) or alpha
+  (opacity) of its own. Removing the prop, or reusing the view, stops the loop and puts the property back
+  at rest (rotation 0, scale 1, opacity 1). A new value replaces the loop and starts at its own phase.
+- **Android.** An `ObjectAnimator` on `View.ROTATION`, `SCALE_X`, `SCALE_Y` or `ALPHA`, repeating for ever
+  (RESTART or REVERSE); each frame sets one RenderNode property, re-records nothing and involves no Kuikly
+  thread. The pivot is set from the view's size and again on every layout. The animator starts when the
+  view is first seen (at its phase), pauses when the renderer's predicate says it cannot be seen (window
+  hidden, occluded, covered, detached) and resumes when it can (`LoopRunRule`); it watches only its own view,
+  so §57's saving on unwatched leaves stays.
+- **iOS.** A keyed `CABasicAnimation` (`repeatCount` for ever, `autoreverses`, `timeOffset` for the phase,
+  kept across the background). A rotation turns about the centre. The renderer resets the anchor point with
+  every frame (`setCss_frame:` → `resetTransformWithView:`), so a scale about another pivot is a whole
+  transform built from the size, and the frame path rebuilds it when the size changes, keeping the phase.
+  Core Animation draws nothing for a layer off the glass or in the background.
+- **Web.** `element.animate(keyframes, { iterations: Infinity, direction: alternate|normal, easing, delay:
+  -phase × cycle })` with `transform-origin` from the pivot; the empty value cancels it. Browsers throttle a
+  hidden tab's animations.
+
+Not for motion that must end or report (a player or a Compose animation), nor for motion tied to state
+that changes often (each change is a prop write). HarmonyOS and the mini-program renderer do not know the
+prop and leave the view at rest.
+
+**Verified.** `LoopAnimationTest` (the wire form; null is the empty value) and Android `KRLoopAnimationTest`
+(the parse; a malformed value is no loop; start at the phase when seen, pause unseen, resume, stop on
+removal from any state; the rest values) — both red while absent. iOS `KRLoopAnimationTests` through the
+renderer's own prop path: one keyed animation with the duration, repeat and time offset; the empty value
+removes it and leaves the identity; a new frame rebuilds a bottom-pivoted scale and keeps the phase — red
+while the renderer did not know the prop (17 failed assertions). The web path compiled; its browser check,
+and the Android animator on a device, are Ronaq's minimised-room rows (R6).
+
+**Upstreamable.** Yes: it is a general capability of every renderer.
