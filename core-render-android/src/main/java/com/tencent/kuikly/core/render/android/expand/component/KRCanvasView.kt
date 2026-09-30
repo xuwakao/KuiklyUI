@@ -759,6 +759,9 @@ private class DrawStyle(private val kuiklyContext: IKuiklyRenderContext?) {
             return
         }
         if (gradient != null) {
+            // Gradient stops own their alpha. The shared Paint may still carry the
+            // previous solid primitive's alpha, including zero from a fading particle.
+            paint.alpha = 255
             paint.shader = gradient
             return
         }

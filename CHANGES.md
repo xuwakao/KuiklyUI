@@ -4491,3 +4491,18 @@ while the renderer did not know the prop (17 failed assertions). The web path co
 and the Android animator on a device, are Ronaq's minimised-room rows (R6).
 
 **Upstreamable.** Yes: it is a general capability of every renderer.
+
+
+## 62. Canvas gradient alpha must not inherit a solid primitive — Android
+
+**Files** · `core-render-android/.../expand/component/KRCanvasView.kt` (`DrawStyle.internalApplyStyle`)
+**Driven by** · Ronaq owner's2026-09-30 report that the two fitting-stage spotlights disappear near their sweep endpoints.
+**Date** ·2026-09-30
+
+**What upstream does.** The Canvas view reuses one Android Paint for every operation and subsequent frame. Assigning a solid color sets its alpha. The gradient branch only assigned a shader, leaving that alpha intact. Android multiplies gradient-stop alpha by Paint alpha: a preceding transparent particle erases the next gradient; a fading one dims it. The effect crosses frames when a solid is the last primitive in the pass.
+
+**What changed.** Set Paint alpha to255 before assigning a gradient shader. Gradient stops retain their own transparency; the following solid still assigns its own color and alpha normally. Fill and stroke share this branch. No new API or wire format, and no business-specific code.
+
+**Verification.** Ronaq's on-device `CanvasGradientTest` invokes the actual DrawStyle and paints an Android Bitmap. Before repair, the transparent-solid case produced alpha0 instead of64, and the fading-solid case produced16 instead of64; both failed. The gradient-to-solid control retained alpha32. After repair all three checks passed on Pixel; a26-second uninterrupted stage recording shows both beams visible through more than two full cycles. The paired native run and stage recording are documented in Ronaq `docs/progress/dress-room.md`, `docs/issue/dress-room-ui-parity.md` and `docs/assets/dress-room-pearl-v1/evidence/spotlight-alpha-review/`.
+
+**Upstreamable.** Yes: alpha isolation is a generic Canvas renderer correction.
