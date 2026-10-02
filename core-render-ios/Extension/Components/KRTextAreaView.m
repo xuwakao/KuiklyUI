@@ -204,7 +204,9 @@ NSString *const KRFontWeightKey = @"fontWeight";
     NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
     paragraphStyle.minimumLineHeight = [_css_lineHeight floatValue];
     paragraphStyle.maximumLineHeight = [_css_lineHeight floatValue];
-    paragraphStyle.lineSpacing = ceil(0.2 * _css_fontSize.floatValue);
+    // Explicit lineHeight already includes inter-line spacing. Match the shadow
+    // layout so a five-line viewport contains five native text lines.
+    paragraphStyle.lineSpacing = 0;
 
     NSRange range = NSMakeRange(0, attrStr.length);
     [attrStr addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:range];
@@ -212,6 +214,9 @@ NSString *const KRFontWeightKey = @"fontWeight";
     [attrStr addAttribute:NSBaselineOffsetAttributeName value:@(baselineOffset) range:range];
 
     self.attributedText = attrStr;
+    // Use the same layout manager as css_getContentHeight; paragraph-only edits
+    // must invalidate cached line fragments before UITextView updates scrolling.
+    [self.layoutManager invalidateLayoutForCharacterRange:range actualCharacterRange:NULL];
     NSMutableDictionary *typingAttrs = [self.typingAttributes mutableCopy] ?: [NSMutableDictionary dictionary];
     typingAttrs[NSParagraphStyleAttributeName] = paragraphStyle;
     typingAttrs[NSFontAttributeName] = font;
@@ -288,6 +293,7 @@ NSString *const KRFontWeightKey = @"fontWeight";
     _css_fontSize = css_fontSize;
     self.font = [KRConvertUtil UIFont:@{KRFontSizeKey: css_fontSize ?: @(16),
                                         KRFontWeightKey: _css_fontWeight ?: @"400"}];
+    [self updateLineHeightIfApplicable];
     [self setNeedsLayout];
 }
 
@@ -428,6 +434,10 @@ NSString *const KRFontWeightKey = @"fontWeight";
     if (needsPostProcessor) {
         [self p_applyTextPostProcessorIfNeed];
     }
+    if (textChanged || needsPostProcessor) {
+        // Rebuilding attributedText above removes its paragraph attributes.
+        [self updateLineHeightIfApplicable];
+    }
     NSUInteger inputCursorStart = [self p_getInputCursorIndexWithIndex:selectionStart];
     NSUInteger inputCursorEnd = [self p_getInputCursorIndexWithIndex:selectionEnd];
     NSRange selectedRange = NSMakeRange(inputCursorStart, inputCursorEnd - inputCursorStart);
@@ -518,6 +528,14 @@ NSString *const KRFontWeightKey = @"fontWeight";
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+#if DEBUG
+    if (getenv("RONAQ_COMPOSER_METRICS") && self.text.length > 0) {
+        NSParagraphStyle *paragraph = [self.attributedText attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:NULL];
+        NSLog(@"ComposerMetrics height=%.1f content=%.1f offset=%.1f cssLine=%.1f paragraphLine=%.1f font=%.1f",
+              self.bounds.size.height, self.contentSize.height, self.contentOffset.y,
+              _css_lineHeight.floatValue, paragraph.minimumLineHeight, self.font.pointSize);
+    }
+#endif
     if (_placeholderTextView.font != self.font) {
         _placeholderTextView.font = self.font;
     }
@@ -696,6 +714,9 @@ NSString *const KRFontWeightKey = @"fontWeight";
     [self p_limitTextInput];
     // 实时应用 textPostProcessor（emoji attachment）
     [self p_applyTextPostProcessorIfNeed];
+    NSRange savedSelection = self.selectedRange;
+    [self updateLineHeightIfApplicable];
+    self.selectedRange = savedSelection;
 
     if (self.css_textDidChange) {
         NSString *text = [self p_outputText].copy ?: @"";
@@ -805,6 +826,7 @@ NSString *const KRFontWeightKey = @"fontWeight";
     }
     self.attributedText = rawAttr;
     [self p_applyTextPostProcessorIfNeed];
+    [self updateLineHeightIfApplicable];
     NSUInteger inputCursor = [self p_getInputCursorIndexWithIndex:outputCursor];
     self.selectedRange = NSMakeRange(inputCursor, 0);
     _ignoreTextDidChanged = NO;

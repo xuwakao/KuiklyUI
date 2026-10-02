@@ -38,6 +38,7 @@ import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UnderlineSpan
 import android.text.style.UpdateAppearance
+import android.text.style.UpdateLayout
 import android.util.SizeF
 import com.tencent.kuikly.core.render.android.IKuiklyRenderContext
 import com.tencent.kuikly.core.render.android.const.KRCssConst
@@ -511,7 +512,9 @@ class FontFamilySpan(
     }
 }
 
-class HRLineHeightSpan(internal val height: Int) : LineHeightSpan {
+// Editable/DynamicLayout reflows restored spans only when they implement UpdateLayout.
+// Without it, a paste can retain the font's default height until the next text edit.
+class HRLineHeightSpan(internal val height: Int) : LineHeightSpan, UpdateLayout {
 
     override fun chooseHeight(
         text: CharSequence?,

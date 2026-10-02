@@ -242,12 +242,10 @@ open class KRTextFieldView(context: Context, private val softInputMode: Int?) : 
     }
 
     private fun setNumberLines(propValue: Any): Boolean {
-        maxLines = propValue as Int
-        if (maxLines == 1) {
-            isSingleLine = true
-        } else {
-            isSingleLine = false
-        }
+        val lines = propValue as Int
+        // setSingleLine also rewrites maxLines; apply the actual limit afterwards.
+        isSingleLine = lines == 1
+        maxLines = lines
         return true
     }
 

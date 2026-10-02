@@ -77,7 +77,7 @@ import com.tencent.kuikly.core.views.RichTextView
 import com.tencent.kuikly.core.views.TextAttr
 import com.tencent.kuikly.core.views.TextConst
 import com.tencent.kuikly.core.views.TextSpan
-import kotlin.math.floor
+import kotlin.math.ceil
 
 /**
  * Basic element that displays text and provides semantics / accessibility information.
@@ -302,8 +302,11 @@ private class TextWithInlineContentPolicy(
                 Pair(
                     measurable.measure(
                         Constraints(
-                            maxWidth = floor(r.width).toInt(),
-                            maxHeight = floor(r.height).toInt()
+                            // Native span coordinates pass through density/JSON floats.
+                            // Flooring an integer-sized placeholder after that round trip
+                            // can remove a pixel and ellipsize an otherwise fitting child.
+                            maxWidth = ceil(r.width).toInt(),
+                            maxHeight = ceil(r.height).toInt()
                         )
                     ),
                     IntOffset(r.left.fastRoundToInt(), r.top.fastRoundToInt())

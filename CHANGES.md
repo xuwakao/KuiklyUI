@@ -4506,3 +4506,29 @@ and the Android animator on a device, are Ronaq's minimised-room rows (R6).
 **Verification.** Ronaq's on-device `CanvasGradientTest` invokes the actual DrawStyle and paints an Android Bitmap. Before repair, the transparent-solid case produced alpha0 instead of64, and the fading-solid case produced16 instead of64; both failed. The gradient-to-solid control retained alpha32. After repair all three checks passed on Pixel; a26-second uninterrupted stage recording shows both beams visible through more than two full cycles. The paired native run and stage recording are documented in Ronaq `docs/progress/dress-room.md`, `docs/issue/dress-room-ui-parity.md` and `docs/assets/dress-room-pearl-v1/evidence/spotlight-alpha-review/`.
 
 **Upstreamable.** Yes: alpha isolation is a generic Canvas renderer correction.
+
+## 63. Preserve multiline textarea limits and explicit line height
+
+**Files** · Android `KRTextAreaView.kt`, `KRTextFieldView.kt`, `text/KRRichTextBuilder.kt`; iOS `KRTextAreaView.m`.
+**Driven by** · Owner's 2026-10-01 request for auto-growing emoji composers with at most five visible lines and internal scrolling.
+
+**Cause.** Android's `setSingleLine` also changes `maxLines`, so assigning the limit before switching modes silently loses it. The newline return key must keep a real multiline editor. `HRLineHeightSpan` also lacked `UpdateLayout`: Android's `DynamicLayout.ChangeWatcher.onSpanAdded/onSpanChanged` only reflows spans carrying that marker. A span restored after a paste could therefore leave the editor laid out with its smaller default font metrics until the next edit. iOS rebuilds attributed text on draft restore and paste, losing paragraph/baseline attributes; font updates and normal editing must preserve the explicit line height too.
+
+**Change.** Restore the line limit after switching modes, keep newline-key textareas multiline, and make the line-height span trigger Android reflow. Reapply iOS paragraph styling after rebuilding text, changing the font, and non-composing edits while preserving selection. Explicit line height includes spacing, so no additional paragraph line spacing is added. Invalidate iOS cached line fragments after paragraph styling so the live viewport agrees with its content-height query.
+
+**Verification.** Ronaq `ComposerTextAreaTest` passed both native checks on Pixel after both failed before repair. `KRTextAreaLineHeightTests` passed both iOS simulator checks; the live DM editor showed five lines and internally scrolled seven-line content. Build/runtime results and remaining UI limits are recorded in `docs/progress/room-composer-interactions.md`. No send contract or emoji resource contract changes.
+
+**Upstreamable.** Yes: these are generic native textarea corrections.
+
+## 64. Keep inline text controls aligned with native bidi text
+
+**Files** · Android `KRRichTextView.kt`; Compose `TextStringRichNode.kt`, `foundation/text/BasicText.kt`.
+**Driven by** · Owner's 2026-10-01 public-text folding ruling: the action follows the visible text, without a separate row or reserved side column.
+
+**Cause.** Android forced every rich paragraph to LTR and calculated an RTL attachment's left edge from its leading (right) edge. Its normal/opposite alignments also interpreted physical wire left/right as paragraph-relative alignment. On renderers that report occupied width, Compose requested attachment coordinates at the initial measuring width even though the native text then drew in a narrower frame. The Arabic action consequently appeared on the wrong side or overlapped the body. Flooring placeholder sizes after a density/JSON float round trip can also remove one pixel from the child, making a fitting localized label ellipsize.
+
+**Change.** Resolve paragraphs from their first strong character while preserving physical left/right alignment; subtract attachment width for RTL runs. Before obtaining placeholder rectangles, remeasure inline text at its final drawing width if its occupied width shrinks. Round inline-child bounds outward so text fitting the declared attachment size is not clipped by the float conversion. There is no new wire field or business-specific renderer behavior.
+
+**Verification.** Pixel native shared-component checks showed the English action immediately after the third line and the Arabic action after the RTL paragraph's ellipsis, with expansion/collapse consuming its own click (parent counter remained0). iPhone16Pro/iOS18.6 simulator showed the same corrected Arabic placement, with no overlap. Both retained an independently folded neighbouring message. Narrow120dp Turkish action truncation reproduced on both platforms before outward rounding; the final Pixel and simulator runs showed the complete action beside the last body line after repair. Evidence and remaining checks are recorded in Ronaq `docs/progress/public-text-folding.md`.
+
+**Upstreamable.** Yes: bidi direction and attachment coordinates are general rich-text capabilities.

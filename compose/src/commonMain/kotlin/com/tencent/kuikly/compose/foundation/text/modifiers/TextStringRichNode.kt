@@ -350,9 +350,16 @@ internal class TextStringRichNode(
         }
 
         val intSize = measureTextView(constraints.maxWidth, constraints.maxHeight)
-        val layoutSize = constraints.constrain(
+        var layoutSize = constraints.constrain(
             intSize
         )
+
+        // TextKit reports the occupied width, which can be narrower than the
+        // measuring container. RTL placeholder coordinates must be resolved in
+        // the final drawing width, otherwise inline children overlap the text.
+        if (inlineContent.isNotEmpty() && layoutSize.width > 0 && layoutSize.width < constraints.maxWidth) {
+            layoutSize = constraints.constrain(measureTextView(layoutSize.width, constraints.maxHeight))
+        }
 
         val result = genTextLayoutResult(layoutSize)
 

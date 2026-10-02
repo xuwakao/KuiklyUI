@@ -52,6 +52,17 @@ class KRTextAreaView(context: Context, softInputMode: Int?) : KRTextFieldView(co
     }
 
     private fun setReturnKeyType(value: Any): Boolean {
+        // A newline key needs a real multiline editor. The action-key workaround
+        // below switches EditText to single-line mode and removes the line limit.
+        // Keep the configured maxLines and native scrolling for ordinary textareas.
+        if (value == "none") {
+            val configuredLines = maxLines
+            isSingleLine = false
+            maxLines = configuredLines
+            setHorizontallyScrolling(false)
+            imeOptions = EditorInfo.IME_ACTION_NONE
+            return true
+        }
         /**
          * 安卓 EditText 组件，默认情况下 IMEAction 和多行模式有冲突
          * 即默认情况下，如果设置了 isSingleLine=false，再设置 IMEAction 会无效

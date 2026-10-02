@@ -638,7 +638,9 @@ class KRRichTextShadow : IKuiklyRenderShadowExport, IKuiklyRenderContextWrapper 
                         val phWidth = phSpans[0].width()
                         val phHeight = phSpans[0].height()
                         // 水平方向坐标
-                        val x = layout.getPrimaryHorizontal(textStartIndex)
+                        // An inline box starts at its right edge inside an RTL run.
+                        val leadingX = layout.getPrimaryHorizontal(textStartIndex)
+                        val x = if (layout.isRtlCharAt(textStartIndex)) leadingX - phWidth else leadingX
                         // 垂直方向坐标
                         val lineNum = layout.getLineForOffset(textStartIndex)
                         val top = layout.getLineTop(lineNum)
@@ -808,8 +810,10 @@ class KRRichTextShadow : IKuiklyRenderShadowExport, IKuiklyRenderContextWrapper 
     private fun getTextAlign(): Layout.Alignment {
         return when (textProps.textAlign) {
             KRTextProps.TEXT_ALIGN_CENTER -> Layout.Alignment.ALIGN_CENTER
-            KRTextProps.TEXT_ALIGN_RIGHT -> Layout.Alignment.ALIGN_OPPOSITE
-            else -> Layout.Alignment.ALIGN_NORMAL
+            // The wire values are physical left/right. Normal/opposite are
+            // paragraph-relative and flip when natural bidi direction changes.
+            KRTextProps.TEXT_ALIGN_RIGHT -> Layout.Alignment.valueOf("ALIGN_RIGHT")
+            else -> Layout.Alignment.valueOf("ALIGN_LEFT")
         }
     }
 
@@ -875,7 +879,7 @@ class KRRichTextShadow : IKuiklyRenderShadowExport, IKuiklyRenderContextWrapper 
             textPaint,
             desiredWidth)
             .setAlignment(getTextAlign())
-            .setTextDirection(TextDirectionHeuristics.LTR)
+            .setTextDirection(TextDirectionHeuristics.FIRSTSTRONG_LTR)
             .setLineSpacing(textProps.lineSpacing, 1.0f)
             .setIncludePad(false)
     }
