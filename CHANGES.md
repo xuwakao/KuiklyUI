@@ -4532,3 +4532,64 @@ and the Android animator on a device, are Ronaq's minimised-room rows (R6).
 **Verification.** Pixel native shared-component checks showed the English action immediately after the third line and the Arabic action after the RTL paragraph's ellipsis, with expansion/collapse consuming its own click (parent counter remained0). iPhone16Pro/iOS18.6 simulator showed the same corrected Arabic placement, with no overlap. Both retained an independently folded neighbouring message. Narrow120dp Turkish action truncation reproduced on both platforms before outward rounding; the final Pixel and simulator runs showed the complete action beside the last body line after repair. Evidence and remaining checks are recorded in Ronaq `docs/progress/public-text-folding.md`.
 
 **Upstreamable.** Yes: bidi direction and attachment coordinates are general rich-text capabilities.
+
+## 65. Report nested touch handoffs as pager drags — Android
+
+**Files** · `core-render-android/.../list/KRRecyclerView.kt`
+**Driven by** · Explore → Moments touch handoff reproduced on Pixel, 2026-10-02.
+
+A parent pager moved through `scrollParentIfNeeded` uses `scrollBy`, which does not
+enter RecyclerView's DRAGGING state. Its ordinary scroll listener therefore never
+emits dragBegin. Compose's `dragsBegun` remains unchanged and a tab synchronizer
+correctly rejecting stale programmatic scrolls rejects this real touch as well.
+Dragging directly over the header succeeds; dragging in Explore's child pager
+fails on the same build. Reference Lingo `HomeActivity.kt:1122-1170` accepts the
+ViewPager2 page callback for a user gesture, including a child-edge handoff.
+
+Emit one begin before a horizontal pager first consumes nested TYPE_TOUCH motion,
+and one end after all its touch children stop. Programmatic scrolls, non-touch
+flings, and gestures consumed wholly by a child produce no new pager drag.
+Keep the existing nested velocity/snap calculation; the end follows it.
+
+Verification: direct Pixel content handoff now succeeds; its repeated minimized
+run still contains one failure and is not accepted as fully passing. OPPO normal
+and real minimized-room states each passed five single-swipe round trips plus
+Moments inner paging. See Ronaq `docs/progress/explore-moment-2026-10-02.md`
+for frozen APK identities and gesture evidence. Default-off KRPagerTouch logs
+provide begin/end, nested-child counts and release velocity/age for follow-up diagnosis; they are not
+present in the tested OPPO artifact.
+
+## 66. Clip asymmetric sheet corners on older Android
+
+**File** · Android `css/decoration/KRViewDecoration.kt`
+**Driven by** · Room sheets expose a rectangular backdrop outside their top corners, 2026-10-02.
+
+Before API 33, a path Outline cannot clip children even when `clipToOutline` is true. The uniform-outline optimization in section 28 consequently skipped the only working clip for top-only rounded sheets. Select Canvas path clipping for asymmetric radii on those systems and save/restore its state through the existing drawing wrappers. Uniform circles/cards retain the fast outline path; API 33+ retains native path clipping. Glass tint, blur and safe-area coverage are unchanged.
+
+Verification: the same native test package, using a real Kuikly context, failed four of five checks on the frozen old Pixel API 27 APK and passed all five on the repair. Tests include hardware-window pixels, rectangular child corner exclusion, square bottom coverage, sibling isolation and reused uniform/asymmetric/no-radius transitions. OPPO API 34 More, Lucky bag and Audience corners were reviewed in the real room; its additional native test package was not installed because of the system confirmation. Initial plain-context fixture runs are explicitly invalidated. See Ronaq `docs/progress/room-sheet-corner-backdrop.md` for subjects and limits.
+
+**Upstreamable.** Yes: generic Android outline capability and Canvas-state handling.
+
+## 67. Preserve flat two-dimensional reflection in Compose transforms
+
+**Files** · Compose `ui/node/KNode.kt`, `KNodeReflectionTest.kt`
+**Driven by** · Owner-authorized profile editor Flip repair, 2026-10-04.
+
+Positive scale magnitudes discarded a mirrored basis's negative determinant,
+turning horizontal reflection into a 180-degree rotation. For nonsingular,
+orthogonal, flat affine2D matrices, retain that determinant in signed scaleX
+and restore a proper rotation basis before extracting angles. Explicit guards
+leave3D, perspective, singular and unsupported shear paths unchanged. The Attr
+wire format, translations, pivot and public API are unchanged; internal test
+visibility allows checking the actual emitted native transform values.
+
+Verification: pre-fix Attr-wire tests reproduce sign loss and a reversed Y
+basis. Focused tests cover both mirror axes, quarter/arbitrary rotation,
+nonuniform scale, translation, repeated flip/reset and legacy controls. Native
+recognizable image/export agreement and cross-renderer compatibility remain
+required. In particular iOS's pre-existing combined rotation/scale order must
+not be inferred correct from the common wire reconstruction test. Current
+results and exact subjects: Ronaq `docs/progress/profile-media.md`, DELTA-PM-22.
+This entry does not declare full native acceptance.
+
+**Upstreamable.** Yes: general signed2D affine decomposition capability.

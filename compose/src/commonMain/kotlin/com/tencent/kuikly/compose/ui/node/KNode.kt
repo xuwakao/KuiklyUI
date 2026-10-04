@@ -719,7 +719,7 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
 
         private fun Float.toDegrees(): Float = (this * 180_000 / PI).roundToInt() / 1000f
 
-        private fun Attr.applyTransform(size: IntSize, matrix: Matrix) {
+        internal fun Attr.applyTransform(size: IntSize, matrix: Matrix) {
             val translateX = matrix[3, 0]
             val translateY = matrix[3, 1]
             var v00 = matrix[0, 0]
@@ -790,6 +790,22 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
                 v20 = 0f
                 v21 = 0f
                 v22 = 1f
+            }
+
+            // A reflected 2D basis cannot be represented by rotation alone. Keep
+            // its handedness in scaleX before extracting a proper rotation.
+            // Restrict this correction to flat affine matrices: 3D, perspective,
+            // singular and existing shear handling retain their previous policy.
+            val affine2D = matrix[0, 2] == 0f && matrix[1, 2] == 0f &&
+                matrix[2, 0] == 0f && matrix[2, 1] == 0f && matrix[2, 2] == 1f &&
+                matrix[0, 3] == 0f && matrix[1, 3] == 0f && matrix[2, 3] == 0f &&
+                matrix[3, 2] == 0f && matrix[3, 3] == 1f
+            if (affine2D && xy.approximatelyEqual(0f) && !scaleX.approximatelyEqual(0f) &&
+                !scaleY.approximatelyEqual(0f) && v00 * v11 - v01 * v10 < 0f) {
+                scaleX = -scaleX
+                v00 = -v00
+                v01 = -v01
+                v02 = -v02
             }
 
             // Calculate rotation angles

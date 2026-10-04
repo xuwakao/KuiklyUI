@@ -159,6 +159,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      */
     private var mNestedScrollTouchCount = 0
 
+    // A pager moved by a nested child's touch is still a user drag. RecyclerView
+    // scrollBy does not enter DRAGGING, so its ordinary listener cannot report it.
+    private var nestedPagerTouchDragStarted = false
+
     /**
      * 向前滑动
      */
@@ -625,6 +629,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         nestedScrollVelocityTracker?.recycle()
         nestedScrollVelocityTracker = null
         nestedScrollLastMoveTime = 0L
+        nestedPagerTouchDragStarted = false
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -832,6 +837,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     private fun fireBeginDragEvent() {
+        tracePagerTouch("begin")
         needFireWillEndDragEvent = true
         dispatchOnBeginDrag(contentOffsetX, contentOffsetY)
         dragBeginEventCallback?.invoke(getCommonScrollParams())
@@ -839,6 +845,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     private fun fireEndDragEvent() {
+        tracePagerTouch("end")
         if (needFireWillEndDragEvent) {
             // onFling回调，RecyclerView 内部只有在 velocity > 系统的minVelocity
             // 才会回调, 因此当加速度小于 minVelocity时, 在这里补充回调
@@ -1401,6 +1408,13 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
      */
     private fun ptrTraceOn(): Boolean = Log.isLoggable(PTR_TRACE_TAG, Log.DEBUG)
 
+    private fun tracePagerTouch(phase: String) {
+        if (directionRow && (pageEnable || !supportFling) && Log.isLoggable("KRPagerTouch", Log.DEBUG)) {
+            Log.d("KRPagerTouch", "$phase view=${hashCode()} x=$contentOffsetX " +
+                "children=$mNestedScrollTouchCount nested=$nestedPagerTouchDragStarted enabled=$scrollEnabled")
+        }
+    }
+
     /**
      * Clear transient native state for Compose DSL reuse (not the native reuse pool).
      */
@@ -1654,6 +1668,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             if (type == ViewCompat.TYPE_TOUCH) {
                 mNestedScrollAxesTouch = myAxes
                 mNestedScrollTouchCount++
+                tracePagerTouch("nested-start")
             } else {
                 mNestedScrollAxesNonTouch = myAxes
             }
@@ -1689,6 +1704,7 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     override fun onStopNestedScroll(target: View, type: Int) {
+        if (type == ViewCompat.TYPE_TOUCH) tracePagerTouch("nested-stop")
         if (type == ViewCompat.TYPE_TOUCH) {
             mNestedScrollTouchCount = (mNestedScrollTouchCount - 1).coerceAtLeast(0)
             if (mNestedScrollTouchCount == 0) {
@@ -1717,6 +1733,9 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 val flingThreshold = pageFlingVelocityThreshold()
                 val realVelocityX = if (!velocityStale && abs(rawVelocityX) > flingThreshold) rawVelocityX else 0
                 val realVelocityY = if (!velocityStale && abs(rawVelocityY) > flingThreshold) rawVelocityY else 0
+                tracePagerTouch("nested-release rawX=$rawVelocityX realX=$realVelocityX " +
+                    "stale=$velocityStale age=${SystemClock.uptimeMillis() - nestedScrollLastMoveTime} " +
+                    "threshold=$flingThreshold tracker=${tracker != null}")
                 if (pagerSnapHelper != null) {
                     pagerSnapHelper?.snapFromFling(realVelocityX, realVelocityY)
                 } else {
@@ -1725,6 +1744,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
                 lastScrollParentX = 0
                 lastScrollParentY = 0
             }
+        }
+        if (type == ViewCompat.TYPE_TOUCH && mNestedScrollTouchCount == 0 && nestedPagerTouchDragStarted) {
+            nestedPagerTouchDragStarted = false
+            fireEndDragEvent()
         }
         // 嵌套滚动结束时，无论是否处于 OverScroll 状态都需要重置累积偏移量
         // 原因：
@@ -2078,6 +2101,12 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
 
         var didConsumeX = false  // 标记是否已经设置了 consumed[0]
         if (shouldScrollParentX && canScrollHorizontally(parentDx)) {
+            if (touchType == ViewCompat.TYPE_TOUCH && directionRow && (pageEnable || !supportFling)
+                && !nestedPagerTouchDragStarted) {
+                nestedPagerTouchDragStarted = true
+                // Notify before scrollBy can change the composed pager's current page.
+                fireBeginDragEvent()
+            }
             // 记录滚动前的偏移量
             val beforeScrollX = computeHorizontalScrollOffset()
             scrollBy(parentDx, 0)

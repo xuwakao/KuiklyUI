@@ -219,8 +219,13 @@ class KRViewDecoration(targetView: View) : IKRViewDecoration {
     }
 
     override fun hasCustomClipPath(): Boolean {
-        return isCustomClipPathMode
+        // KRView saves/restores Canvas state for manual clipping. Before API 33,
+        // an asymmetric round-rect Outline describes a shadow but cannot clip.
+        return isCustomClipPathMode || needsManualCornerClip
     }
+
+    private val needsManualCornerClip: Boolean
+        get() = borderRadii != null && Build.VERSION.SDK_INT < 33
 
     private fun clipPath(w: Int, h: Int, canvas: Canvas) {
         if (!needClip) { // 没有设置圆角或路径的情况
@@ -512,7 +517,10 @@ class KRViewDecoration(targetView: View) : IKRViewDecoration {
                     shadowRadius == 0f &&
                     // 自定义Path可能不是凸的，无法使用outline裁剪，也使用clipPath裁剪
                     clipPathData.isEmpty() &&
-                    hasBorderRadius
+                    hasBorderRadius &&
+                    // Before API 33 only rect, circle and uniform round-rect
+                    // outlines can clip. clipToOutline=true alone is insufficient.
+                    !needsManualCornerClip
 
             if (needOutline) {
                 setOutlineViewProvider(it, outlineProvider)
