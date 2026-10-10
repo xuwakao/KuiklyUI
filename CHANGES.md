@@ -4593,3 +4593,14 @@ results and exact subjects: Ronaq `docs/progress/profile-media.md`, DELTA-PM-22.
 This entry does not declare full native acceptance.
 
 **Upstreamable.** Yes: general signed2D affine decomposition capability.
+
+## 2026-10-09 Android Play API36 build baseline
+
+The Ronaq host now targets/compiles API36. Keep this fork's default AGP8.9.2
+and standalone Gradle8.11.1 wrapper (official SHA256 pinned) aligned with the
+host's composite build. Kotlin2.1.21/Kuikly2.7.0/KSP2.1.21-2.0.1 retain their
+existing paired identity; no rendering or business code changes. Kotlin permits
+higher AGP versions beyond its fully supported table, so actual project build
+evidence remains required. Authority: owner2026-10-09 requests removing the Play
+target blocker; Android official API36 minimumAGP8.9.1. See host
+mobile/docs/progress/android-play-api36.md for actual verification/limits.
