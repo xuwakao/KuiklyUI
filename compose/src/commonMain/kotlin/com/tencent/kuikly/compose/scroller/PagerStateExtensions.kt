@@ -66,7 +66,7 @@ internal fun PagerState.kuiklyWillDragEnd(params: WillEndDragParams, orientation
         currentPage
     } else {
         snapBasePage + pageDirection
-    }.coerceIn(0, pageCount)
+    }.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
 
     val correctedTargetPage = calculateTargetPage(snapBasePage, targetPage, velocity)
     pagerSnapDebugLog {
@@ -101,22 +101,24 @@ private fun PagerState.resolveSnapBasePage(pageDirection: Int): Int {
     }
 }
 
-private fun PagerState.calculateTargetPage(
+internal fun PagerState.calculateTargetPage(
     startPage: Int,
     targetPage: Int,
     velocity: Float
 ): Int {
-    return if (velocity != 0f) {
+    // Pixel finite-edge regression: pageCount is not a valid released target index.
+    val candidate = if (velocity != 0f) {
         PagerSnapDistance.atMost(1).calculateTargetPage(
             startPage,
             targetPage,
             velocity,
             pageSize,
             pageSpacing
-        ).coerceIn(0, pageCount)
+        )
     } else {
         currentPage
     }
+    return candidate.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
 }
 
 private fun PagerState.handleTargetPageScroll(

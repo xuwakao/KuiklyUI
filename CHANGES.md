@@ -4604,3 +4604,25 @@ higher AGP versions beyond its fully supported table, so actual project build
 evidence remains required. Authority: owner2026-10-09 requests removing the Play
 target blocker; Android official API36 minimumAGP8.9.1. See host
 mobile/docs/progress/android-play-api36.md for actual verification/limits.
+
+## 68. Native pager release targets stay inside the finite page set
+
+**Files** · `compose/.../scroller/PagerStateExtensions.kt`,
+`compose/src/commonTest/.../scroller/NativePagerBoundsTest.kt`
+**Driven by** · owner-approved finite Events pager; Ronaq
+`docs/design/events-native.md`, Pixel crash22:35:05 on2026-10-15
+**Date** · 2026-10-15
+
+The native drag-release path clamped to inclusive `pageCount` in both the proposed
+and corrected target. A forward fling beyond page2 of3 therefore published target3
+through `settleTargetPage`; pixel offset clamping hid the nonexistent target on
+screen, but a page consumer crashed while indexing it. Clamp both calculations to
+`max(0,pageCount-1)`, including the zero-velocity result when data has shrunk. The
+one-page snap policy, animation, key anchoring and pixel alignment are unchanged.
+The existing calculation is internal rather than private so common tests exercise
+that actual path, not a copied boundary expression. No business behavior added.
+
+Red gate: NativePagerBoundsTest six cases ran, two failed on the old range
+(repeated terminal releases and shrinking count). Green/native results are in the
+linked Ronaq progress record. Existing SettleTargetPage/DragsBegun tests and three
+common-target compilers accompany the change. Upstreamable: yes.
