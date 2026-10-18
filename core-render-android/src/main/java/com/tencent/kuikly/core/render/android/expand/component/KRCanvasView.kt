@@ -115,17 +115,22 @@ class KRCanvasView(context: Context) : View(context), IKuiklyRenderViewExport {
     }
 
     override fun onDraw(canvas: Canvas) {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, if (canvas.isHardwareAccelerated) "canvas-record-hw" else "canvas-record-sw")
+        try {
         val checkpoint: Int = if (hasCustomClipPath()) {
             canvas.save()
         } else {
             -1
         }
-        drawCommonDecoration(width, height, canvas) // 绘制通用样式
-        performDrawOperationList(canvas) // 绘制canvas指令
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "decoration") { drawCommonDecoration(width, height, canvas) } // 绘制通用样式
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "canvas-commands") { performDrawOperationList(canvas) } // 绘制canvas指令
         if (checkpoint != -1) {
             canvas.restoreToCount(checkpoint)
         }
-        drawCommonForegroundDecoration(width, height, canvas)
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "foreground") { drawCommonForegroundDecoration(width, height, canvas) }
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
     }
 
     private fun reset() {
