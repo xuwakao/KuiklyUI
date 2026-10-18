@@ -10,8 +10,8 @@ import com.tencent.kuikly.core.render.web.ktx.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.web.ktx.kuiklyDocument
 import com.tencent.kuikly.core.render.web.ktx.setFrame
 import com.tencent.kuikly.core.render.web.ktx.splitCanvasColorDefinitions
-import com.tencent.kuikly.core.render.web.ktx.toJSONObjectSafely
 import com.tencent.kuikly.core.render.web.ktx.toRgbColor
+import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONEngine
 import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONArray
 import com.tencent.kuikly.core.render.web.nvi.serialization.json.JSONObject
 import com.tencent.kuikly.core.render.web.runtime.dom.element.ElementType
@@ -112,8 +112,45 @@ class KRCanvasView(
             ROTATE -> rotate(params)
             SKEW -> skew(params)
             TRANSFORM -> transform(params)
+            "pathOps" -> packedPath(params)
             BATCH_DRAW -> batchDraw(params)
             else -> super.call(method, params, callback)
+        }
+    }
+
+    // Keep native JSON decoding local to drawing; the existing engine falls back to
+    // JSONTokener for legacy lenient input and unsafe integer values. No global mode.
+    private var batchParams: JSONObject? = null
+    private fun canvasParams(params: String?): JSONObject =
+        batchParams?.takeIf { params == null } ?: (JSONEngine.parseCanvas(params ?: "{}") as? JSONObject
+            ?: error("Canvas parameters must be an object")
+        )
+
+    private fun packedPath(params: String?) {
+        val encoded = canvasParams(params).optString("data")
+        if (encoded.isEmpty()) return
+        val binary = kotlinx.browser.window.atob(encoded)
+        require(binary.length % 4 == 0) { "Invalid packed Canvas path length" }
+        val bytes = js("new Uint8Array(binary.length)")
+        for (i in binary.indices) bytes[i] = binary[i].code
+        val data = js("new DataView(bytes.buffer)")
+        var offset = 0
+        fun next(): Double {
+            require(offset + 4 <= binary.length) { "Truncated Canvas path" }
+            val value = data.getFloat32(offset, true) as Double
+            offset += 4
+            return value
+        }
+        val ctx = canvasContext ?: return
+        while (offset < binary.length) {
+            when (next()) {
+                0.0 -> ctx.moveTo(next(), next())
+                1.0 -> ctx.lineTo(next(), next())
+                2.0 -> ctx.quadraticCurveTo(next(), next(), next(), next())
+                3.0 -> ctx.bezierCurveTo(next(), next(), next(), next(), next(), next())
+                4.0 -> ctx.closePath()
+                else -> error("Invalid packed Canvas path operation")
+            }
         }
     }
 
@@ -121,7 +158,7 @@ class KRCanvasView(
      * move to
      */
     private fun moveTo(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val x = paramsJSON.optDouble(KRViewConst.X)
         val y = paramsJSON.optDouble(KRViewConst.Y)
         canvasContext?.moveTo(x, y)
@@ -131,7 +168,7 @@ class KRCanvasView(
      * line to
      */
     private fun lineTo(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val x = paramsJSON.optDouble(KRViewConst.X)
         val y = paramsJSON.optDouble(KRViewConst.Y)
         canvasContext?.lineTo(x, y)
@@ -141,7 +178,7 @@ class KRCanvasView(
      * draw arc path
      */
     private fun arc(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val cx = paramsJSON.optDouble(KRViewConst.X)
         val cy = paramsJSON.optDouble(KRViewConst.Y)
         val radius = paramsJSON.optDouble(RADIUS)
@@ -155,7 +192,7 @@ class KRCanvasView(
      * set stroke style
      */
     private fun setStrokeStyle(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val style = paramsJSON.optString(STYLE)
         canvasContext?.strokeStyle = resolveCanvasStyle(style)
     }
@@ -164,7 +201,7 @@ class KRCanvasView(
      * set stroke text
      */
     private fun setStrokeText(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         canvasContext?.strokeText(
             paramsJSON.optString(TEXT),
             paramsJSON.optDouble(KRViewConst.X),
@@ -175,7 +212,7 @@ class KRCanvasView(
      * set fill style
      */
     private fun setFillStyle(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val style = paramsJSON.optString(STYLE)
         canvasContext?.fillStyle = resolveCanvasStyle(style)
     }
@@ -201,7 +238,7 @@ class KRCanvasView(
      * set fill text
      */
     private fun setFillText(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         canvasContext?.fillText(
             paramsJSON.optString(TEXT),
             paramsJSON.optDouble(KRViewConst.X),
@@ -212,7 +249,7 @@ class KRCanvasView(
      * set line width
      */
     private fun setLineWidth(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         canvasContext?.lineWidth = paramsJSON.optDouble(KRViewConst.WIDTH)
     }
 
@@ -220,7 +257,7 @@ class KRCanvasView(
      * Create canvas linear gradient
      */
     private fun createLinearGradient(params: String?): CanvasGradient? {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         val leftX = paramsJSON.optDouble("x0")
         val leftY = paramsJSON.optDouble("y0")
         val rightX = paramsJSON.optDouble("x1")
@@ -254,7 +291,7 @@ class KRCanvasView(
      * set line cap
      */
     private fun setLineCap(params: String?) {
-        val paramsJSON = params.toJSONObjectSafely()
+        val paramsJSON = canvasParams(params)
         canvasContext?.lineCap = when (paramsJSON.optString(STYLE)) {
             "butt" -> CanvasLineCap.BUTT
             "round" -> CanvasLineCap.ROUND
@@ -266,7 +303,7 @@ class KRCanvasView(
      * set line dash
      */
     private fun setLineDash(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val jsonArray = json.optJSONArray("intervals")
         if (jsonArray == null) {
             // no segments, clear dash
@@ -281,7 +318,7 @@ class KRCanvasView(
      * draw quadratic curve path
      */
     private fun quadraticCurveTo(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val cpx = json.optDouble("cpx")
         val cpy = json.optDouble("cpy")
         val x = json.optDouble(KRViewConst.X)
@@ -294,7 +331,7 @@ class KRCanvasView(
      * draw bezier curve path
      */
     private fun bezierCurveTo(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val cp1x = json.optDouble("cp1x")
         val cp1y = json.optDouble("cp1y")
         val cp2x = json.optDouble("cp2x")
@@ -318,10 +355,10 @@ class KRCanvasView(
      * the difference (clipPathDifference) variant is not supported and a warning is logged.
      */
     private fun clip(params: String?) {
-        val intersect = if (params.isNullOrEmpty()) {
+        val intersect = if (params.isNullOrEmpty() && batchParams == null) {
             true
         } else {
-            params.toJSONObjectSafely().optInt("intersect", 1) == 1
+            canvasParams(params).optInt("intersect", 1) == 1
         }
         if (!intersect) {
             // clipPathDifference is not implemented on Web/H5, downgrade to a no-op clip with warning
@@ -349,7 +386,7 @@ class KRCanvasView(
      * set font
      */
     private fun setFont(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val style = json.optString("style").ifEmpty { "normal" }
         val weight = json.optString("weight").ifEmpty { "normal" }
         val size = json.optDouble("size", 0.0)
@@ -376,7 +413,7 @@ class KRCanvasView(
      */
     private fun drawImage(params: String?) {
         val ctx = canvasContext ?: return
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val cacheKey = json.optString("cacheKey")
         if (cacheKey.isEmpty()) {
             return
@@ -499,7 +536,7 @@ class KRCanvasView(
      */
     private fun saveLayer(params: String?) {
         val ctx = canvasContext ?: return
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val x = json.optDouble(KRViewConst.X, 0.0)
         val y = json.optDouble(KRViewConst.Y, 0.0)
         val width = json.optDouble(KRViewConst.WIDTH, ele.width.toDouble())
@@ -511,7 +548,7 @@ class KRCanvasView(
     }
 
     private fun translate(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         canvasContext?.translate(
             json.optDouble(KRViewConst.X, 0.0),
             json.optDouble(KRViewConst.Y, 0.0)
@@ -519,7 +556,7 @@ class KRCanvasView(
     }
 
     private fun scale(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         canvasContext?.scale(
             json.optDouble(KRViewConst.X, 1.0),
             json.optDouble(KRViewConst.Y, 1.0)
@@ -527,13 +564,13 @@ class KRCanvasView(
     }
 
     private fun rotate(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         canvasContext?.rotate(json.optDouble("angle", 0.0))
     }
 
     private fun skew(params: String?) {
         val ctx = canvasContext ?: return
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val sx = json.optDouble(KRViewConst.X, 0.0)
         val sy = json.optDouble(KRViewConst.Y, 0.0)
         // Canvas 2D has no native skew, simulate via transform(1, tan(y), tan(x), 1, 0, 0)
@@ -553,7 +590,7 @@ class KRCanvasView(
      * which corresponds to indices (0, 3, 1, 4, 2, 5) of the serialized array.
      */
     private fun transform(params: String?) {
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val values = json.optJSONArray("values") ?: return
         if (values.length() < 6) {
             return
@@ -575,7 +612,7 @@ class KRCanvasView(
      */
     private fun createRadialGradient(params: String?) {
         val ctx = canvasContext ?: return
-        val json = params.toJSONObjectSafely()
+        val json = canvasParams(params)
         val x0 = json.optDouble("x0")
         val y0 = json.optDouble("y0")
         val r0 = json.optDouble("r0")
@@ -616,12 +653,20 @@ class KRCanvasView(
     private fun batchDraw(params: String?) {
         if (params.isNullOrEmpty()) return
         try {
-            val arr = JSONArray(params)
+            val arr = JSONEngine.parseCanvas(params) as? JSONArray
+                ?: error("Canvas batch must be an array")
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: continue
                 val method = item.optString("m")
                 if (method.isNotEmpty()) {
-                    call(method, item.optString("p"), null)
+                    val structured = item.opt("p") as? JSONObject
+                    val previous = batchParams
+                    batchParams = structured
+                    try {
+                        call(method, if (structured == null) item.optString("p") else null, null)
+                    } finally {
+                        batchParams = previous
+                    }
                 }
             }
         } catch (e: Throwable) {
