@@ -278,6 +278,9 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
 
     @SuppressLint("DrawAllocation")
     override fun onDraw(canvas: Canvas) {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, if (canvas.isHardwareAccelerated) "image-record-hw" else "image-record-sw")
+        try {
         if (KRInvalidationProbe.enabled) KRInvalidationProbe.onDraw(this)
         updatePaintMaskGradientIfNeedOnDraw()
         var saveCount = 0
@@ -289,7 +292,7 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         } else {
             -1
         }
-        drawCommonDecoration(frameWidth, frameHeight, canvas)
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "decoration") { drawCommonDecoration(frameWidth, frameHeight, canvas) }
         if (capInsetsValid()) {
             drawable?.also {
                 val loader = kuiklyRenderContext?.getImageLoader()
@@ -306,11 +309,13 @@ open class KRImageView(context: Context) : ImageView(context), IKuiklyRenderView
         if (checkpoint != -1) {
             canvas.restoreToCount(checkpoint)
         }
-        drawCommonForegroundDecoration(frameWidth, frameHeight, canvas)
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "foreground") { drawCommonForegroundDecoration(frameWidth, frameHeight, canvas) }
         paintMaskGradient?.also {// 绘制渐变遮罩
             canvas.drawRect(0f, 0f, frameWidth.toFloat(), frameHeight.toFloat(), it)
             canvas.restoreToCount(saveCount)
         }
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
     }
 
     override fun setImageDrawable(drawable: Drawable?) {
