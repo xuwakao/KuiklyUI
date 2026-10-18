@@ -791,6 +791,7 @@ class H5ListView : IListElement {
      * `ignoreScrollOffset` flag can be cleared.
      */
     override fun prepareForComposeReuse() {
+        listPagingHelper.cancelPendingPosition()
         pendingFireScrollForReuse = true
     }
 
