@@ -63,7 +63,7 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
     val view: T,
     override var isVirtual: Boolean = false,
     var init: T.() -> Unit = {}
-) : LayoutNode(isVirtual = isVirtual) {
+) : LayoutNode(isVirtual = isVirtual), SnapshotUpdateScope {
 
     /**
      * Tracks whether this KNode's view has completed its first initialization.
@@ -141,11 +141,11 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
 
     private val runUpdate: () -> Unit = {
         if (isAttached) {
-            requireOwner().snapshotObserver.observeReads(this, {
-                update()
-            }, update)
+            requireOwner().snapshotObserver.observeViewUpdate(this, update)
         }
     }
+
+    override fun updateSnapshotReads() = runUpdate()
 
     override fun attach(owner: Owner) {
         super.attach(owner)
