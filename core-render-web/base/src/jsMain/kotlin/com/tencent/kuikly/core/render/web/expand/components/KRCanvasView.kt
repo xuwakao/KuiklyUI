@@ -8,6 +8,7 @@ import com.tencent.kuikly.core.render.web.const.KRCssConst
 import com.tencent.kuikly.core.render.web.const.KRViewConst
 import com.tencent.kuikly.core.render.web.ktx.KuiklyRenderCallback
 import com.tencent.kuikly.core.render.web.ktx.kuiklyDocument
+import com.tencent.kuikly.core.render.web.ktx.kuiklyWindow
 import com.tencent.kuikly.core.render.web.ktx.setFrame
 import com.tencent.kuikly.core.render.web.ktx.splitCanvasColorDefinitions
 import com.tencent.kuikly.core.render.web.ktx.toRgbColor
@@ -24,6 +25,7 @@ import org.w3c.dom.HTMLCanvasElement
 import org.w3c.dom.ROUND
 import org.w3c.dom.SQUARE
 import kotlin.math.tan
+import kotlin.math.ceil
 
 /**
  * Kuikly canvas view, corresponding to web's canvas
@@ -58,6 +60,34 @@ class KRCanvasView(
     override val ele: HTMLCanvasElement
         get() = canvas.unsafeCast<HTMLCanvasElement>()
 
+    // MiniCanvasElement already scales its native backing store; never scale it twice.
+    private val browserCanvas: Boolean by lazy {
+        val node = ele
+        js("typeof HTMLCanvasElement !== 'undefined' && node instanceof HTMLCanvasElement") as Boolean
+    }
+    private var logicalWidth: Double? = null
+    private var logicalHeight: Double? = null
+    private var backingScaleX = 1.0
+    private var backingScaleY = 1.0
+
+    private fun updateBackingStore() {
+        val width = logicalWidth ?: return
+        val height = logicalHeight ?: return
+        val requested = kuiklyWindow.devicePixelRatio
+        val density = if (requested.isFinite() && requested > 0.0) requested else 1.0
+        val pixelsWide = ceil(width * density).toInt()
+        val pixelsHigh = ceil(height * density).toInt()
+        // Assigning either property clears pixels and state even when its value is unchanged.
+        if (ele.width != pixelsWide) ele.width = pixelsWide
+        if (ele.height != pixelsHigh) ele.height = pixelsHigh
+        backingScaleX = if (width > 0.0) pixelsWide / width else 1.0
+        backingScaleY = if (height > 0.0) pixelsHigh / height else 1.0
+    }
+
+    private fun restoreBackingTransform() {
+        canvasContext?.setTransform(backingScaleX, 0.0, 0.0, backingScaleY, 0.0, 0.0)
+    }
+
     override fun setProp(propKey: String, propValue: Any): Boolean {
         return when (propKey) {
             KRCssConst.FRAME -> {
@@ -66,8 +96,15 @@ class KRCanvasView(
                 // First set canvas size
                 ele.setFrame(frame, ele.style)
                 // Then set drawing area size
-                ele.width = frame.width.toInt()
-                ele.height = frame.height.toInt()
+                if (browserCanvas) {
+                    logicalWidth = frame.width.coerceAtLeast(0.0)
+                    logicalHeight = frame.height.coerceAtLeast(0.0)
+                    updateBackingStore()
+                    restoreBackingTransform()
+                } else {
+                    ele.width = frame.width.toInt()
+                    ele.height = frame.height.toInt()
+                }
                 // If setting size, notify that size information has changed
                 onFrameChange(frame)
                 true
@@ -347,7 +384,15 @@ class KRCanvasView(
     private fun reset() {
         // because canvasRenderingContext2D's reset method support degree too low,
         // so use clearRect to implement, clear the whole canvas
-        canvasContext?.clearRect(0.0, 0.0, ele.width.toDouble(), ele.height.toDouble())
+        if (browserCanvas && logicalWidth != null) {
+            // Read DPR again at a new frame, but allocate only if dimensions changed.
+            updateBackingStore()
+            canvasContext?.setTransform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            canvasContext?.clearRect(0.0, 0.0, ele.width.toDouble(), ele.height.toDouble())
+            restoreBackingTransform()
+        } else {
+            canvasContext?.clearRect(0.0, 0.0, ele.width.toDouble(), ele.height.toDouble())
+        }
     }
 
     /**
@@ -539,8 +584,8 @@ class KRCanvasView(
         val json = canvasParams(params)
         val x = json.optDouble(KRViewConst.X, 0.0)
         val y = json.optDouble(KRViewConst.Y, 0.0)
-        val width = json.optDouble(KRViewConst.WIDTH, ele.width.toDouble())
-        val height = json.optDouble(KRViewConst.HEIGHT, ele.height.toDouble())
+        val width = json.optDouble(KRViewConst.WIDTH, logicalWidth ?: ele.width.toDouble())
+        val height = json.optDouble(KRViewConst.HEIGHT, logicalHeight ?: ele.height.toDouble())
         ctx.save()
         ctx.beginPath()
         ctx.rect(x, y, width, height)
@@ -637,7 +682,7 @@ class KRCanvasView(
         ctx.save()
         ctx.globalAlpha = alpha
         ctx.fillStyle = gradient
-        ctx.fillRect(0.0, 0.0, ele.width.toDouble(), ele.height.toDouble())
+        ctx.fillRect(0.0, 0.0, logicalWidth ?: ele.width.toDouble(), logicalHeight ?: ele.height.toDouble())
         ctx.restore()
     }
 
