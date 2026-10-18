@@ -1,5 +1,42 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 78. H5 bordered children retain authoritative layout coordinates
+
+2026-10-18 — `KuiklyRenderCSSKTX.setFrame` overwrote parent-border compensation,
+then a one-shot child flag skipped it after subsequent frames. Labels therefore
+shifted right/down by the parent border width. H5 now derives CSS positions from
+raw frames after writing their base dimensions, including current parent borders
+and the existing p/span own-border expansion. Border-property changes refresh
+existing children, deferred insertion reads current borders, unmanaged children
+are ignored, and caller Frame objects are not mutated. Mini-app conversion and
+the safe non-uniform-border policy are unchanged. Direct renderer regressions
+live in Ronaq `BorderChildPositionTest`; evidence is tracked in
+`docs/progress/text-family-inheritance.md`. No per-label/font/device offsets.
+
+## 77. H5 text measurement does not create scroll containers
+
+2026-10-18 — H5 RichTextProcessor used overflow-y:auto for unclamped labels.
+Inline icon baselines can exceed the measured line box, causing visible scroll
+indicators at the ends of gift-panel labels. Unclamped text/measurement probes
+now retain visible overflow; explicit line clamps retain hidden overflow.
+No character stripping, font changes, offsets or native/mini-app behavior change.
+The host also aligns its html/body font so root-default Canvas metrics match
+visible labels. Evidence: Ronaq docs/issue/web-room-paint-details.md.
+
+## 76. Browser Canvas backing-store pixel density
+
+2026-10-18 — `core-render-web/base/.../KRCanvasView.kt` previously allocated one
+pixel per logical CSS unit, enlarging low-resolution vector edges on HiDPI screens.
+Real browser canvases now allocate ceil(logical size × finite positive DPR), keep
+CSS/hit bounds unchanged and install an absolute logical-to-backing transform.
+FRAME/reset recheck density; unchanged dimensions are never reassigned. Reset
+clears physical bounds under identity before restoring the base transform, so
+repaint cannot accumulate scale. saveLayer/radial defaults remain logical.
+The MiniCanvasElement path already scales internally and stays unchanged.
+No new clock/listener, image cache, media resolution policy or native-host change.
+Source/runtime evidence: Ronaq `docs/progress/web-canvas-density.md`; direct real
+Canvas class tests live in its Web host test suite.
+
 ## 75. Rejected software blur opacity metadata experiment
 
 2026-10-17 — Pixel's software backdrop is alpha255 but marked hasAlpha=true. A bounded
