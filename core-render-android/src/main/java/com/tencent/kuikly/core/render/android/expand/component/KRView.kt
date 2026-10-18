@@ -432,19 +432,31 @@ open class KRView(context: Context) : FrameLayout(context), IKuiklyRenderViewExp
             else -> false
         }
     }
+    override fun drawChild(canvas: android.graphics.Canvas, child: View, drawingTime: Long): Boolean {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, child, if (canvas.isHardwareAccelerated) "child-submit-hw" else "child-submit-sw")
+        try { return super.drawChild(canvas, child, drawingTime) }
+        finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
+    }
+
     override fun draw(canvas: Canvas) {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, if (canvas.isHardwareAccelerated) "view-record-hw" else "view-record-sw")
+        try {
         if (KRInvalidationProbe.enabled) KRInvalidationProbe.onDraw(this)
         val checkpoint: Int = if (hasCustomClipPath()) {
             canvas.save()
         } else {
             -1
         }
-        drawCommonDecoration(canvas)
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "decoration") { drawCommonDecoration(canvas) }
         super.draw(canvas)
         if (checkpoint != -1) {
             canvas.restoreToCount(checkpoint)
         }
-        drawCommonForegroundDecoration(canvas)
+        com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this, "foreground") { drawCommonForegroundDecoration(canvas) }
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
     }
 
     private fun setWillDraw() {
