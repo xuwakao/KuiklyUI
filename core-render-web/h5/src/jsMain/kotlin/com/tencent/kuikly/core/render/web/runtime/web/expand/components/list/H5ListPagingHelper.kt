@@ -63,6 +63,17 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
     private var accumulatedWheelDelta: Double = 0.0
     // Wheel scroll reset timer
     private var wheelResetTimer: Int? = null
+    private var positionTimer: Int? = null
+    private var transitionTimer: Int? = null
+
+    /** Reuse and a newer target must invalidate writes belonging to the old offset. */
+    fun cancelPendingPosition() {
+        positionTimer?.let { kuiklyWindow.clearTimeout(it) }
+        transitionTimer?.let { kuiklyWindow.clearTimeout(it) }
+        positionTimer = null
+        transitionTimer = null
+        ele.style.transition = ""
+    }
 
     // Set element position using transform
     private fun setElementPosition(x: Float, y: Float) {
@@ -272,6 +283,7 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
      * Handle the same part of the paging calculation for TouchStart and MouseDown
      */
     private fun handlePagerStartCommon(event: Event) {
+        cancelPendingPosition()
         isDragging = 1
         // 针对safari浏览器没有 TouchEvent
         if (event.isTouchEventOrNull() != null) {
@@ -501,17 +513,20 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
      * Handle paging scroll to specified position
      */
     fun handlePagerScrollTo(scrollOffsetX: Float, scrollOffsetY: Float, isAnimation: Boolean) {
-        kuiklyWindow.setTimeout({
-            if (isAnimation) {
-                ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
-            }
+        cancelPendingPosition()
+        if (!isAnimation) {
             setElementPosition(scrollOffsetX, scrollOffsetY)
-        }, PAGING_SCROLL_DELAY)
-        if (isAnimation) {
-            kuiklyWindow.setTimeout({
+            return
+        }
+        positionTimer = kuiklyWindow.setTimeout({
+            positionTimer = null
+            ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
+            setElementPosition(scrollOffsetX, scrollOffsetY)
+            transitionTimer = kuiklyWindow.setTimeout({
+                transitionTimer = null
                 ele.style.transition = ""
             }, PAGING_SCROLL_ANIMATION_TIME)
-        }
+        }, PAGING_SCROLL_DELAY)
     }
 
     fun setContentOffset(offsetX: Float, offsetY: Float, animate: Boolean) {
@@ -533,16 +548,9 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         // 不应该触发 willDragEndEventCallback 和 dragEndEventCallback
         // 否则会形成循环调用：
         // H5 willDragEndCallback -> Compose kuiklyWillDragEnd -> setContentOffset -> willDragEndCallback -> ...
+        handlePagerScrollTo(-offsetX, -offsetY, animate)
         val offsetMap = listElement.updateOffsetMap(offsetX, offsetY, isDragging)
         listElement.scrollEventCallback?.invoke(offsetMap)
-        if (animate) {
-            handlePagerScrollTo(-offsetX, -offsetY, animate)
-        } else {
-            // wait index changed
-            kuiklyWindow.setTimeout({
-                handlePagerScrollTo(-offsetX, -offsetY, animate)
-            }, CONTENT_OFFSET_DELAY)
-        }
         // This is to handle nested PageLists. After sliding the inner PageList,
         // clicking the outer PageList needs to hide the overflow position of the inner node
         // Implementation is not very elegant, pending refactoring with reference to swiper logic
@@ -589,6 +597,7 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
      * Clean up resources when helper is destroyed
      */
     fun destroy() {
+        cancelPendingPosition()
         // Clear wheel reset timer
         wheelResetTimer?.let {
             kuiklyWindow.clearTimeout(it)
@@ -600,7 +609,6 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         // Timing constants (in milliseconds)
         private const val PAGING_SCROLL_DELAY = 20
         private const val PAGING_SCROLL_ANIMATION_TIME = 200
-        private const val CONTENT_OFFSET_DELAY = 200
         // Timeout to reset wheel state after wheel events stop (ms)
         private const val WHEEL_RESET_TIMEOUT = 150
         // Minimum accumulated wheel delta to trigger page switch
