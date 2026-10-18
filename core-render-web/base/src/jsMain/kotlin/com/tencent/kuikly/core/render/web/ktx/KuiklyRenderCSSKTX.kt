@@ -313,47 +313,34 @@ var Element.animationCompletionBlock: KuiklyRenderCallback?
 /**
  * Check and update position for H5 with border offset
  */
-private fun Element.checkAndUpdatePositionForH5(frame: Frame, style: CSSStyleDeclaration) {
-    // update style for h5
-    // Note: when the four border widths are not all equal, browsers serialize
-    // `style.borderWidth` as a shorthand with multiple values (e.g.
-    // "12px 12px 12px 25px"), which must not be passed to pxToDouble(). In that
-    // case we skip the per-side child-offset adjustment (only used by the
-    // uniform-border layout path). The per-edge used below (borderTopWidth /
-    // borderLeftWidth) is always a single-value string and safe to parse.
-    if (isSingleValuePx(style.borderWidth)) {
-        val borderWidth = style.borderWidth.pxToDouble()
-        Promise.resolve(null).then {
-            // if element has border, then element is border-box, then adjust the children's offset
-            for (i in 0 until this.children.length) {
-                val child = this.children[i].unsafeCast<HTMLElement>()
-                val dynamicChild = child.asDynamic()
-                child.style.left = (dynamicChild.rawLeft.unsafeCast<Double>() - borderWidth).toPxF()
-                child.style.top = (dynamicChild.rawTop.unsafeCast<Double>() - borderWidth).toPxF()
-                // add sign
-                dynamicChild.isAdujustedOffset = true
-            }
-        }
-        
-        // Only apply border adjustment for span or p elements
-        val tagName = this.tagName.lowercase()
-        if (tagName == KRTagConst.SPAN || tagName == KRTagConst.P) {
-            frame.width += 2 * borderWidth
-            frame.height += 2 * borderWidth
-            frame.x -= borderWidth
-            frame.y -= borderWidth
-        }
-    }
+private fun finiteFrameNumber(value: dynamic): Double? =
+    if (jsTypeOf(value) == "number" && value.unsafeCast<Double>().isFinite()) value.unsafeCast<Double>() else null
 
-    // handle offset for dynamic child
-    parentElement.unsafeCast<HTMLElement?>()?.let { parent ->
-        val dynamicChild = this.asDynamic()
-        if (isSingleValuePx(parent.style.borderWidth) && jsTypeOf(dynamicChild.isAdujustedOffset) == KRJsTypeConst.UNDEFINED) {
-            // adjust offset for non adjusted child
-            val borderWidth = parent.style.borderWidth.pxToDouble()
-            style.left = (frame.x - borderWidth).toPxF()
-            style.top = (frame.y - borderWidth).toPxF()
-        }
+// Keep the existing uniform-border policy. A shorthand such as "1px 2px 3px
+// 4px" is not a number and must never be fed to pxToDouble().
+private fun CSSStyleDeclaration.uniformBorderWidth(): Double =
+    if (isSingleValuePx(borderWidth)) borderWidth.pxToDouble() else 0.0
+
+/** Recompute from authoritative layout coordinates, never a previously adjusted CSS position. */
+private fun Element.updatePositionForH5(style: CSSStyleDeclaration) {
+    if (style.asDynamic().checkAndUpdatePosition != null) return // mini-app owns this conversion
+    val raw = asDynamic()
+    val x = finiteFrameNumber(raw.rawLeft) ?: return
+    val y = finiteFrameNumber(raw.rawTop) ?: return
+    val parentBorder = parentElement.unsafeCast<HTMLElement?>()?.style?.uniformBorderWidth() ?: 0.0
+    val tag = tagName.lowercase()
+    val ownBorder = if (tag == KRTagConst.SPAN || tag == KRTagConst.P)
+        style.uniformBorderWidth() else 0.0
+    style.left = (x - parentBorder - ownBorder).toPxF()
+    style.top = (y - parentBorder - ownBorder).toPxF()
+    finiteFrameNumber(raw.rawWidth)?.let { style.width = (it + 2 * ownBorder).toPxF() }
+    finiteFrameNumber(raw.rawHeight)?.let { style.height = (it + 2 * ownBorder).toPxF() }
+}
+
+private fun Element.updateChildrenPositionsForH5() {
+    for (i in 0 until children.length) {
+        val child = children[i].unsafeCast<HTMLElement>()
+        child.updatePositionForH5(child.style)
     }
 }
 
@@ -382,13 +369,13 @@ fun Element.setFrame(frame: Frame, style: CSSStyleDeclaration) {
     // save raw left and top value to element props
     dynamicElement.rawLeft = left
     dynamicElement.rawTop = top
+    dynamicElement.rawWidth = frame.width
+    dynamicElement.rawHeight = frame.height
 
     // adjust element offset for border element
     if (style.asDynamic().checkAndUpdatePosition != null) {
         // update style for miniapp
         style.asDynamic().checkAndUpdatePosition()
-    } else {
-        checkAndUpdatePositionForH5(frame, style)
     }
 
     // set element frame
@@ -396,6 +383,12 @@ fun Element.setFrame(frame: Frame, style: CSSStyleDeclaration) {
     style.top = frame.y.toPxF()
     style.width = frame.width.toPxF()
     style.height = frame.height.toPxF()
+    if (style.asDynamic().checkAndUpdatePosition == null) {
+        updatePositionForH5(style)
+        // Children may receive their frames before insertion. Read current borders
+        // when the microtask runs, and ignore unmanaged inline DOM children.
+        if (isSingleValuePx(style.borderWidth)) Promise.resolve(null).then { updateChildrenPositionsForH5() }
+    }
 }
 
 /**
@@ -988,13 +981,17 @@ private val propHandlers = mapOf<String, (CSSStyleDeclaration, Any, HTMLElement)
         }
         true
     },
-    KRCssConst.BORDER to { cssStyle, value, _ ->
+    KRCssConst.BORDER to { cssStyle, value, ele ->
         val borders = value.unsafeCast<String>().split(" ")
         cssStyle.borderWidth = borders[0].toFloat().toPxF()
         cssStyle.borderStyle = borders[1]
         cssStyle.borderColor = borders[2].toRgbColor()
         // set box-sizing to border-box for border item
         cssStyle.boxSizing = "border-box"
+        if (cssStyle.asDynamic().checkAndUpdatePosition == null) {
+            ele.updatePositionForH5(cssStyle)
+            ele.updateChildrenPositionsForH5()
+        }
         true
     },
     KRCssConst.CLICK to { _, value, ele ->
