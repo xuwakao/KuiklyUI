@@ -56,7 +56,7 @@ class KuiklySemantisHandler {
             val isClickable = config.getOrNull(SemanticsActions.OnClick) != null
             val isLongClickable = config.getOrNull(SemanticsActions.OnLongClick) != null
             renderingNodeOf(node.layoutNode)?.run {
-                val accessibility = buildAccessibilityText(node.config)
+                val accessibility = buildAccessibilityText(config)
                 if (accessibility != "") {
                     view.getViewAttr().accessibility(accessibility)
                     val kuiklyAccRole = convertComposeRoleToKuiklyRole(role)
