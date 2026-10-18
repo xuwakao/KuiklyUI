@@ -1485,7 +1485,10 @@ abstract class PagerState internal constructor(
     internal fun applyMeasureResult(
         result: PagerMeasureResult,
         visibleItemsStayedTheSame: Boolean = false
-    ) {
+    ) = Snapshot.withoutReadObservation {
+        // Publish measure output without subscribing measure to its own layoutInfo.
+        // Alignment bookkeeping below reads that never-equal state; observing those
+        // reads would request another measure after every result, even when idle.
         debugLog { "Applying Measure Result" }
         // Hook: record page scroll context event for Recomposition Profiler
         val oldPage = scrollPosition.currentPage
