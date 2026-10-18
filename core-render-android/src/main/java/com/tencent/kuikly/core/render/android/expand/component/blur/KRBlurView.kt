@@ -153,6 +153,9 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     override fun draw(canvas: Canvas) {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, if (canvas.isHardwareAccelerated) "blur-record-hw" else "blur-record-sw")
+        try {
         // Stop at the actual backdrop boundary, including ancestors' later siblings.
         // Never toggle visibility: doing so requests a new measure/layout every capture.
         if (canvas is BlurViewCanvas && canvas.stopAt === this) throw StopBackdropCapture
@@ -170,6 +173,8 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
             }
             super.draw(canvas)
         }
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -222,6 +227,9 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
     }
 
     private fun updateBlurBitmap() {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, "blur-update")
+        try {
         if (!initialized) {
             return
         }
@@ -274,12 +282,14 @@ class KRBlurView(context: Context) : FrameLayout(context), IKuiklyRenderViewExpo
         android.os.Trace.beginSection("KRBlurView.captureContent")
         try {
             getBlurRootViewList().forEach { krRootView ->
-                drawBlurContent(canvas, bitmap, krRootView)
+                com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this,"blur-snapshot") { drawBlurContent(canvas, bitmap, krRootView) }
             }
         } finally { android.os.Trace.endSection() }
         android.os.Trace.beginSection("KRBlurView.filter")
-        try { internalBitmap = blur.blur(bitmap, blurRadius) }
+        try { com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.measure(this,"blur-filter") { internalBitmap = blur.blur(bitmap, blurRadius) } }
         finally { android.os.Trace.endSection() }
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver,costTicket) }
     }
 
     private fun drawBlurContent(canvas: BlurViewCanvas, bitmap: Bitmap, rootView: View) {
