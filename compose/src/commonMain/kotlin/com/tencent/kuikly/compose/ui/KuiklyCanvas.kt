@@ -82,7 +82,8 @@ internal class KuiklyCanvas : Canvas {
                 context = CanvasContext(value.renderView!!, value.pagerId, value.nativeRef)
                     .also {
                         it.batchDraw = true
-                        it.structuredBatchParams = value.getPager().pageData.isAndroid
+                        val pageData = value.getPager().pageData
+                        it.structuredBatchParams = pageData.isAndroid || pageData.isWeb
                     }
                 densityValue = value.getPager().pagerDensity()
                 // Sent unbatched and first, so it lands before the buffered frame.
