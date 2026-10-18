@@ -678,9 +678,21 @@ class KuiklyRenderView(
         super.requestLayout()
     }
 
+    override fun drawChild(canvas: android.graphics.Canvas, child: View, drawingTime: Long): Boolean {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, child, if (canvas.isHardwareAccelerated) "child-submit-hw" else "child-submit-sw")
+        try { return super.drawChild(canvas, child, drawingTime) }
+        finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
+    }
+
     override fun dispatchDraw(canvas: android.graphics.Canvas) {
+        val costObserver = com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.observer
+        val costTicket = if (costObserver == null) -1 else com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.begin(costObserver, this, if (canvas.isHardwareAccelerated) "root-record-hw" else "root-record-sw")
+        try {
         if (KRInvalidationProbe.enabled) KRInvalidationProbe.onRootDraw()
         super.dispatchDraw(canvas)
+    
+        } finally { if (costObserver != null) com.tencent.kuikly.core.render.android.performace.frame.KRDrawCostProbe.end(costObserver, costTicket) }
     }
 
     companion object {
