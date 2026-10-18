@@ -54,6 +54,7 @@ import com.tencent.kuikly.compose.container.VsyncTickConditions
 import com.tencent.kuikly.compose.profiler.KuiklyObserverHandle
 import com.tencent.kuikly.compose.profiler.RecompositionProfiler
 import com.tencent.kuikly.compose.profiler.FrameCounters
+import com.tencent.kuikly.compose.profiler.ComposeScenePhaseProbe
 import com.tencent.kuikly.compose.profiler.RecompositionTracker
 import com.tencent.kuikly.compose.profiler.kuiklySetObserver
 import com.tencent.kuikly.compose.ui.KuiklyCanvas
@@ -219,15 +220,17 @@ internal abstract class BaseComposeScene(
             val tracker = if (profilerEnabled) RecompositionProfiler.tracker else null
             val frameSampled = tracker?.onFrameStart() ?: false
 
-            recomposer.performScheduledTasks()
+            ComposeScenePhaseProbe.measure("scheduledTasks") { recomposer.performScheduledTasks() }
 
-            frameClock.sendFrame(nanoTime) // Recomposition
-            doLayout() // Layout
-            recomposer.performScheduledEffects() // Composition effects (e.g. LaunchedEffect)
+            ComposeScenePhaseProbe.measure("frameClock") { frameClock.sendFrame(nanoTime) }
+            ComposeScenePhaseProbe.measure("layout") { doLayout() }
+            ComposeScenePhaseProbe.measure("scheduledEffects") { recomposer.performScheduledEffects() }
 
-            inputHandler.updatePointerPosition() // Synthetic move event
-            snapshotInvalidationTracker.onDraw()
-            draw(KuiklyCanvas()) // Draw
+            ComposeScenePhaseProbe.measure("pointerUpdate") { inputHandler.updatePointerPosition() }
+            ComposeScenePhaseProbe.measure("draw") {
+                snapshotInvalidationTracker.onDraw()
+                draw(KuiklyCanvas())
+            }
 
             val previousDrawNanoTime = lastFrameDrawNanoTime
             lastFrameDrawNanoTime = nanoTime
@@ -238,13 +241,14 @@ internal abstract class BaseComposeScene(
                     previousDrawNanoTime +
                     KUIKLY_PREFETCH_IDLE_FRAME_MULTIPLIER * frameIntervalNs
             val framePrefetchScheduler = prefetchScheduler as? FramePrefetchScheduler
-            val prefetchResult =
+            val prefetchResult = ComposeScenePhaseProbe.measure("prefetch") {
                 framePrefetchScheduler?.processRequests(
                     nanoTime,
                     frameIntervalNs,
                     isFrameIdle,
                     previousDrawNanoTime,
                 )
+            }
             val prefetchSpentNs = prefetchResult?.spentNs ?: 0L
             LazyListPrefetchTrace.log {
                 "frameEnd isFrameIdle=$isFrameIdle needsProactive=${vsyncTickConditions.needsToBeProactive} scheduledRedraws=${vsyncTickConditions.scheduledRedrawsCount} queuePending=${framePrefetchScheduler?.hasPendingWork() == true} spentNs=$prefetchSpentNs scheduleNextFrame=${prefetchResult?.scheduleForNextFrame == true}"
@@ -265,7 +269,7 @@ internal abstract class BaseComposeScene(
         // 安全写入 Compose State 驱动 Overlay UI 刷新
         RecompositionProfiler.tracker?.notifyOverlayIfNeeded()
         // notifyOverlayIfNeeded 可能写了 Compose State，需要再次检查是否需要调度新帧
-        invalidateIfNeeded()
+        ComposeScenePhaseProbe.measure("invalidate") { invalidateIfNeeded() }
     }
 
     @OptIn(ExperimentalComposeUiApi::class)
