@@ -7,6 +7,9 @@ import com.tencent.kuikly.core.render.web.utils.Log
 private const val TAG = "JSONEngine"
 
 object JSONEngine {
+    /** Canvas command streams are strict generated JSON; do not change global ID parsing. */
+    internal fun parseCanvas(jsonStr: String): Any? = parseFromEngine(jsonStr)
+
     fun parse(jsonStr: String): Any? {
         if (!JSON.useNativeMethod) {
             return JSONTokener(jsonStr).nextValue()
