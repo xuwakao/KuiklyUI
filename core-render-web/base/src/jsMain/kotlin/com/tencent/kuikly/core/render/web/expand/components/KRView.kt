@@ -88,6 +88,9 @@ fun MouseEvent.toPanEventParams(): Map<String, Any> {
 open class KRView : IKuiklyRenderViewExport {
     // div instance
     private val div = kuiklyDocument.createElement(ElementType.DIV)
+    // Retained, unplaced subtrees need stronger exclusion than inherited visibility:
+    // explicitly visible descendants can otherwise still paint and intercept input.
+    private var retainedClipPath: String? = null
     // Whether touch event binding has been completed
     private var isBindTouchEvent = false
     // Whether mouse is currently pressed (for PC browser support)
@@ -160,6 +163,18 @@ open class KRView : IKuiklyRenderViewExport {
 
     override fun setProp(propKey: String, propValue: Any): Boolean {
         return when (propKey) {
+            "subtreeVisibility" -> {
+                if (propValue.unsafeCast<Int>() == 0) {
+                    if (retainedClipPath == null) retainedClipPath = ele.style.asDynamic().clipPath as String
+                    // Empty clip excludes descendants from painting and hit testing,
+                    // while preserving scroll ranges/offsets and measurement geometry.
+                    ele.style.asDynamic().clipPath = "inset(50%)"
+                } else {
+                    retainedClipPath?.let { ele.style.asDynamic().clipPath = it }
+                    retainedClipPath = null
+                }
+                true
+            }
             KRCssConst.PAN -> {
                 // Handle drag end event
                 panEventCallback = propValue.unsafeCast<KuiklyRenderCallback>()
