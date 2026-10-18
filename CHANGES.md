@@ -1,5 +1,14 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 75. Rejected software blur opacity metadata experiment
+
+2026-10-17 — Pixel's software backdrop is alpha255 but marked hasAlpha=true. A bounded
+software-only metadata candidate passed pure predicate tests, but same-process four-window
+control RT17.5/20.1/20.6/19.9ms showed no repeatable benefit. Candidate, helper, setter and
+tests removed, original KRBlurView restored; no scene clipping, capture suppression or
+new cache shipped. Native transparent-recapture fixture remained unexecuted and was removed,
+not counted PASS. Evidence retained in Ronaq docs/issue/pixel-room-jank.md DELTA8/TASK10.
+
 Every change this fork carries, why it exists, and which PRD clause drove it.
 本 fork 相对上游的全部改动、原因，以及对应的 PRD 依据。
 
@@ -4626,3 +4635,86 @@ Red gate: NativePagerBoundsTest six cases ran, two failed on the old range
 (repeated terminal releases and shrinking count). Green/native results are in the
 linked Ronaq progress record. Existing SettleTargetPage/DragsBegun tests and three
 common-target compilers accompany the change. Upstreamable: yes.
+
+## 69. Bound native-view snapshot update observation
+
+**Files** · compose `ui/node/KNode.kt`, `SnapshotUpdateScope.kt`, `draw/DrawModifier.kt`, `SnapshotDrawScope.kt`, common tests `SnapshotUpdateScopeTest.kt` and `SnapshotDrawScopeTest.kt`
+**Date** · 2026-10-16
+**Driven by** · actual OPPO production App Web stalls, Ronaq `docs/issue/app-web-performance.md`.
+
+KNode allocated a captured onChanged callback every time runUpdate executed. Compose SnapshotStateObserver keys its ObservedScopeMap by callback identity, so repeated native-view updates appended categories that every later snapshot notification scanned. Frozen production JS confirms the allocation; the OPPO room profile's largest mapped self-work is the same observer scan.
+
+All native-view update targets now share one callback category. Its target re-enters observed update, replacing conditional dependencies instead of calling a raw updater whose newly read states were never registered. Detached targets are ignored, existing clear-on-detach remains, and reattach observes again. This is generic renderer housekeeping; media, animations, timing, bridge and business contracts are unchanged.
+
+Regression: repeated updates across30 scopes notify each once; conditional reads replace stale dependencies; replaced/detached/reattached scopes remain independent. Build and physical evidence are recorded in the owning Ronaq progress record; not inferred from source alone.
+
+Additional same-mechanism defect: drawBehind passed a new `DrawModifierNode::invalidateDraw` reference every Canvas draw; production Kotlin/JS emitted a fresh function for every frame. That caused continuously growing observation categories even in a quiet room. SnapshotDrawScope now supplies one shared callback for all draw targets; notification only invalidates, and the next draw refreshes reads. KNode-only frozen experiment did not fix steady stalls; the per-draw candidate must be measured independently. No animation is removed or slowed.
+
+Final validation: actual observer regressions5PASS; old-callback negative control5FAIL; Android framework and iOSArm64 compile pass. Frozen draw-only probe reduces8s script work6.60s→2.88s but alone fails smoothness, so no full performance win is attributed to this fork change. Ronaq's separately bounded Web-only frame reuse is also required for the measured recurring room-stall repair; see owning evidence/repair-matrix.json.
+
+## 70. Web Canvas batches and host display pacing
+
+**Date**: 2026-10-16. Driven by real OPPO Web gift-animation stutter;
+Ronaq `docs/design/web-gift-animations.md`, DELTA-3 through DELTA-6.
+
+Web Canvas uses the existing native JSON engine locally, retaining its lenient /
+unsafe-number fallback without changing business JSON's global mode. It also
+accepts the existing Android structured parameters and little-endian Float32
+pathOps; temporary parameters are scoped to one call and cleared on failure.
+Compose opts this wire into Web while retaining other hosts' previous choice.
+Same-pass accessibility text reuses the merged semantics config already read;
+no accessibility or test tags are removed or cached across passes.
+
+Browser draw-parity tests plus exact production phone measurements are required;
+current results live in the owning Ronaq progress record. The experimental rAF
+Compose clock was rejected after physical playback regressed; the existing idle-
+pausable Web timer remains. This entry does not declare full performance acceptance.
+
+## 71. Keep Pager output bookkeeping out of measure read observation
+
+**Date** · 2026-10-16
+**Files** · compose `foundation/pager/PagerState.kt`, common `PagerMeasureObservationTest.kt`
+**Driven by** · OPPO App Web quiet-room repeating hidden home/shell/banner measure requests; Ronaq `docs/design/web-gift-animations.md` DELTA10.
+
+applyMeasureResult published never-equal layoutInfo, then fork alignment helpers read the same state inside the observed measure scope. Every publication therefore scheduled another measure. Bound only this output/bookkeeping method with Snapshot.withoutReadObservation; measure inputs remain observed, output writes still notify external readers, and native alignment/RTL/snap policies are unchanged. Actual-method snapshot tests fail twice on old source and must pass after this change. Physical cadence and pager regressions remain separate acceptance gates, not inferred from compilation.
+
+## 72. Rejected pass-local semantics traversal experiment
+
+2026-10-16: candidate child-list memoization passed3 actual-tree parity/freshness/fake-node tests and native compilers but did not establish physical smoothness improvement (finalsingleflow112VAPdraws17.39Hz withscroll/max418ms). Implementation and tests removed; evidence retained in Ronaq web-gift-animations evidence. Existing same-pass merged-config reuse (§70) remains; no new semantics cache shipped.
+
+## 73. Explicit exclusion for retained Web view subtrees
+
+2026-10-16 — KRView adds opt-in subtreeVisibility0/1, used only by Ronaq's
+Web PreparedSheet. CSS visibility:hidden alone permits an explicitly visible
+retained descendant to paint and intercept room touches. The opt-in stores the
+root's authored clip-path once, applies an empty inset(50%) clip while hidden,
+then restores it idempotently on reopening. It retains browser layout and native
+scroll ranges/offsets; a display:none candidate failed physical nonzero-page
+reopening and was replaced before acceptance. Existing generic visibility semantics and native
+hosts remain unchanged; dimensions/styles/content and Kotlin measurement stay
+retained. Actual renderer browser hit-testing regression plus physical room
+reopen/scroll tests are required. Ronaq docs/design/web-gift-animations.md DELTA17.
+
+## 74. Order Web pager offsets and cancel pending writes
+
+2026-10-16 — H5ListPagingHelper applies a nonanimated transform before publishing
+its scroll callback. Animated staging and completion timers belong to the helper;
+a newer position, touch start, retained-view reuse, or destruction cancels stale
+writes. H5ListView invokes the same cancellation at reuse/destruction. Paging
+direction, snapping and authored animation duration remain unchanged. Actual
+helper/list browser tests reproduce incoherent immediate coordinates and a delayed
+write after destruction on the old source, then pass after the repair. This fixes
+an independent ordering defect; retained Compose sheet Pager state also needed
+Ronaq's separate SaveableStateHolder repair. See owning Ronaq TASK18/TASK20 evidence.
+
+## Finite host-owned native draw and scene phase diagnostics
+
+2026-10-17 — Optional null-by-default observer boundaries attribute Android view
+recording/submission and generic Compose scene stages. Hosts explicitly own a
+bounded observer lease; the framework preserves original calls, order, arguments,
+return values and body exceptions even when the diagnostic callback fails.
+Ordinary startup installs no observer. The Android host emits finite scene trace
+sections without a platform dependency in common framework code. These are
+instrumented attribution tools, not product optimizations or clean-FPS evidence.
+Ronaq TASK78/D78-V retains source identity, cleanup flags and partial-boundary
+limits; no effect, player, media clock, layout or quality behavior is changed.
