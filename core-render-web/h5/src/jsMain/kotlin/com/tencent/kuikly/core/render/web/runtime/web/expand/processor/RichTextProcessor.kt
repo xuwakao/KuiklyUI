@@ -72,7 +72,7 @@ object RichTextProcessor : IRichTextProcessor {
             style.asDynamic().webkitLineClamp = ""
             style.asDynamic().webkitBoxOrient = ""
             style.whiteSpace = "pre-wrap"
-            style.overflowY = "auto"
+            style.overflowY = "visible"
             // Use transform to move offscreen instead of absolute positioning for better performance
             style.position = "absolute"
             style.visibility = "hidden"
@@ -120,7 +120,11 @@ object RichTextProcessor : IRichTextProcessor {
             ele.style.asDynamic().webkitLineClamp = ""
             ele.style.asDynamic().webkitBoxOrient = ""
             ele.style.whiteSpace = "pre-wrap"
-            ele.style.overflowY = "auto"
+            // A measured label is not a scroll view. Inline spans may extend
+            // slightly beyond a line box; auto would paint a scrollbar there.
+            // A hidden X axis makes visible Y compute to auto, so preserve an
+            // existing horizontal clip by clipping Y too rather than scrolling.
+            ele.style.overflowY = if (ele.style.overflowX == "hidden") "hidden" else "visible"
         }
     }
 
