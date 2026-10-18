@@ -16,6 +16,9 @@
 
 package com.tencent.kuikly.compose.ui.draw
 
+import com.tencent.kuikly.compose.ui.node.SnapshotDrawScope
+import com.tencent.kuikly.compose.ui.node.observeDrawReads
+
 import com.tencent.kuikly.compose.ui.Modifier
 import com.tencent.kuikly.compose.ui.geometry.Size
 import com.tencent.kuikly.compose.ui.graphics.Canvas
@@ -35,7 +38,6 @@ import com.tencent.kuikly.compose.ui.unit.Density
 import com.tencent.kuikly.compose.ui.unit.LayoutDirection
 import com.tencent.kuikly.compose.ui.unit.toSize
 import com.tencent.kuikly.compose.ui.node.DrawModifierNode
-import com.tencent.kuikly.compose.ui.node.OwnerScope
 import com.tencent.kuikly.compose.ui.node.invalidateDraw
 import com.tencent.kuikly.compose.ui.node.requireLayoutNode
 import com.tencent.kuikly.compose.ui.node.requireOwner
@@ -117,14 +119,11 @@ private data class DrawBehindElement(
 
 internal class DrawBackgroundModifier(
     var onDraw: DrawScope.() -> Unit
-) : Modifier.Node(), DrawModifierNode, OwnerScope {
+) : Modifier.Node(), DrawModifierNode, SnapshotDrawScope {
 
     override fun ContentDrawScope.draw(view: DeclarativeBaseView<*, *>?) {
         if (view is CanvasView) {
-            requireOwner().snapshotObserver.observeReads(
-                this@DrawBackgroundModifier,
-                DrawModifierNode::invalidateDraw
-            ) {
+            requireOwner().snapshotObserver.observeDrawReads(this@DrawBackgroundModifier) {
                 onDraw()
             }
         } else {
@@ -132,6 +131,8 @@ internal class DrawBackgroundModifier(
         }
         drawContent()
     }
+
+    override fun invalidateSnapshotDraw() = invalidateDraw()
 
     override val isValidOwnerScope: Boolean get() = isAttached
 }
