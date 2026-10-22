@@ -33,6 +33,7 @@ import com.tencent.kuikly.compose.foundation.layout.Box
 import com.tencent.kuikly.compose.ui.ExperimentalComposeUiApi
 import com.tencent.kuikly.compose.ui.InternalComposeUiApi
 import com.tencent.kuikly.compose.ui.Modifier
+import com.tencent.kuikly.compose.ui.zIndex
 import com.tencent.kuikly.compose.ui.geometry.Offset
 import com.tencent.kuikly.compose.ui.graphics.Color
 import com.tencent.kuikly.compose.ui.input.pointer.PointerEventType
@@ -205,7 +206,9 @@ fun Dialog(
     properties: DialogProperties = DialogProperties(),
     content: @Composable () -> Unit
 ) = DialogLayout(
-    modifier = Modifier.semantics { dialog() },
+    // A dialog occupies a separate root slot. Keep it above page headers and image overlays;
+    // dialogs share this layer so later modal slots still appear above earlier ones.
+    modifier = Modifier.zIndex(1000f).semantics { dialog() },
     onDismissRequest = onDismissRequest,
     properties = properties.asKuiklyDialogProperties(),
     content = content

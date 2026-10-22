@@ -672,7 +672,15 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
         if (touchConsumeByKuikly) {
             return true
         }
-        if (!scrollEnabled || mNestedScrollAxesTouch != SCROLL_AXIS_NONE) {
+        // A nested horizontal pager may hand its boundary gesture to this pager.
+        // Let the existing child interceptors veto takeover while the child can scroll.
+        val nestedHorizontalPagerTouch = isTouchPager() &&
+            mNestedScrollAxesTouch == View.SCROLL_AXIS_HORIZONTAL &&
+            nestedChildInterceptEventListeners?.any {
+                it is NestedHorizontalChildInterceptor && it.hasActivePagerGesture()
+            } == true
+        if (!scrollEnabled ||
+            (mNestedScrollAxesTouch != SCROLL_AXIS_NONE && !nestedHorizontalPagerTouch)) {
             return false
         }
 
@@ -1558,8 +1566,10 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
     }
 
     override fun requestChildRectangleOnScreen(child: View, rect: Rect, immediate: Boolean): Boolean {
-        // 分页模式下，不响应requestChildRectangleOnScreen，否则可能无法划到下一页
-        if (pageEnable) {
+        // Compose owns focused-content placement through its scroll state. A native EditText
+        // rectangle can contain transient virtual-anchor coordinates during a lazy-list update;
+        // letting RecyclerView scroll it independently races that update and hides the field.
+        if (pageEnable || KRView.isComposeRoot(krRootView())) {
             return false
         }
         return super.requestChildRectangleOnScreen(child, rect, immediate)
@@ -1898,6 +1908,8 @@ class KRRecyclerView : RecyclerView, IKuiklyRenderViewExport, NestedScrollingChi
             parentFirst = (if (dx > 0) scrollForwardMode else scrollBackwardMode) == KRNestedScrollMode.PARENT_FIRST,
             canScroll = ::canScrollHorizontally,
         )
+
+    internal fun isTouchPager(): Boolean = directionRow && (pageEnable || !supportFling)
 
     /**
      * 在满足条件的情况下尝试滚动父亲

@@ -104,6 +104,13 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         handlePagerEndCommon(it)
     }
 
+    /** A child pager consumed this sequence; do not snap this ancestor as well. */
+    fun disarmPagerTouch() {
+        isDragging = 0
+        isTouchMove = false
+        lastTouchEvent = null
+    }
+
     /**
      * Handle paging calculation for MouseDown gesture
      */
@@ -430,6 +437,14 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         if (!isTouchMove) {
             return
         }
+        val isTouchRelease = event.isTouchEventOrNull() != null
+        if (isTouchRelease && canScroll) {
+            // Movement was stopped here, so Compose has only seen the initial press.
+            // Bubble this same terminal event with cancellation metadata to its root.
+            // At an edge, movement has been handed to the ancestor pager instead;
+            // its own terminal handler must still run and settle that outer page.
+            event.asDynamic().kuiklyPagingConsumed = true
+        }
         isDragging = 0
         isTouchMove = false
         val deltaY = touchEndY - touchStartY
@@ -450,7 +465,7 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         }
         if (newPageIndex != pageIndex) {
             pageIndex = newPageIndex
-            event.stopPropagation()
+            if (!isTouchRelease) event.stopPropagation()
         }
         handlePagerScrollTo(scrollOffsetX, scrollOffsetY, true)
         // H5 paging 模式已经完成了分页 snap 处理（通过 handlePagerScrollTo）

@@ -132,14 +132,9 @@ fun ModalBottomSheet(
     }
 
     LaunchedEffect(visible) {
-        if (visible && !visibleState.currentState) {
-            // 启动动画
-            visibleState.targetState = true
-            dragOffset = 0f
-        } else if (!visible && visibleState.currentState) {
-            visibleState.targetState = false
-            dragOffset = 0f
-        }
+        // The completed state can lag during enter/exit. Honor a reversal immediately.
+        visibleState.targetState = visible
+        dragOffset = 0f
     }
 
     LaunchedEffect(visibleState.isIdle, visibleState.currentState, visibleState.targetState) {
@@ -149,7 +144,8 @@ fun ModalBottomSheet(
         }
     }
 
-    if (visible || visibleState.currentState) {
+    // Keep the same dialog mounted until the transition settles, including a close during enter.
+    if (visible || visibleState.currentState || !visibleState.isIdle) {
         Dialog(
             onDismissRequest = {
                 visibleState.targetState = false
