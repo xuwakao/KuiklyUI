@@ -56,6 +56,8 @@ internal fun LazyLayoutMeasureScope.measurePager(
     visualPageOffset: IntOffset,
     pageAvailableSize: Int,
     beyondViewportPageCount: Int,
+    beyondViewportWindow: PagerBeyondViewportWindow,
+    aligned: Boolean,
     pinnedPages: List<Int>,
     snapPosition: SnapPosition,
     placementScopeInvalidator: ObservableScopeInvalidator,
@@ -312,10 +314,16 @@ internal fun LazyLayoutMeasureScope.measurePager(
             }
         }
 
+        val preloadRange = beyondViewportWindow.update(
+            visiblePages.first().index, visiblePages.last().index,
+            pageCount, beyondViewportPageCount, aligned
+        )
+
         // Compose extra pages before
         val extraPagesBefore = createPagesBeforeList(
             currentFirstPage = currentFirstPage,
             beyondViewportPageCount = beyondViewportPageCount,
+            preloadStart = preloadRange.first,
             pinnedPages = pinnedPages
         ) {
             getAndMeasure(
@@ -342,6 +350,7 @@ internal fun LazyLayoutMeasureScope.measurePager(
             currentLastPage = visiblePages.last().index,
             pagesCount = pageCount,
             beyondViewportPageCount = beyondViewportPageCount,
+            preloadEnd = preloadRange.last,
             pinnedPages = pinnedPages
         ) {
             getAndMeasure(
@@ -482,16 +491,17 @@ internal fun LazyLayoutMeasureScope.measurePager(
     }
 }
 
-private fun createPagesAfterList(
+internal fun createPagesAfterList(
     currentLastPage: Int,
     pagesCount: Int,
     beyondViewportPageCount: Int,
+    preloadEnd: Int,
     pinnedPages: List<Int>,
     getAndMeasure: (Int) -> MeasuredPage
 ): List<MeasuredPage> {
     var list: MutableList<MeasuredPage>? = null
 
-    val end = minOf(currentLastPage + beyondViewportPageCount, pagesCount - 1)
+    val end = minOf(currentLastPage + beyondViewportPageCount, pagesCount - 1, preloadEnd)
 
     for (i in currentLastPage + 1..end) {
         if (list == null) list = mutableListOf()
@@ -499,7 +509,7 @@ private fun createPagesAfterList(
     }
 
     pinnedPages.fastForEach { pageIndex ->
-        if (pageIndex in (end + 1) until pagesCount) {
+        if (pageIndex > currentLastPage && pageIndex in (end + 1) until pagesCount) {
             if (list == null) list = mutableListOf()
             list?.add(getAndMeasure(pageIndex))
         }
@@ -508,15 +518,16 @@ private fun createPagesAfterList(
     return list ?: emptyList()
 }
 
-private fun createPagesBeforeList(
+internal fun createPagesBeforeList(
     currentFirstPage: Int,
     beyondViewportPageCount: Int,
+    preloadStart: Int,
     pinnedPages: List<Int>,
     getAndMeasure: (Int) -> MeasuredPage
 ): List<MeasuredPage> {
     var list: MutableList<MeasuredPage>? = null
 
-    val start = maxOf(0, currentFirstPage - beyondViewportPageCount)
+    val start = maxOf(0, currentFirstPage - beyondViewportPageCount, preloadStart)
 
     for (i in currentFirstPage - 1 downTo start) {
         if (list == null) list = mutableListOf()
@@ -524,7 +535,7 @@ private fun createPagesBeforeList(
     }
 
     pinnedPages.fastForEach { pageIndex ->
-        if (pageIndex < start) {
+        if (pageIndex < currentFirstPage && pageIndex < start) {
             if (list == null) list = mutableListOf()
             list?.add(getAndMeasure(pageIndex))
         }

@@ -419,7 +419,7 @@ abstract class PagerState internal constructor(
     }
 
     /** Native setContentOffset(animated=true) snap is in progress. */
-    internal var isSnapAnimating = false
+    internal var isSnapAnimating by mutableStateOf(false)
 
     /** Native content offset that the snap animation is settling to. */
     internal var snapTargetContentOffset = 0

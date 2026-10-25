@@ -4755,3 +4755,25 @@ sections without a platform dependency in common framework code. These are
 instrumented attribution tools, not product optimizations or clean-FPS evidence.
 Ronaq TASK78/D78-V retains source identity, cleanup flags and partial-boundary
 limits; no effect, player, media clock, layout or quality behavior is changed.
+
+## Pager neighbours follow visual scroll completion
+
+2026-10-22 — Keep the last aligned beyond-viewport window while a page transition
+is moving; genuinely visible and pinned pages still compose, and idle refills the
+configured neighbour count. This avoids constructing the hidden third page on the
+first scrolling frame without increasing the configured retention. Native snap
+completion is observable independently of its offset-alignment bookkeeping.
+Web transform paging now publishes scrollEnd from its own transform transitionend;
+publishing a requested target offset does not mean that the CSS animation ended.
+Replacing/cancelling a target removes its pending completion listener, and unchanged
+transforms complete through the existing position callback. Includes regressions for
+first-pixel/distant/cancelled transitions, count changes, pin deduplication and the
+snap completion observer. PM work WORK-20261021-PM-H5-RESPONSE retains real-host data.
+
+The ordinary tap detector also gives each gesture its own PressGestureScope.
+A queued onPress/release can no longer have its release flags reset by the next
+gesture when host input is delivered in a batch. Consumption and tap callback
+ordering are unchanged; real coalesced tap/cancel/rapid-switch and child-return
+regressions are recorded with the PM work. Preloading uses observable scroll/snap
+completion rather than the raw host dragging marker, which can outlive a consumed
+gesture.

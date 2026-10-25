@@ -64,14 +64,14 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
     // Wheel scroll reset timer
     private var wheelResetTimer: Int? = null
     private var positionTimer: Int? = null
-    private var transitionTimer: Int? = null
+    private var transitionEndListener: ((Event) -> Unit)? = null
 
     /** Reuse and a newer target must invalidate writes belonging to the old offset. */
     fun cancelPendingPosition() {
         positionTimer?.let { kuiklyWindow.clearTimeout(it) }
-        transitionTimer?.let { kuiklyWindow.clearTimeout(it) }
+        transitionEndListener?.let { ele.removeEventListener("transitionend", it) }
         positionTimer = null
-        transitionTimer = null
+        transitionEndListener = null
         ele.style.transition = ""
     }
 
@@ -535,12 +535,32 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         }
         positionTimer = kuiklyWindow.setTimeout({
             positionTimer = null
-            ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
-            setElementPosition(scrollOffsetX, scrollOffsetY)
-            transitionTimer = kuiklyWindow.setTimeout({
-                transitionTimer = null
+            fun finish() {
+                transitionEndListener?.let { ele.removeEventListener("transitionend", it) }
+                transitionEndListener = null
                 ele.style.transition = ""
-            }, PAGING_SCROLL_ANIMATION_TIME)
+                // Publishing a requested offset is not animation completion. Paging uses
+                // transforms, so the element's native scroll event never supplies scrollEnd.
+                listElement.scrollEndEventCallback?.invoke(
+                    listElement.updateOffsetMap(-scrollOffsetX, -scrollOffsetY, isDragging)
+                )
+            }
+            val transform = kuiklyWindow.getComputedStyle(ele).transform
+            val values = transform.removePrefix("matrix(").removeSuffix(")").split(",")
+            val x = if (transform == "none") 0f else values.getOrNull(4)?.trim()?.toFloatOrNull()
+            val y = if (transform == "none") 0f else values.getOrNull(5)?.trim()?.toFloatOrNull()
+            if (x != null && y != null && abs(x - scrollOffsetX) < 0.01f && abs(y - scrollOffsetY) < 0.01f) {
+                setElementPosition(scrollOffsetX, scrollOffsetY)
+                finish() // No changed transform means the browser will emit no transitionend.
+            } else {
+                val listener: (Event) -> Unit = { event ->
+                    if (event.target == ele && event.asDynamic().propertyName == "transform") finish()
+                }
+                transitionEndListener = listener
+                ele.addEventListener("transitionend", listener)
+                ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
+                setElementPosition(scrollOffsetX, scrollOffsetY)
+            }
         }, PAGING_SCROLL_DELAY)
     }
 
