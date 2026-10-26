@@ -47,6 +47,7 @@ import com.tencent.kuikly.core.render.android.layer.IKuiklyRenderLayerHandler
 import com.tencent.kuikly.core.render.android.scheduler.KuiklyRenderCoreContextScheduler
 import com.tencent.kuikly.core.render.android.scheduler.KuiklyRenderCoreTask
 import com.tencent.kuikly.core.render.android.scheduler.KuiklyRenderCoreUIScheduler
+import com.tencent.kuikly.core.render.android.scheduler.LatestFrameCallback
 import com.tencent.tdf.module.TDFBaseModule
 import org.json.JSONObject
 import java.util.Locale
@@ -494,9 +495,16 @@ class KuiklyRenderCore(
 
     private fun callModuleMethod(method: KuiklyRenderNativeMethod, args: List<Any?>): Any? {
         val callbackId = args.fifthArg<String?>()
+        // Native ticks can outrun initial layout on the serial context queue. Only
+        // supersedable Vsync callbacks are bounded; every data/event callback stays FIFO.
+        val latestFrame = if (args.secondArg<String>() == "KRVsyncModule" &&
+            args.thirdArg<String>() == "registerVsync" &&
+            System.getProperty("kuikly.vsync.coalesce") != "false") {
+            LatestFrameCallback { task -> performOnContextQueue { task() } }
+        } else null
         val callback: ((Any?) -> Unit)? = if (callbackId?.isNotEmpty() == true) {
             { result: Any? ->
-                performOnContextQueue {
+                val deliver = {
                     contextHandler?.call(
                         KuiklyRenderContextMethod.KuiklyRenderContextMethodFireCallback,
                         listOf(
@@ -505,7 +513,10 @@ class KuiklyRenderCore(
                             result
                         )
                     )
+                    Unit
                 }
+                if (latestFrame != null) latestFrame.submit(deliver)
+                else performOnContextQueue { deliver() }
             }
         } else {
             null

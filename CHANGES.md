@@ -4755,3 +4755,17 @@ sections without a platform dependency in common framework code. These are
 instrumented attribution tools, not product optimizations or clean-FPS evidence.
 Ronaq TASK78/D78-V retains source identity, cleanup flags and partial-boundary
 limits; no effect, player, media clock, layout or quality behavior is changed.
+
+## 75. Bound native Android Vsync callbacks behind a busy context queue
+
+2026-10-26 — KRVsyncModule's registerVsync callback now keeps at most one
+pending/running frame per registration at the native-to-context callback boundary.
+Native Choreographer keeps its existing pause/resume behavior; superseded ticks
+are discarded before enqueue. Every other module/event callback remains FIFO and
+lossless. Finally releases the gate after callback failure. This addresses stale
+frame backlog delaying ordinary events during initial layout on low-end Android;
+Ronaq docs/design/splash-finish-latency.md DELTA-2. Actual helper tests exercise
+slow consumers, exceptions, enqueue rejection, independent registrations and
+concurrent submissions. Physical A/B remains required, not implied by tests.
+Process-only kuikly.vsync.coalesce=false is the unbounded diagnostic control;
+ordinary launches default to bounded, no persisted configuration.
