@@ -97,21 +97,13 @@ external class Hls {
 class KRVideoView : IKuiklyRenderViewExport {
     // Hls.js instance for HLS playback
     private var hlsInstance: Hls? = null
-    private var liveFmp4Controller: dynamic = null
-    private var sourceGeneration = 0
-    private var lastSource: String? = null
 
     private fun releasePlayback() {
-        sourceGeneration++
-        liveFmp4Controller?.destroy()
-        liveFmp4Controller = null
         hlsInstance?.destroy()
         hlsInstance = null
         ele.pause()
         ele.removeAttribute("src")
         ele.load()
-        ele.removeAttribute("playsinline")
-        ele.removeAttribute("webkit-playsinline")
     }
 
     override fun onRemoveFromParent(parent: Element) {
@@ -123,7 +115,6 @@ class KRVideoView : IKuiklyRenderViewExport {
         stateChangeCallback = null
         playTimeChangeCallback = null
         customEventCallback = null
-        lastSource = null
         releasePlayback()
     }
 
@@ -131,7 +122,6 @@ class KRVideoView : IKuiklyRenderViewExport {
     private val video = kuiklyDocument.createElement(ElementType.VIDEO).apply {
         // Listen to playback state related events
         addEventListener("play", {
-            if (liveFmp4Controller?.requiresRenderedFrame == true && liveFmp4Controller.firstFrameRendered != true) return@addEventListener
             // Currently playing
             stateChangeCallback?.invoke(
                 mapOf(
@@ -141,7 +131,6 @@ class KRVideoView : IKuiklyRenderViewExport {
             )
         })
         addEventListener("playing", {
-            if (liveFmp4Controller?.requiresRenderedFrame == true && liveFmp4Controller.firstFrameRendered != true) return@addEventListener
             // Playback resumes after waiting without another play event.
             stateChangeCallback?.invoke(
                 mapOf(
@@ -178,7 +167,6 @@ class KRVideoView : IKuiklyRenderViewExport {
             )
         })
         addEventListener("error", {
-            if (liveFmp4Controller?.requiresRenderedFrame == true) return@addEventListener
             // Error occurred
             stateChangeCallback?.invoke(
                 mapOf(
@@ -188,10 +176,8 @@ class KRVideoView : IKuiklyRenderViewExport {
             )
         })
         addEventListener("loadeddata", {
-            // Managed live playback reports actual rendered frames through its adapter.
-            if (liveFmp4Controller?.requiresRenderedFrame != true) {
-                firstFrameCallback?.invoke(mapOf<String, Any>())
-            }
+            // First frame loaded
+            firstFrameCallback?.invoke(mapOf<String, Any>())
         })
 
         addEventListener("timeupdate", {
@@ -295,26 +281,14 @@ class KRVideoView : IKuiklyRenderViewExport {
             }
 
             KRVideoViewPlayControl.KRVideoViewPlayControlPlay -> {
-                if (liveFmp4Controller?.requiresRenderedFrame == true) {
-                    liveFmp4Controller.play()
-                    return
-                }
-                if (ele.getAttribute("src") == null && lastSource != null) setVideoPlaySource(lastSource)
-                if (ele.getAttribute("src") == null && lastSource == null) return
-                if (liveFmp4Controller?.requiresRenderedFrame == true) liveFmp4Controller.play()
-                else ele.play()
+                ele.play()
             }
 
             KRVideoViewPlayControl.KRVideoViewPlayControlPause -> {
-                if (liveFmp4Controller?.requiresRenderedFrame == true) liveFmp4Controller.pause()
-                else ele.pause()
+                ele.pause()
             }
 
             KRVideoViewPlayControl.KRVideoViewPlayControlStop -> {
-                if (liveFmp4Controller != null) {
-                    releasePlayback()
-                    return
-                }
                 // No direct stop video and destroy resource in web, so pause first
                 ele.pause()
                 // Then reset progress to simulate stop
@@ -329,49 +303,23 @@ class KRVideoView : IKuiklyRenderViewExport {
      * Set video playback source
      */
     private fun setVideoPlaySource(src: String?) {
-        // Get playback source, return if not exists
+        // Clearing a source must release the previous playback resource.
         if (src.isNullOrBlank()) {
-            lastSource = null
             releasePlayback()
             return
         }
         val source = src
         // Cleanup previous Hls instance if exists
         releasePlayback()
-        lastSource = source
-
-        // Camera-only inline policy; parse the URL without changing its signed bytes.
-        val inlineCamera: dynamic = js("""(function(value) {
-            try {
-                var u = new URL(value);
-                return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname &&
-                    !u.username && !u.password &&
-                    /^\/rtp\/[A-Za-z0-9_-]+(?:\.live\.mp4|\/hls(?:\.fmp4)?\.m3u8)$/.test(u.pathname);
-            } catch (_) { return false; }
-        })""")
-        val projectCamera = inlineCamera(source) as Boolean
-        if (projectCamera) {
-            ele.setAttribute("playsinline", "")
-            ele.setAttribute("webkit-playsinline", "")
-        }
 
         // Check if this is an HLS stream (.m3u8)
-        val cameraHls = projectCamera && source.substringBefore('?').substringBefore('#').endsWith(".m3u8")
-        val isHls = if (projectCamera) cameraHls else source.contains(".m3u8")
+        val isHls = source.contains(".m3u8")
 
         if (isHls) {
             // Use Hls.js for HLS streams
             try {
                 if (js("typeof Hls !== 'undefined' && Hls.isSupported()") as Boolean) {
-                    // Project RTP previews are live cameras: follow the newest
-                    // complete segment instead of the default three-segment delay.
-                    // Leave ordinary HLS/VOD consumers on their existing defaults.
-                    val hls = if (source.substringBefore('?').contains("/rtp/")) {
-                        js("new Hls({liveSyncDurationCount:1,liveMaxLatencyDurationCount:3,maxLiveSyncPlaybackRate:1.1,maxBufferLength:6,backBufferLength:0})")
-                            .unsafeCast<Hls>()
-                    } else {
-                        js("new Hls()").unsafeCast<Hls>()
-                    }
+                    val hls = js("new Hls()").unsafeCast<Hls>()
                     hlsInstance = hls
                     hls.loadSource(source)
                     hls.attachMedia(ele)
@@ -408,56 +356,6 @@ class KRVideoView : IKuiklyRenderViewExport {
             }
         } else {
             // Direct playback for non-HLS sources
-            if (source.substringBefore('?').let { it.contains("/rtp/") && it.endsWith(".live.mp4") }) {
-                if (js("typeof PmManagedLiveCamera !== 'undefined' && PmManagedLiveCamera.supported()") as Boolean) {
-                    val owner = sourceGeneration
-                    val error: (dynamic) -> Unit = {
-                        // Source props can arrive before the state callback prop in this batch.
-                        val deliver: () -> Unit = {
-                            if (owner == sourceGeneration) stateChangeCallback?.invoke(mapOf(
-                                "state" to KRVideoPlayState.KRVideoPlayStateFailed.ordinal,
-                                "extInfo" to mapOf<String, String>()
-                            ))
-                        }
-                        js("Promise.resolve()").then(deliver)
-                    }
-                    val rendered: () -> Unit = {
-                        if (owner == sourceGeneration) {
-                            firstFrameCallback?.invoke(mapOf<String, Any>())
-                            stateChangeCallback?.invoke(mapOf(
-                                "state" to KRVideoPlayState.KRVideoPlayStatePlaying.ordinal,
-                                "extInfo" to mapOf<String, String>()
-                            ))
-                        }
-                    }
-                    try { liveFmp4Controller = js("PmManagedLiveCamera").open(ele, source, error, rendered) }
-                    catch (_: dynamic) {
-                        if (owner == sourceGeneration) lastSource = null
-                        error(null)
-                    }
-                    return
-                }
-                if (js("typeof PmLiveFmp4 !== 'undefined' && PmLiveFmp4.supported()") as Boolean) {
-                    val owner = sourceGeneration
-                    val error: (dynamic) -> Unit = {
-                        if (owner == sourceGeneration) {
-                            stateChangeCallback?.invoke(mapOf(
-                                "state" to KRVideoPlayState.KRVideoPlayStateFailed.ordinal,
-                                "extInfo" to mapOf<String, String>()
-                            ))
-                        }
-                    }
-                    try {
-                        liveFmp4Controller = js("PmLiveFmp4").open(ele, source, error)
-                    } catch (_: dynamic) {
-                        error(null)
-                    }
-                    return
-                }
-                // Project media uses a signed URL and permits anonymous CORS.
-                // Preserve browser frame inspection for the live preview.
-                ele.crossOrigin = "anonymous"
-            }
             ele.src = source
         }
     }

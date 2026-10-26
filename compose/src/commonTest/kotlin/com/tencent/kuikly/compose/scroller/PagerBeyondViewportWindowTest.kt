@@ -27,13 +27,13 @@ class PagerBeyondViewportWindowTest {
     @Test fun firstPixelDoesNotBuildTheHiddenThirdPageAndIdleRefillsNeighbours() {
         val window = PagerBeyondViewportWindow()
         assertEquals(0..1, window.update(0, 0, 3, 1, aligned = true))
-        // Home and Services now overlap the viewport. Profile must not be built mid-frame.
+        // Pages 0 and 1 overlap the viewport. Hidden page 2 must not be built mid-frame.
         assertEquals(0..1, window.update(0, 1, 3, 1, aligned = false))
         // The native animation may publish Compose's destination before visually settling.
         assertEquals(0..1, window.update(1, 1, 3, 1, aligned = false))
         assertEquals(0..2, window.update(1, 1, 3, 1, aligned = true))
         assertEquals(0..2, window.update(0, 1, 3, 1, aligned = false))
-        // Return to Home still disposes the non-adjacent Profile; this is not keep-all.
+        // Returning to page 0 still disposes non-adjacent page 2; this is not keep-all.
         assertEquals(0..1, window.update(0, 0, 3, 1, aligned = true))
     }
 

@@ -1,5 +1,18 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 79. Keep host live-video policy outside the framework
+
+2026-10-26 — The live-video portion of `5fd39203` incorrectly embedded one
+host's stream paths, JS adapter globals, inline/CORS choices and live HLS buffer
+settings in KRVideoView. Those decisions now live in the resident application's
+KRResidentVideoView, registered through the existing renderViewExport factory.
+The framework retains generic source/teardown cleanup, playback-resume events,
+fatal HLS error filtering and redacted logging. It no longer selects a host
+adapter or imposes live latency policy based on a URL. Other recent gesture,
+pager, modal, layout and optional diagnostic fixes remain component-level.
+The migration and bounded recent-commit audit are recorded in the host's
+`docs/design/kuikly-framework-boundary.md` and matching progress record.
+
 ## 78. H5 bordered children retain authoritative layout coordinates
 
 2026-10-18 — `KuiklyRenderCSSKTX.setFrame` overwrote parent-border compensation,
