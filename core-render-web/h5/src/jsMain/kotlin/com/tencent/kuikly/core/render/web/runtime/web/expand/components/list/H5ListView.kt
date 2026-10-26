@@ -75,6 +75,9 @@ class H5ListView : IListElement {
     private var calculateDirection = KRListConst.SCROLL_DIRECTION_NONE
     // Whether currently dragging
     private var isDragging = 0
+    // Native list moves stop bubbling; its release must still cancel the
+    // original Compose press rather than complete a tap at the down position.
+    private var nativeTouchScrollConsumed = false
     // Whether paging is enabled
     var pagingEnabled = false
         private set
@@ -261,6 +264,7 @@ class H5ListView : IListElement {
 
     internal fun handleTouchStart(event: Event, isMouseEvent: Boolean = false) {
         Log.trace(LOG_SCROLL_EVENT_BEGIN)
+        nativeTouchScrollConsumed = false
         // Set as dragging
         isDragging = 1
         // Clear pull-to-refresh height
@@ -314,6 +318,7 @@ class H5ListView : IListElement {
         }
         if ((scrollDirection == KRListConst.SCROLL_DIRECTION_COLUMN && isScrolling == ScrollingAxis.VERTICAL) ||
             (scrollDirection == KRListConst.SCROLL_DIRECTION_ROW && isScrolling == ScrollingAxis.HORIZONTAL)) {
+            nativeTouchScrollConsumed = true
             // Scroll direction matches set direction, prevent bubbling to avoid affecting parent node's scroll events
             event.stopPropagation()
         }
@@ -540,6 +545,24 @@ class H5ListView : IListElement {
 
             // End dragging
             ele.addEventListener(KREventConst.TOUCH_END, {
+                if (it.asDynamic().kuiklyPagingConsumed == true) {
+                    // A nested scroller already finished. Clear this ancestor's armed
+                    // sequence without invoking another click, snap or pull refresh.
+                    clickDetectionTimer?.let { timer -> kuiklyWindow.clearTimeout(timer) }
+                    clickDetectionTimer = null
+                    isClickEvent = false
+                    isDragging = 0
+                    isPrePullDown = false
+                    listPagingHelper.disarmPagerTouch()
+                    return@addEventListener
+                }
+                if (nativeTouchScrollConsumed) {
+                    // Finish this owner normally, disarm ancestor pagers, and let
+                    // the root deliver a consumed terminal event to Compose.
+                    it.asDynamic().kuiklyPagingConsumed = true
+                    nativeTouchScrollConsumed = false
+                    isClickEvent = false
+                }
                 if (isClickEvent) {
                     handleClickEvent(it)
                     return@addEventListener

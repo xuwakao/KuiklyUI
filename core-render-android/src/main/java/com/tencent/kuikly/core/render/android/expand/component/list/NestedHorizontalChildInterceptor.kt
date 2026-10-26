@@ -35,6 +35,10 @@ internal class NestedHorizontalChildInterceptor(recyclerView: KRRecyclerView) : 
     private val hitRect = Rect()
     private var isPointInside = false
 
+    // Reuse this interceptor's DOWN hit-test; ordinary horizontal lists keep their gesture.
+    internal fun hasActivePagerGesture(): Boolean =
+        isPointInside && recyclerViewWeakRef.get()?.isTouchPager() == true
+
     override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
         if (recyclerViewWeakRef.get()?.isScrollEnabled() == false) {
             return false

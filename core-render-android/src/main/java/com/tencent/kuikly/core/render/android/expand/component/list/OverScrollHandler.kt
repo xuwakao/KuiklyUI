@@ -236,6 +236,12 @@ internal class OverScrollHandler(
     internal fun processBounceBack(): Boolean {
         pointerDataMap.clear()
         dragging = false
+        // An in-bounds drag can pass through this handler without starting overscroll.
+        // Its RecyclerView owns the release; emitting another end would snap a pager twice.
+        if (!hadBeginDrag) {
+            velocityTracker.clear()
+            return false
+        }
         overScrollX = contentView.translationX
         overScrollY = contentView.translationY
         velocityTracker.computeCurrentVelocity(1000, maxFlingVelocity.toFloat())

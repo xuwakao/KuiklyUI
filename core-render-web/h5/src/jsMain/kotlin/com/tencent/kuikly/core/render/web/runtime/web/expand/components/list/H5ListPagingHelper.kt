@@ -64,14 +64,14 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
     // Wheel scroll reset timer
     private var wheelResetTimer: Int? = null
     private var positionTimer: Int? = null
-    private var transitionTimer: Int? = null
+    private var transitionEndListener: ((Event) -> Unit)? = null
 
     /** Reuse and a newer target must invalidate writes belonging to the old offset. */
     fun cancelPendingPosition() {
         positionTimer?.let { kuiklyWindow.clearTimeout(it) }
-        transitionTimer?.let { kuiklyWindow.clearTimeout(it) }
+        transitionEndListener?.let { ele.removeEventListener("transitionend", it) }
         positionTimer = null
-        transitionTimer = null
+        transitionEndListener = null
         ele.style.transition = ""
     }
 
@@ -102,6 +102,13 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
      */
     fun handlePagerTouchEnd(it: TouchEvent) {
         handlePagerEndCommon(it)
+    }
+
+    /** A child pager consumed this sequence; do not snap this ancestor as well. */
+    fun disarmPagerTouch() {
+        isDragging = 0
+        isTouchMove = false
+        lastTouchEvent = null
     }
 
     /**
@@ -430,6 +437,14 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         if (!isTouchMove) {
             return
         }
+        val isTouchRelease = event.isTouchEventOrNull() != null
+        if (isTouchRelease && canScroll) {
+            // Movement was stopped here, so Compose has only seen the initial press.
+            // Bubble this same terminal event with cancellation metadata to its root.
+            // At an edge, movement has been handed to the ancestor pager instead;
+            // its own terminal handler must still run and settle that outer page.
+            event.asDynamic().kuiklyPagingConsumed = true
+        }
         isDragging = 0
         isTouchMove = false
         val deltaY = touchEndY - touchStartY
@@ -450,7 +465,7 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         }
         if (newPageIndex != pageIndex) {
             pageIndex = newPageIndex
-            event.stopPropagation()
+            if (!isTouchRelease) event.stopPropagation()
         }
         handlePagerScrollTo(scrollOffsetX, scrollOffsetY, true)
         // H5 paging 模式已经完成了分页 snap 处理（通过 handlePagerScrollTo）
@@ -520,12 +535,32 @@ class H5ListPagingHelper(private val ele: HTMLElement, private var listElement: 
         }
         positionTimer = kuiklyWindow.setTimeout({
             positionTimer = null
-            ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
-            setElementPosition(scrollOffsetX, scrollOffsetY)
-            transitionTimer = kuiklyWindow.setTimeout({
-                transitionTimer = null
+            fun finish() {
+                transitionEndListener?.let { ele.removeEventListener("transitionend", it) }
+                transitionEndListener = null
                 ele.style.transition = ""
-            }, PAGING_SCROLL_ANIMATION_TIME)
+                // Publishing a requested offset is not animation completion. Paging uses
+                // transforms, so the element's native scroll event never supplies scrollEnd.
+                listElement.scrollEndEventCallback?.invoke(
+                    listElement.updateOffsetMap(-scrollOffsetX, -scrollOffsetY, isDragging)
+                )
+            }
+            val transform = kuiklyWindow.getComputedStyle(ele).transform
+            val values = transform.removePrefix("matrix(").removeSuffix(")").split(",")
+            val x = if (transform == "none") 0f else values.getOrNull(4)?.trim()?.toFloatOrNull()
+            val y = if (transform == "none") 0f else values.getOrNull(5)?.trim()?.toFloatOrNull()
+            if (x != null && y != null && abs(x - scrollOffsetX) < 0.01f && abs(y - scrollOffsetY) < 0.01f) {
+                setElementPosition(scrollOffsetX, scrollOffsetY)
+                finish() // No changed transform means the browser will emit no transitionend.
+            } else {
+                val listener: (Event) -> Unit = { event ->
+                    if (event.target == ele && event.asDynamic().propertyName == "transform") finish()
+                }
+                transitionEndListener = listener
+                ele.addEventListener("transitionend", listener)
+                ele.style.transition = "transform ${PAGING_SCROLL_ANIMATION_TIME}ms"
+                setElementPosition(scrollOffsetX, scrollOffsetY)
+            }
         }, PAGING_SCROLL_DELAY)
     }
 

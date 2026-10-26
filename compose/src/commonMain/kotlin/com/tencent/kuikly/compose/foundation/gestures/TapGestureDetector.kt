@@ -242,9 +242,11 @@ internal suspend fun PointerInputScope.detectTapAndPress(
         GlobalTapManager.collectTap(it, this@detectTapAndPress.layoutNode, TapEventType.TAP)
     }
 
-    val pressScope = PressGestureScopeImpl(this)
     coroutineScope {
         awaitEachGesture {
+            // A following gesture can begin before the previous onPress coroutine resumes.
+            // Its reset must never consume the previous gesture's release/cancellation.
+            val pressScope = PressGestureScopeImpl(this@detectTapAndPress)
             launch(start = CoroutineStart.UNDISPATCHED) {
                 pressScope.reset()
             }

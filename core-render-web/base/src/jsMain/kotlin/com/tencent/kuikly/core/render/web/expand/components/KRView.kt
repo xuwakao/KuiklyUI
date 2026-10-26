@@ -357,6 +357,11 @@ open class KRView : IKuiklyRenderViewExport {
                 put(KRParamConst.PAGE_Y, pageY)
             }
             params = setSuperTouchEventParams(params, it.timeStamp.toLong(), KRActionConst.TOUCH_UP)
+            // A native pager owns the drag but must still finish the original Compose
+            // pointer. Deliver its real release as cancellation, never as a card tap.
+            if (superTouch && it.asDynamic().kuiklyPagingConsumed == true) {
+                params[KRParamConst.CONSUMED] = 1
+            }
             // Touch end event has no position parameters, so use move recorded cache parameter value callback
             panEventCallback?.invoke(params)
             touchUpEventCallback?.invoke(params)

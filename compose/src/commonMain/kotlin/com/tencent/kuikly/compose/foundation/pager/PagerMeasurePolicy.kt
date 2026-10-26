@@ -37,6 +37,7 @@ import com.tencent.kuikly.compose.ui.unit.constrainHeight
 import com.tencent.kuikly.compose.ui.unit.constrainWidth
 import com.tencent.kuikly.compose.ui.unit.offset
 import kotlinx.coroutines.CoroutineScope
+import kotlin.math.abs
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -68,7 +69,13 @@ internal fun rememberPagerMeasurePolicy(
     beyondViewportPageCount,
     coroutineScope
 ) {
-    { containerConstraints ->
+    val beyondViewportWindow = PagerBeyondViewportWindow()
+    return@remember { containerConstraints ->
+        // Native animated scroll can publish the destination Compose position before its
+        // visual offset reaches it. Observe completion, so deferred neighbours are filled
+        // after the animation rather than while it is moving.
+        val snapAnimating = state.isSnapAnimating
+        val scrolling = state.isScrollInProgress
         state.measurementScopeInvalidator.attachToScope()
         val isVertical = orientation == Orientation.Vertical
         checkScrollableContainerConstraints(
@@ -149,12 +156,17 @@ internal fun rememberPagerMeasurePolicy(
 
         val currentPage: Int
         val currentPageOffset: Int
+        val aligned: Boolean
 
         Snapshot.withoutReadObservation {
             // Keep the snap target aligned to its item key when items are inserted/removed
             // before it during the snap settle window (itemProvider is only available here).
             state.relocateSnapTargetByKey(itemProvider)
             currentPage = state.matchScrollPositionWithKey(itemProvider, state.currentPage)
+            // Native targets deliberately stop 0.01dp short of a boundary. Use the same
+            // one-pixel tolerance as snap alignment, otherwise neighbours never refill.
+            aligned = abs(state.currentPageOffsetFraction * state.pageSizeWithSpacing) <= 1f &&
+                !snapAnimating && !scrolling
             currentPageOffset = snapPosition.currentPageOffset(
                 mainAxisAvailableSize,
                 pageAvailableSize,
@@ -184,6 +196,8 @@ internal fun rememberPagerMeasurePolicy(
                 visualPageOffset = visualItemOffset,
                 pageAvailableSize = pageAvailableSize,
                 beyondViewportPageCount = beyondViewportPageCount,
+                beyondViewportWindow = beyondViewportWindow,
+                aligned = aligned,
                 orientation = orientation,
                 currentPage = currentPage,
                 currentPageOffset = currentPageOffset,
