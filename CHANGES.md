@@ -1,5 +1,17 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 80. Unify Android compile SDK at36
+
+2026-10-30 — Owner requests a single Android compilation platform for the offline
+release toolchain. All41 tracked Android compileSdk/compileSdkVersion declarations
+now use36, including Kotlin-version configurations and examples. Minimum/target
+SDKs, plugin/language versions and runtime sources are unchanged. This removes
+lower-platform requirements from the publisher source inventory. The active
+Kotlin2.1.21 configuration passed a signed GP Release build and bounded Pixel
+API27 cold-start/navigation smoke. Historical language variants are normalized,
+not claimed individually validated. Host evidence:
+`docs/progress/kuikly-compile36.md`.
+
 ## 79. Keep host live-video policy outside the framework
 
 2026-10-26 — The live-video portion of `5fd39203` incorrectly embedded one

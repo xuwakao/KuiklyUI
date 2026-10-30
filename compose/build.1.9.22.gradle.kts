@@ -135,7 +135,7 @@ kotlin {
 
 android {
     namespace = "com.tencent.kuikly.compose"
-    compileSdk = 30
+    compileSdk = 36
     defaultConfig {
         minSdk = 21
     }

@@ -87,7 +87,7 @@ kotlin {
 }
 
 android {
-    compileSdk = 30
+    compileSdk = 36
     namespace = "com.tencent.kuikly.core.wx"
     defaultConfig {
         minSdk = 21

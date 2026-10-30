@@ -144,7 +144,7 @@ publishing {
 
 android {
     namespace = "com.tencent.kuikly.compose"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         minSdk = 21
     }

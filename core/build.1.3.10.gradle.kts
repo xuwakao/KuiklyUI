@@ -48,7 +48,7 @@ afterEvaluate {
 
 
 android {
-    compileSdkVersion(30)
+    compileSdkVersion(36)
 
     defaultConfig {
         minSdkVersion(21)

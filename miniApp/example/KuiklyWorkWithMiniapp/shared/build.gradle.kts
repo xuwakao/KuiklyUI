@@ -126,7 +126,7 @@ dependencies {
 
 android {
     namespace = "com.example.kuiklyworkwithminiapp.shared"
-    compileSdk = 34
+    compileSdk = 36
     defaultConfig {
         minSdk = 21
         targetSdk = 30

@@ -40,7 +40,7 @@ afterEvaluate {
 }
 
 android {
-    compileSdk = 34
+    compileSdk = 36
     namespace = "com.tencent.kuikly.core.render.android"
     defaultConfig {
         minSdk = 21

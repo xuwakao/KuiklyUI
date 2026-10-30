@@ -80,7 +80,7 @@ kotlin {
 }
 
 android {
-    compileSdk = 32
+    compileSdk = 36
     namespace = "com.tencent.kuikly.core.annotations"
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
