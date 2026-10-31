@@ -1,5 +1,19 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 81. Keep Android spring scrolling stable across long frames
+
+2026-10-30 — `KRSpringAnimation` used one semi-implicit Euler step per animator
+callback. At the existing64ms cap, a220ms/0.8 spring is unstable: an intended1080px
+move first hits the3240px strip's end, then oscillates and overflows. Pixel native
+command/frame/scroll traces reproduce this with a minimized room; no second tab
+command is needed. Exact damped-spring evolution now covers under/critical/over
+damping with the same stiffness, damping, initial velocity, pause cap and end
+thresholds. The clock is monotonic and no per-frame object is allocated. No motion
+or loop is disabled. Pure regression cases cover long/irregular frames, the old
+instability, frame partition, reverse velocity and damping branches. Native outcome
+is recorded in host `docs/progress/event-tab-oscillation.md`; test/build evidence
+remains distinct from device acceptance.
+
 ## 80. Unify Android compile SDK at36
 
 2026-10-30 — Owner requests a single Android compilation platform for the offline

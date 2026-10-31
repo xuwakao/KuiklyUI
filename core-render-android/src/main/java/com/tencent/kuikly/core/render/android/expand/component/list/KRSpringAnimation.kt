@@ -25,42 +25,29 @@ internal class KRSpringAnimation(
     val stiffness: Float,
     dampingRatio: Float
 ): KRScrollAnimation() {
-    private var currentValue = startValue
-    private var currentVelocity = velocity
+    // Exact damped motion remains stable at the existing 64ms pause cap. Euler
+    // integration at that step diverges for short-duration/stiff springs.
+    private val motion = KRSpringMotion(startValue, endValue, velocity, stiffness, dampingRatio)
     private var lastTime = 0L
-    private val mass = 1f
-    // c = 2 * m * sqrt(k/m) * zeta = 2 * sqrt(m*k) * zeta
-    private val dampingCoefficient = 2f * kotlin.math.sqrt((mass * stiffness).toDouble()).toFloat() * dampingRatio
 
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 100000L // Long enough
         repeatCount = ValueAnimator.INFINITE
         interpolator = LinearInterpolator()
         addUpdateListener {
-            val currentTime = System.currentTimeMillis()
+            val currentTime = System.nanoTime()
             if (lastTime == 0L) {
                 lastTime = currentTime
                 return@addUpdateListener
             }
-            var dt = (currentTime - lastTime) / 1000f
+            val dt = ((currentTime - lastTime).coerceAtLeast(0L) / 1_000_000_000.0)
+                .coerceAtMost(0.064)
             lastTime = currentTime
-
-            // Cap dt to avoid instability in case of long pauses (e.g. backgrounding)
-            if (dt > 0.064f) dt = 0.064f
-
-            // Semi-implicit Euler integration
-            // F = -k * x - c * v
-            val displacement = currentValue - endValue
-            val force = -stiffness * displacement - dampingCoefficient * currentVelocity
-            val acceleration = force / mass
-
-            currentVelocity += acceleration * dt
-            currentValue += currentVelocity * dt
-
-            onUpdate(currentValue)
+            motion.advance(dt)
+            onUpdate(motion.value)
 
             // End condition: close enough and slow enough
-            if (kotlin.math.abs(currentValue - endValue) < 0.5f && kotlin.math.abs(currentVelocity) < 10f) {
+            if (kotlin.math.abs(motion.value - endValue) < 0.5f && kotlin.math.abs(motion.velocity) < 10f) {
                 cancel()
                 onUpdate(endValue)
             }
