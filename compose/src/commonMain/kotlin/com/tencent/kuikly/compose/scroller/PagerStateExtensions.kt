@@ -250,12 +250,12 @@ internal fun convertAnimationSpecToSpringAnimation(
 ): SpringAnimation? {
     return when (animationSpec) {
         is TweenSpec<*> -> {
-            // TweenSpec: Use durationMillis as durationMs
-            // Note: Easing curve (animationSpec.easing) is not supported yet,
-            // using default damping value instead
+            // Native scroll adapters do not represent Tween easing. Keep its
+            // non-bouncing timing semantics: an underdamped fallback crosses the
+            // target and visibly reverses at the end of an ordinary page change.
             SpringAnimation(
                 durationMs = animationSpec.durationMillis,
-                damping = 0.8f, // Default damping value (easing curve not supported)
+                damping = 1f, // Critical damping: no artificial rebound for TweenSpec.
                 velocity = 0f
             )
         }

@@ -1,5 +1,17 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 82. Do not synthesize spring rebound for timed pager animations
+
+2026-10-31 — `animateScrollToPage(..., tween(...))` converted a timed
+animation to an underdamped0.8 spring. Stable exact integration fixed numerical
+instability in section81, but intentional underdamped target crossing still
+caused a short visible reverse movement. The timed-spec fallback now uses
+critical damping1, retaining native animated scrolling and the duration field.
+Explicit SpringSpec damping/velocity paths and gesture settling are unchanged.
+Native adapters still do not reproduce arbitrary Tween easing/delay exactly;
+this correction removes the invented rebound, not that pre-existing limitation.
+Host investigation/build/Pixel comparison: docs/progress/events-wallet-header.md.
+
 ## 81. Keep Android spring scrolling stable across long frames
 
 2026-10-30 — `KRSpringAnimation` used one semi-implicit Euler step per animator
