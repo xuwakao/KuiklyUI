@@ -30,6 +30,7 @@ import android.util.ArrayMap
 import android.util.DisplayMetrics
 import android.util.Size
 import android.view.View
+import android.view.Gravity
 import android.view.View.AccessibilityDelegate
 import android.view.ViewGroup
 import android.view.ViewParent
@@ -1064,6 +1065,8 @@ internal fun View.setFrameForAndroidM(frame: Rect) {
     }
     lp.width = frame.right
     lp.height = frame.bottom
+    // Match the physical-frame contract on API23 and below as well.
+    if (lp is FrameLayout.LayoutParams) lp.gravity = Gravity.LEFT or Gravity.TOP
     layoutParams = lp
 }
 

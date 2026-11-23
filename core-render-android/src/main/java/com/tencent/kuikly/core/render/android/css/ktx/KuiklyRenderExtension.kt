@@ -28,6 +28,8 @@ import android.util.SizeF
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
+import android.view.Gravity
+import android.widget.FrameLayout
 import com.tencent.kuikly.core.render.android.KuiklyRenderView
 import com.tencent.kuikly.core.render.android.IKuiklyRenderContext
 import com.tencent.kuikly.core.render.android.const.KRExtConst
@@ -183,7 +185,9 @@ var View.frame: Rect
         if (isBeforeM) {
             setFrameForAndroidM(value)
         } else {
-            val lp = (layoutParams as? ViewGroup.MarginLayoutParams) ?: ViewGroup.MarginLayoutParams(0, 0)
+            val lp = (layoutParams as? ViewGroup.MarginLayoutParams) ?: FrameLayout.LayoutParams(0, 0)
+            // Frames are physical coordinates; logical RTL has already been resolved upstream.
+            if (lp is FrameLayout.LayoutParams) lp.gravity = Gravity.LEFT or Gravity.TOP
             lp.leftMargin = value.left
             lp.topMargin = value.top
             lp.width = value.right

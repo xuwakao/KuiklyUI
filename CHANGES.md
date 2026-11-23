@@ -1,5 +1,16 @@
 # Ronaq divergences from upstream KuiklyUI
 
+## 83. Preserve physical Android frames under a system RTL locale
+
+2026-11-23 — FrameLayout's default START gravity resolved to RIGHT under Arabic
+system layout direction, ignoring the leftMargin coordinates already resolved by
+Compose. Distinct birthday columns could therefore share the same right edge;
+headers and centered actions also shifted. View.frame now explicitly sets
+LEFT|TOP on FrameLayout.LayoutParams (including the API23-and-earlier setter and
+unattached fallback). Other parent parameter types and logical layout/text
+direction remain unchanged. Native English/Arabic control and screen evidence:
+host docs/issue/birthday-rtl-layout.md. No business-specific picker code is added.
+
 ## 82. Do not synthesize spring rebound for timed pager animations
 
 2026-10-31 — `animateScrollToPage(..., tween(...))` converted a timed
