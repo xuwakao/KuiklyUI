@@ -74,6 +74,30 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
 
     var kuiklyCoordinates: LayoutCoordinates? = null
 
+    // Native Hover moves independently of lazy placement. Keep raw layout/frame input intact,
+    // but expose the same displayed position to all coordinate conversions (including gestures).
+    private var stickyScrollInfo: com.tencent.kuikly.compose.gestures.KuiklyScrollInfo? = null
+    private var stickyViewportY = 0f
+    private var stickyContentY = 0f
+    private var stickyMarginY = 0f
+    internal val stickyCoordinateOffset: Offset
+        get() = stickyScrollInfo?.let {
+            Offset(0f, stickyVisualDelta(stickyViewportY, stickyContentY,
+                it.nativeContentOffset.toFloat(), stickyMarginY))
+        } ?: Offset.Zero
+
+    internal fun updateStickyCoordinateFrame(
+        scrollInfo: com.tencent.kuikly.compose.gestures.KuiklyScrollInfo?,
+        viewportY: Float,
+        contentY: Float,
+        marginY: Float,
+    ) {
+        stickyScrollInfo = scrollInfo
+        stickyViewportY = viewportY
+        stickyContentY = contentY
+        stickyMarginY = marginY
+    }
+
     /**
      * Determines if the current node is a sticky header
      * Any HoverView type is considered a sticky header, not limited to currently active ones
@@ -315,12 +339,16 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
     override fun updateKuiklyViewFrame(coordinator: LayoutCoordinates) {
         val curCoordinator = kuiklyCoordinates ?: innerCoordinator
 
+        stickyScrollInfo = null
+
         resetViewVisible()
 
         val ksScrollSubView = view.parent is VirtualNodeView
         val parentNode = parent as? KNode<*>
         val parentCoordinator = parentNode?.kuiklyCoordinates ?: parentNode?.innerCoordinator
         var pos = parentCoordinator?.viewPositionOf(curCoordinator) ?: Offset.Zero
+        val viewportY = pos.y
+        var verticalScrollInfo: com.tencent.kuikly.compose.gestures.KuiklyScrollInfo? = null
 
         // Whether the position just measured is the one this node actually OCCUPIES, as
         // opposed to the synthetic offset a lazy layout reports for a header it has already
@@ -334,6 +362,7 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
             ((scrollerView.renderProperties as? RenderProperties)?.kuiklyScrollInfo)?.apply {
                 val deltaOffset = composeOffset + snapAnchorOffsetCorrection
                 val vertical = orientation == Orientation.Vertical
+                if (vertical) verticalScrollInfo = this
                 // Read BEFORE the scroll offset is folded in: `pos` is still relative to the
                 // scroller's visible box here, so a non-negative main axis means the node has
                 // not reached the top edge yet.
@@ -358,6 +387,9 @@ internal class KNode<T : DeclarativeBaseView<*, *>>(
         val isStickyHeader = isStickyHeaderNode()
         if (isStickyHeader) {
             pos = getCachedStickyPosition(pos, positionIsItsOwn)
+            updateStickyCoordinateFrame(verticalScrollInfo, viewportY, pos.y,
+                ((view.getViewAttr().getProp("hoverMarginTop") as? Number)
+                    ?.toFloat() ?: 0f) * densityValue)
         }
 
         var newFrame = Frame(

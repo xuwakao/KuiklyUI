@@ -905,9 +905,9 @@ internal abstract class NodeCoordinator(
         var wrapper = this
         while (wrapper != ancestor) {
             wrapper.layer?.transform(matrix)
-            val x = wrapper.positionX
-            val y = wrapper.positionY
-            if (x != 0 || y != 0) {
+            val x = wrapper.visualPosition.x
+            val y = wrapper.visualPosition.y
+            if (x != 0f || y != 0f) {
                 tmpMatrix.reset()
                 tmpMatrix.translate(x.toFloat(), y.toFloat())
                 matrix.timesAssign(tmpMatrix)
@@ -919,9 +919,9 @@ internal abstract class NodeCoordinator(
     private fun transformFromAncestor(ancestor: NodeCoordinator, matrix: Matrix) {
         if (ancestor != this) {
             wrappedBy!!.transformFromAncestor(ancestor, matrix)
-            val x = positionX
-            val y = positionY
-            if (x != 0 || y != 0) {
+            val x = visualPosition.x
+            val y = visualPosition.y
+            if (x != 0f || y != 0f) {
                 tmpMatrix.reset()
                 tmpMatrix.translate(-x.toFloat(), -y.toFloat())
                 matrix.timesAssign(tmpMatrix)
@@ -1016,6 +1016,15 @@ internal abstract class NodeCoordinator(
      * Converts [position] in the local coordinate system to a [Offset] in the
      * [parentLayoutCoordinates] coordinate system.
      */
+    private val visualPosition: Offset
+        get() {
+            // Apply once across the node boundary, never once per layout modifier.
+            val hoverOffset = if (this === layoutNode.outerCoordinator) {
+                (layoutNode as? KNode<*>)?.stickyCoordinateOffset ?: Offset.Zero
+            } else Offset.Zero
+            return Offset(positionX.toFloat(), positionY.toFloat()) + hoverOffset
+        }
+
     open fun toParentPosition(
         position: Offset,
         includeMotionFrameOfReference: Boolean = true
@@ -1025,7 +1034,7 @@ internal abstract class NodeCoordinator(
         return if (!includeMotionFrameOfReference && isPlacedUnderMotionFrameOfReference) {
             targetPosition
         } else {
-            targetPosition + this.position
+            targetPosition + visualPosition
         }
     }
 
@@ -1041,7 +1050,7 @@ internal abstract class NodeCoordinator(
             if (!includeMotionFrameOfReference && this.isPlacedUnderMotionFrameOfReference) {
                 position
             } else {
-                position - this.position
+                position - visualPosition
             }
         val layer = layer
         return layer?.mapOffset(relativeToPosition, inverse = true)
@@ -1115,11 +1124,11 @@ internal abstract class NodeCoordinator(
             layer.mapBounds(bounds, inverse = false)
         }
 
-        val x = positionX
+        val x = visualPosition.x
         bounds.left += x
         bounds.right += x
 
-        val y = positionY
+        val y = visualPosition.y
         bounds.top += y
         bounds.bottom += y
     }
@@ -1129,11 +1138,11 @@ internal abstract class NodeCoordinator(
      * coordinates, including clipping, if [clipBounds] is true.
      */
     private fun fromParentRect(bounds: MutableRect, clipBounds: Boolean) {
-        val x = positionX
+        val x = visualPosition.x
         bounds.left -= x
         bounds.right -= x
 
-        val y = positionY
+        val y = visualPosition.y
         bounds.top -= y
         bounds.bottom -= y
 

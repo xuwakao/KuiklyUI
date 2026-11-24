@@ -4853,3 +4853,13 @@ ordering are unchanged; real coalesced tap/cancel/rapid-switch and child-return
 regressions are recorded with the PM work. Preloading uses observable scroll/snap
 completion rather than the raw host dragging marker, which can outlive a consumed
 gesture.
+
+## 76. Map native sticky Hover display positions into Compose input coordinates
+
+**Files** · compose ui/node KNode.kt, NodeCoordinator.kt, StickyVisualCoordinates.kt; common StickyVisualCoordinatesTest.
+**Driven by** · Ronaq WORK-20261124-HOME-TABS-HIT-TEST / Home category tap entering underlying room.
+**Date** · 2026-11-24
+
+Native Hover moves its frame while the retained lazy item's Compose placement remains offscreen. Keep raw placement and natural-frame cache unchanged. A vertical direct-scroller Hover exposes its current displayed delta using the observed native scroll offset; outer-coordinate conversions apply it once for points, rects and matrices. This keeps hit testing and subsequent press/move/up in the same coordinate space. Non-Hover and horizontal nodes retain zero correction. No native player, paint order, scroll protocol or public API change.
+
+**Verification** · Five focused common JVM tests cover natural/pinned/margin/overscroll/late-cache placement, live native offset, actual coordinator roundtrip/reset, plain-node identity, and multiple layout modifiers applying once. Android native and cross-platform compilation acceptance is tracked in Ronaq docs/progress/home-sticky-hit-test.md; compilation is not host runtime evidence.
