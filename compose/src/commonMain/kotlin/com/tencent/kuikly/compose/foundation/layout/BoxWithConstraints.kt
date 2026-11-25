@@ -19,7 +19,6 @@ package com.tencent.kuikly.compose.foundation.layout
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
-import com.tencent.kuikly.compose.foundation.lazy.rememberLazyListState
 import com.tencent.kuikly.compose.ui.Alignment
 import com.tencent.kuikly.compose.ui.Modifier
 import com.tencent.kuikly.compose.ui.UiComposable
@@ -67,7 +66,6 @@ fun BoxWithConstraints(
     @Composable @UiComposable BoxWithConstraintsScope.() -> Unit
 ) {
     val measurePolicy = maybeCachedBoxMeasurePolicy(contentAlignment, propagateMinConstraints)
-    val state = rememberLazyListState()
 
     SubcomposeLayoutNoScroll(
         modifier,

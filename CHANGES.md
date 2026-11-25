@@ -4863,3 +4863,73 @@ gesture.
 Native Hover moves its frame while the retained lazy item's Compose placement remains offscreen. Keep raw placement and natural-frame cache unchanged. A vertical direct-scroller Hover exposes its current displayed delta using the observed native scroll offset; outer-coordinate conversions apply it once for points, rects and matrices. This keeps hit testing and subsequent press/move/up in the same coordinate space. Non-Hover and horizontal nodes retain zero correction. No native player, paint order, scroll protocol or public API change.
 
 **Verification** · Five focused common JVM tests cover natural/pinned/margin/overscroll/late-cache placement, live native offset, actual coordinator roundtrip/reset, plain-node identity, and multiple layout modifiers applying once. Android native and cross-platform compilation acceptance is tracked in Ronaq docs/progress/home-sticky-hit-test.md; compilation is not host runtime evidence.
+
+## 77. Optional host image loading for the Web ImageView
+
+**Files** · core-render-web/base processor IImageLoadingProcessor.kt (new), KuiklyProcessor.kt; web expand components KRImageView.kt.
+**Driven by** · Ronaq WORK-20261124-WEB-LARGE-IMAGE-PIPELINE — the browser decoding 36-megapixel JPEGs to draw 20px avatars (mobile/docs/issue/web-performance-20261124.md, mobile/docs/design/web-large-image-pipeline.md).
+**Date** · 2026-11-25
+
+`KuiklyProcessor.imageLoadingProcessor` is a nullable slot, null by default; with it null
+every image behaves as before (the resolved URL goes to the `<img>` and the browser decodes
+it). A host that registers one gets first refusal of each source in `KRImageView.setSrc`:
+the source is withheld from the `<img>` until the loader answers, because writing a large
+URL to the `<img>` is the very thing the loader exists to prevent. `onReady` gives a display
+copy's URL to show, while load events keep reporting the SOURCE's address and size.
+`onBypass` and `onFailed` both take the view's single fallback to the source itself: a
+loader that failed is not a picture that failed to load. The box is forwarded on FRAME and
+on change (`updateSize`). `shown()` tells the loader the newest copy is on screen, so one it
+replaced is not revoked underneath it. A source applied again while the loader is producing
+it, or has produced it, is not asked again. The 9-patch path and base64 images are left to
+the view. The handle is released on a new source, on removal from the tree and on destroy.
+
+Vendor-neutral: no URL policy, cache, worker or budget lives in the fork, and miniapp and
+every other host see no change (nothing registers a loader there). Compose `Image(painter)`
+on the Web renders through this same ImageView, so the painter and the memory-cache module
+are untouched.
+
+**Verification** · The Web base compiles; the Compose module is unchanged. On a real phone
+(OPPO, Chrome) with and without a Ronaq loader over the same feed, three off/on/off groups:
+the browser's decoded originals fell from 391 to 22 megapixels per window and main-thread
+long-task time by 84%, pictures rendering the same (Ronaq
+mobile/docs/evidence/web-large-image-pipeline/20261125-oppo-chrome). The design's absolute
+frame gates were not all met there; the remaining stalls were attributed to the app's own
+rendering, not to the loader. Ronaq-side limits: mobile/docs/design/web-large-image-pipeline.md §14.
+
+### 2026-11-25 review corrections for entry 77
+
+The optional image handle receives fit updates. Its suspend callback clears a display
+copy before the host releases its URL; the host receives the view element to observe
+viewport and ancestor attachment. Direct removal clears managed state, and reattachment
+restarts the current request. Host scheduler/codec policy remains outside the fork.
+Verification pending the integrated six-fix regression and both-device run.
+
+
+## 78. Browser hover positioning respects transformed pager ancestors
+
+**Date** · 2026-11-25
+**Files** · `core-render-web/h5/.../components/H5HoverView.kt`, H5 `KuiklyRenderViewDelegator.kt`
+**Driven by** · Actual Pixel Firefox Home Hot/country strip: the list starts at y62.1CSSpx but a pinned header sits at y124.2. Reference `lingoandroid/lib_home/.../HotFragment.kt:820-843` retains category selection; this fixes browser geometry only, not category/feed business behavior.
+
+The previous shared Web hover uses viewport `position:fixed` and sums ancestor tops. H5 paging applies a transform even at translate(0), making the pager the fixed-position containing block. Adding the viewport top again leaves a62.1px gap and also risks horizontal page-coordinate drift. H5 now registers a browser-specific CSS `position:sticky` host. The authoritative FRAME y becomes its natural top margin, and a negative bottom margin cancels the corresponding flow height so separately placed hover siblings do not displace each other. The sticky top remains hoverMarginTop. FRAME updates restore this style after the common absolute-position setter; browser scrolling/resizing/paging determines pinning without JS scroll listeners or viewport-coordinate arithmetic. List isolation still confines z-order below sibling screens. Miniapp retains KRHoverView; Android/iOS/Compose coordinates are unchanged.
+
+Verification and exact candidate identity: Ronaq `mobile/docs/issue/web-home-tabs-position-20261125.md` and `mobile/docs/evidence/web-home-tabs-20261125/`. Pixel before-change scroll geometry showed62.1px repeated error; a controlled native-sticky experiment held0px and hit-tested the opaque strip at the list top. Full compiled candidate, actual category input, resize and return checks are recorded there rather than inferred from compilation.
+
+### 2026-11-25 integrated verification update for entry 77
+
+The six image corrections passed the scoped codec/geometry/visibility regressions on
+OPPO Chrome and Pixel Firefox. Interrupted OPPO whole-Home measurements remain invalid;
+Pixel whole-Home performance remains below the absolute acceptance gate. See Ronaq
+`mobile/docs/progress/web-large-image-pipeline.md` for exact subjects and limitations.
+
+## 79. Avoid unused lazy state in BoxWithConstraints
+
+**Date** · 2026-11-25
+**File** · `compose/src/commonMain/kotlin/com/tencent/kuikly/compose/foundation/layout/BoxWithConstraints.kt`
+**Driven by** · Ronaq Pixel Home profiling found repeated constraint subcomposition;
+this function created a LazyListState that no layout or caller consumed.
+
+Remove only the unused remembered LazyListState and its import. Constraint measurement,
+subcomposition, placement and input behavior are unchanged. Ronaq native Android and
+iOS builds succeeded; scoped Pixel native Home checks and iPhone native Home/Voice
+mirror checks passed. This does not establish native FPS or complete Web performance.

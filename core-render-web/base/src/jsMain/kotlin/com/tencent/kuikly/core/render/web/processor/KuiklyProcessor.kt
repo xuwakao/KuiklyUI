@@ -17,6 +17,12 @@ object KuiklyProcessor {
     // so we need to process it by different host.
     lateinit var imageProcessor: IImageProcessor
 
+    // Optional takeover of image LOADING, for a host that produces pictures itself
+    // (off-main-thread decode at display size, shared downloads, a bounded decoded set).
+    // Null by default: with it null every image is handed to the browser exactly as
+    // before, so miniapp and every host that registers nothing are unaffected.
+    var imageLoadingProcessor: IImageLoadingProcessor? = null
+
     // list processor, used to create list view for different host
     lateinit var listProcessor: IListProcessor
 

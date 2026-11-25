@@ -43,6 +43,7 @@ import com.tencent.kuikly.core.render.web.performance.KRPerformanceManager
 import com.tencent.kuikly.core.render.web.performance.launch.KRLaunchData
 import com.tencent.kuikly.core.render.web.processor.KuiklyProcessor
 import com.tencent.kuikly.core.render.web.runtime.web.expand.module.H5WindowResizeModule
+import com.tencent.kuikly.core.render.web.runtime.web.expand.components.H5HoverView
 import com.tencent.kuikly.core.render.web.runtime.web.expand.processor.AnimationProcessor
 import com.tencent.kuikly.core.render.web.runtime.web.expand.processor.EventProcessor
 import com.tencent.kuikly.core.render.web.runtime.web.expand.processor.ImageProcessor
@@ -505,7 +506,7 @@ class KuiklyRenderViewDelegator(private val delegate: KuiklyRenderViewDelegatorD
                 KRScrollContentView()
             })
             renderViewExport(KRHoverView.VIEW_NAME, {
-                KRHoverView()
+                H5HoverView()
             })
             renderViewExport(KRVideoView.VIEW_NAME, {
                 KRVideoView()
